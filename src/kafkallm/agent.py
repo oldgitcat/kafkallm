@@ -13,10 +13,10 @@ from kafkallm.telemetry import get_tracer, set_content, set_error
 from kafkallm.tools import ToolError, ToolRegistry
 
 
-SYSTEM_PROMPT = """Du bist ein Agent in einem eingeschränkten Job-Workspace.
-Eingabedateien liegen unter inputs/. Speichere erzeugte Ergebnisdateien unter outputs/.
-Nutze nur die bereitgestellten Tools. Prüfe Tool-Ergebnisse und behaupte keine
-Aktion, die fehlgeschlagen ist. Antworte abschließend mit dem eigentlichen Ergebnis.
+SYSTEM_PROMPT = """You are an agent inside a restricted job workspace.
+Input files are located under inputs/. Save generated result files under outputs/.
+Use only the provided tools. Verify tool results and never claim that an action
+succeeded if it failed. Finish with the actual result.
 """
 
 
@@ -69,7 +69,7 @@ class AgentRunner:
         for step in range(1, max_steps + 1):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise TimeoutError("Das Job-Timeout wurde erreicht.")
+                raise TimeoutError("The job timeout was reached.")
 
             llm_started = time.perf_counter()
             with get_tracer().start_as_current_span(
@@ -137,17 +137,17 @@ class AgentRunner:
 
             if not reply.tool_calls:
                 if reply.content is None or not reply.content.strip():
-                    raise RuntimeError("Das LLM hat eine leere Antwort geliefert.")
+                    raise RuntimeError("The LLM returned an empty response.")
                 if len(reply.content.encode("utf-8")) > 500_000:
                     raise RuntimeError(
-                        "Das Textergebnis ist zu groß für jobs.out; "
-                        "speichere es stattdessen unter outputs/."
+                        "The text result is too large for jobs.out; "
+                        "save it under outputs/ instead."
                     )
                 return AgentResult(text=reply.content, steps=step, usage=usage)
 
             for call in reply.tool_calls:
                 if time.monotonic() > deadline:
-                    raise TimeoutError("Das Job-Timeout wurde erreicht.")
+                    raise TimeoutError("The job timeout was reached.")
 
                 tool_started = time.perf_counter()
                 with get_tracer().start_as_current_span(
@@ -216,4 +216,4 @@ class AgentRunner:
                     }
                 )
 
-        raise RuntimeError(f"Das Agent-Limit von {max_steps} Schritten wurde erreicht.")
+        raise RuntimeError(f"The agent step limit of {max_steps} was reached.")

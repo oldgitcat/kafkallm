@@ -9,7 +9,7 @@ def test_invalid_job_result_preserves_payload_trace_id() -> None:
     worker.settings = replace(Settings.from_env(), worker_id="test-worker")
 
     result = worker._invalid_job_result(
-        {"trace_id": "payload-trace"}, "Ungültiger Job"
+        {"trace_id": "payload-trace"}, "Invalid job"
     )
 
     assert result.trace_id == "payload-trace"

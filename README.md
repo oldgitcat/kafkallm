@@ -1,199 +1,199 @@
 # kafkallm
 
-Eine kleine, containerisierte LLM-Jobverarbeitung mit **Redpanda für Jobs, Ergebnisse und Audit-Events**. Es gibt bewusst kein PostgreSQL und keinen Scheduler. Arize Phoenix dient optional als grafische Trace-Oberfläche, nicht als Job-Store.
+A small, containerized LLM job processor using **Redpanda for jobs, results, and audit events**. It intentionally has no PostgreSQL and no scheduler. Arize Phoenix is optional as a graphical trace viewer, not as a job store.
 
 ```text
-Producer/CLI → Redpanda jobs.in → isolierter Agent-Worker
+Producer/CLI → Redpanda jobs.in → isolated agent worker
                                       ├─→ Redpanda jobs.out
                                       ├─→ Redpanda agent.events
                                       ├─→ OpenTelemetry → Phoenix
-                                      └─→ optional RustFS für Dateien
+                                      └─→ optional RustFS for files
 ```
 
-## Enthalten
+## Included
 
-- Redpanda mit den Topics `jobs.in`, `jobs.out` und `agent.events`
-- Python-Worker mit manueller Kafka-Offset-Bestätigung
-- Verknüpfte Traces für Submit, Worker, Agent, LLM und Tool-Aufrufe
-- Lokale Arize-Phoenix-GUI mit persistentem SQLite-Volume
-- Agent-Harness mit Timeout, Schrittlimit und separatem Workspace pro Run
-- Tools zum Lesen, Schreiben und Auflisten von Workspace-Dateien
-- OpenAI-kompatibler LLM-Anschluss inklusive Tool-Calling
-- Echo-Provider für Tests ohne LLM und API-Key
-- Optionaler S3-kompatibler RustFS-Container für Ein- und Ausgabedateien
-- Redpanda Console und eine CLI zum Absenden und Lesen von Jobs
+- Redpanda with the topics `jobs.in`, `jobs.out`, and `agent.events`
+- Python worker with manual Kafka offset commits
+- Correlated traces for submit, worker, agent, LLM, and tool calls
+- Local Arize Phoenix UI with a persistent SQLite volume
+- Agent harness with timeout, step limit, and a separate workspace per run
+- Tools for reading, writing, and listing workspace files
+- OpenAI-compatible LLM integration with tool calling
+- Echo provider for tests without an LLM or API key
+- Optional S3-compatible RustFS container for input and output files
+- Redpanda Console and a CLI for submitting jobs and reading results
 
-## Schnellstart
+## Quick start
 
-Voraussetzungen: Docker und Docker Compose.
+Requirements: Docker and Docker Compose.
 
 ```bash
 cp .env.example .env
 docker compose up -d --build
 ```
 
-Der Standard-Worker verwendet `LLM_PROVIDER=echo`. Dadurch lässt sich die gesamte Verarbeitung ohne externen LLM-Dienst testen.
+The default worker uses `LLM_PROVIDER=echo`. This lets you test the entire pipeline without an external LLM service.
 
-Einen Job absenden:
+Submit a job:
 
 ```bash
-docker compose run --rm jobctl submit "Sage Hallo"
+docker compose run --rm jobctl submit "Say hello"
 ```
 
-Das Ergebnis lesen:
+Read results:
 
 ```bash
 docker compose run --rm jobctl results --from-beginning --idle-timeout 3
 ```
 
-Worker-Logs ansehen:
+View worker logs:
 
 ```bash
 docker compose logs -f agent-worker
 ```
 
-Die Redpanda Console läuft unter <http://localhost:8080>. Dort lassen sich Topics und einzelne Nachrichten ansehen. Die Phoenix-GUI läuft unter <http://localhost:6006>.
+Redpanda Console is available at <http://localhost:8080>, where you can inspect topics and individual messages. The Phoenix UI is available at <http://localhost:6006>.
 
-## Nachverfolgbarkeit und Phoenix
+## Traceability and Phoenix
 
-Jeder Job erhält eine `trace_id`. Sie wird über Kafka-Header weitergereicht und verbindet das Absenden, den Worker, den Agenten sowie alle LLM- und Tool-Aufrufe. Zusätzlich schreibt der Worker strukturierte Audit-Events nach `agent.events`:
+Every job receives a `trace_id`. It is propagated through Kafka headers and connects the submission, worker, agent, and all LLM and tool calls. The worker also writes structured audit events to `agent.events`:
 
-- `job.received` und `job.completed`
+- `job.received` and `job.completed`
 - `agent.completed`
 - `llm.completed`
 - `tool.completed`
-- `artifact.stored`
+- `artifact.stored` and `artifact.failed`
 
-Die Events enthalten Dauer, Status, Fehler, Tokenverbrauch und Beziehungen über `parent_event_id`. Audit-Nachrichten kannst du auch ohne Phoenix lesen:
+The events contain duration, status, errors, token usage, and relationships through `parent_event_id`. You can read audit messages without Phoenix:
 
 ```bash
 docker compose run --rm jobctl events --from-beginning --idle-timeout 3
 ```
 
-Phoenix zeigt dieselbe verteilte Ausführung als Span-Baum. Prompts, LLM-Antworten und Tool-Ein-/Ausgaben werden standardmäßig **nicht** erfasst. Wenn diese Inhalte lokal in Phoenix erscheinen dürfen, setze in `.env`:
+Phoenix displays the same distributed execution as a span tree. Prompts, LLM responses, and tool input/output are **not** captured by default. If this content may be stored locally in Phoenix, set the following in `.env`:
 
 ```dotenv
 PHOENIX_CAPTURE_CONTENT=true
 ```
 
-Anschließend Worker und CLI-Images neu starten beziehungsweise ausführen. Die Audit-Events enthalten auch mit dieser Einstellung nur Metadaten; Inhalte werden ausschließlich an Phoenix gesendet. Der Phoenix-Container speichert seine Daten in einem persistenten Volume. Der Jobablauf hängt nicht von Phoenix ab.
+Then recreate the worker and CLI images as needed. Audit events still contain only metadata with this setting; content is sent exclusively to Phoenix. The Phoenix container stores data in a persistent volume, and the job pipeline does not depend on Phoenix.
 
-`PHOENIX_ENABLED=false` deaktiviert den OTLP-Export aus Worker und CLI. Mit `PHOENIX_UI_PORT` und `OTLP_GRPC_PORT` lassen sich belegte Host-Ports ändern. Phoenix läuft im Compose-Setup ohne Authentifizierung und ist deshalb ausschließlich an `127.0.0.1` gebunden; für einen Netzwerk- oder Produktivbetrieb müssen Authentifizierung und TLS separat konfiguriert werden.
+`PHOENIX_ENABLED=false` disables OTLP export from the worker and CLI. `PHOENIX_UI_PORT` and `OTLP_GRPC_PORT` can be used to change occupied host ports. The Compose setup runs Phoenix without authentication and therefore binds it exclusively to `127.0.0.1`. Network or production deployments must configure authentication and TLS separately.
 
-## Echtes LLM verwenden
+## Using a real LLM
 
-In `.env` beispielsweise folgende Werte setzen:
+Set values such as the following in `.env`:
 
 ```dotenv
 LLM_PROVIDER=openai
-LLM_MODEL=dein-modell
-LLM_API_KEY=dein-api-key
-# Optional für Ollama, vLLM oder einen anderen OpenAI-kompatiblen Endpunkt:
+LLM_MODEL=your-model
+LLM_API_KEY=your-api-key
+# Optional for Ollama, vLLM, or another OpenAI-compatible endpoint:
 LLM_BASE_URL=
 ```
 
-Danach den Worker neu starten:
+Then recreate the worker:
 
 ```bash
 docker compose up -d --build --force-recreate agent-worker
 ```
 
-Bei einem lokalen OpenAI-kompatiblen Endpunkt ohne Authentifizierung kann `LLM_API_KEY` leer bleiben. Der Endpunkt muss aus dem Worker-Container erreichbar sein.
+For a local OpenAI-compatible endpoint without authentication, `LLM_API_KEY` may remain empty. The endpoint must be reachable from the worker container.
 
-Der Agent kann diese Tools verwenden:
+The agent can use these tools:
 
-| Tool | Zweck |
+| Tool | Purpose |
 |---|---|
-| `read_workspace_file` | UTF-8-Datei aus dem Workspace lesen |
-| `write_workspace_file` | Textdatei schreiben, Ergebnisse unter `outputs/` |
-| `list_workspace_files` | Vorhandene Workspace-Dateien auflisten |
+| `read_workspace_file` | Read a UTF-8 file from the workspace |
+| `write_workspace_file` | Write a text file; result files belong under `outputs/` |
+| `list_workspace_files` | List existing workspace files |
 
-Es gibt absichtlich kein Shell-Tool und keinen Host-Zugriff.
+There is intentionally no shell tool and no host access.
 
-## RustFS und Dateien aktivieren
+## Enabling RustFS and files
 
 ```bash
 docker compose --profile storage up -d --build
 ```
 
-- S3-API: <http://localhost:9000>
+- S3 API: <http://localhost:9000>
 - RustFS Console: <http://localhost:9001/rustfs/console/>
-- Lokaler Standard-Account: `rustfs`
-- Lokales Standard-Secret: `kafkallm-secret`
+- Local default account: `rustfs`
+- Local default secret: `kafkallm-secret`
 
-Diese Zugangsdaten sind nur für die lokale Entwicklung gedacht und sollten in `.env` geändert werden. Falls die Ports bereits belegt sind, können `RUSTFS_API_PORT` und `RUSTFS_CONSOLE_PORT` in `.env` angepasst werden.
+These credentials are for local development only and should be changed in `.env`. If the ports are already in use, adjust `RUSTFS_API_PORT` and `RUSTFS_CONSOLE_PORT` in `.env`.
 
-Dafür muss in `.env` ein S3-Endpunkt gesetzt sein, wie im Beispiel:
+The S3 endpoint must be configured in `.env`, for example:
 
 ```dotenv
 S3_ENDPOINT_URL=http://rustfs:9000
 ```
 
-Eingabedateien werden als S3-Referenz übergeben:
+Input files are provided as S3 references:
 
 ```bash
 docker compose run --rm jobctl submit \
-  "Lies die Eingabedatei und fasse sie zusammen" \
+  "Read the input file and summarize it" \
   --input-file jobs/example.txt
 ```
 
-Der Bucket muss die Datei bereits enthalten. Der Worker lädt sie nach `inputs/`. Vom Agenten unter `outputs/` erzeugte Dateien lädt der Harness automatisch nach RustFS hoch. Das Ergebnis in `jobs.out` enthält anschließend Bucket und Key.
+The bucket must already contain the file. The worker downloads it into `inputs/`. Files created by the agent under `outputs/` are uploaded to RustFS by the harness. The result in `jobs.out` then contains the bucket and key.
 
-Ein fehlender oder nicht erreichbarer Artefakt-Speicher macht einen ansonsten erfolgreichen Agentenlauf **nicht** mehr zu einem fehlgeschlagenen Job. Der Job bleibt `succeeded`, die Dateien fehlen jedoch und `artifact_error` beschreibt den Upload-Fehler. Uploads werden dreimal versucht und bereits teilweise hochgeladene Dateien bei einem endgültigen Fehler bereinigt.
+A missing or unreachable artifact store no longer turns an otherwise successful agent run into a failed job. The job remains `succeeded`, but the files are missing and `artifact_error` describes the upload failure. Uploads are attempted three times, and partially uploaded files are cleaned up after a final failure.
 
-## Jobformat
+## Job format
 
 ```json
 {
-  "job_id": "optional-vom-producer-gesetzt",
-  "run_id": "optional-vom-producer-gesetzt",
-  "trace_id": "wird-automatisch-ueber-openTelemetry-erzeugt",
+  "job_id": "optionally-set-by-producer",
+  "run_id": "optionally-set-by-producer",
+  "trace_id": "generated-automatically-via-opentelemetry",
   "type": "llm_task",
-  "instruction": "Analysiere die Eingabedaten",
-  "input": {" beliebig": "JSON-Daten" },
+  "instruction": "Analyze the input data",
+  "input": {" arbitrary": "JSON data" },
   "input_files": [],
   "timeout_seconds": 300,
   "max_steps": 6
 }
 ```
 
-`job_id` und `run_id` werden automatisch als UUIDs erzeugt. Nachrichten besitzen die `job_id` als Kafka-Key.
+`job_id` and `run_id` are generated automatically as UUIDs. Messages use `job_id` as the Kafka key.
 
-Ein Ergebnis enthält unter anderem:
+A result includes:
 
-- `status`: `succeeded` oder `failed`
-- `result` oder `error`
-- `artifacts`: hochgeladene Dateien
-- `artifact_error`: optionaler Fehler beim Speichern erzeugter Dateien; ändert den Jobstatus nicht
-- `trace_id`, `worker_id`, Zeitstempel, Schritte und Tokenverbrauch
+- `status`: `succeeded` or `failed`
+- `result` or `error`
+- `artifacts`: uploaded files
+- `artifact_error`: optional failure while storing generated files; does not change job status
+- `trace_id`, `worker_id`, timestamps, steps, and token usage
 
-## Mehrere Worker
+## Multiple workers
 
 ```bash
 docker compose up -d --scale agent-worker=2
 ```
 
-Die Worker verwenden gemeinsam die Consumer Group `agent-workers`. Jeder Worker verarbeitet jeweils einen Job. Die Topics werden standardmäßig mit drei Partitionen angelegt.
+Workers share the `agent-workers` consumer group. Each worker processes one job at a time. Topics are created with three partitions by default.
 
-## Betrieb und Garantien
+## Operations and guarantees
 
-- Der Worker wartet beim Start bis zu `KAFKA_STARTUP_TIMEOUT_SECONDS` (Standard: 300 Sekunden) mit exponentiellem Backoff auf Redpanda, statt sofort in eine Crash-Schleife zu laufen.
-- Redpanda, Console und RustFS besitzen Restart-Policies. Nach einem Rechner- oder Docker-Neustart startet der Stack dadurch selbstständig wieder.
-- Der Kafka-Offset wird erst bestätigt, nachdem das Ergebnis erfolgreich nach `jobs.out` geschrieben wurde.
-- Die Verarbeitung ist **at-least-once**. Nach einem Absturz kann ein Job erneut ausgeführt werden.
-- Audit-Events werden asynchron eingereiht. Ein Audit- oder Phoenix-Ausfall verändert weder Jobstatus noch Ergebnis.
-- Topics haben standardmäßig sieben Tage Retention, konfigurierbar über `KAFKA_TOPIC_RETENTION_MS`. Für längere Audits muss dieser Wert erhöht werden.
-- Phoenix ist nur ein optionaler Trace-Viewer; fehlgeschlagene OTLP-Exporte verändern kein Job-Ergebnis.
-- Der Worker läuft als Non-Root, mit Read-only-Root-Filesystem, ohne Linux-Capabilities und ohne Host-Mounts.
-- Das Compose-Setup ist für Entwicklung und Tests gedacht. Redpanda besitzt hier keine SASL/TLS-Konfiguration.
+- On startup, the worker waits up to `KAFKA_STARTUP_TIMEOUT_SECONDS` (default: 300 seconds) for Redpanda with exponential backoff instead of entering a crash loop.
+- Redpanda, Console, RustFS, and the worker have restart policies. The stack recovers automatically after a machine or Docker restart.
+- The Kafka offset is committed only after the result has been successfully written to `jobs.out`.
+- Processing is **at-least-once**. A job may run again after a crash.
+- Audit events are queued asynchronously. An audit or Phoenix failure changes neither job status nor result.
+- Topics have a default retention of seven days, configurable through `KAFKA_TOPIC_RETENTION_MS`. Increase it for longer audit retention.
+- Phoenix is only an optional trace viewer; failed OTLP exports do not change any job result.
+- The worker runs as non-root with a read-only root filesystem, no Linux capabilities, and no host mounts.
+- The Compose setup is intended for development and testing. Redpanda has no SASL/TLS configuration here.
 
-Stoppen ohne Daten-Volumes zu löschen:
+Stop without deleting data volumes:
 
 ```bash
 docker compose down
 ```
 
-## Lokale Tests
+## Local tests
 
 ```bash
 python3 -m venv .venv
@@ -201,4 +201,4 @@ python3 -m venv .venv
 .venv/bin/pytest
 ```
 
-Die Unit-Tests benötigen weder Docker noch Redpanda.
+The unit tests require neither Docker nor Redpanda.

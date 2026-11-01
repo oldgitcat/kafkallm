@@ -34,7 +34,7 @@ def ensure_topics(settings: Settings) -> None:
     for name, future in futures.items():
         try:
             future.result(timeout=10)
-            logger.info("Topic erstellt: %s", name)
+            logger.info("Created topic: %s", name)
         except KafkaException as exc:
             error = exc.args[0]
             if error.code() != KafkaError.TOPIC_ALREADY_EXISTS:
@@ -50,20 +50,20 @@ def wait_for_kafka(settings: Settings) -> None:
         try:
             _check_broker(settings)
             ensure_topics(settings)
-            logger.info("Redpanda ist erreichbar und die Topics sind bereit")
+            logger.info("Redpanda is reachable and topics are ready")
             return
         except (KafkaException, TimeoutError, OSError) as exc:
             last_error = exc
             remaining = max(0.0, deadline - time.monotonic())
             logger.warning(
-                "Redpanda noch nicht bereit (%s); nächster Versuch in %.1fs",
+                "Redpanda not ready yet (%s); retrying in %.1fs",
                 exc,
                 min(delay, remaining),
             )
         time.sleep(min(delay, max(0.0, deadline - time.monotonic())))
         delay = min(delay * 2, 10.0)
 
-    message = "Redpanda wurde innerhalb des Startup-Timeouts nicht erreichbar"
+    message = "Redpanda did not become available within the startup timeout"
     if last_error is not None:
         raise RuntimeError(message) from last_error
     raise RuntimeError(message)
@@ -83,7 +83,7 @@ class KafkaProducer:
     def _log_delivery_error(error: KafkaError | None, message: object) -> None:
         del message
         if error is not None:
-            logger.warning("Kafka-Zustellung fehlgeschlagen: %s", error)
+            logger.warning("Kafka delivery failed: %s", error)
 
     def send(
         self,
@@ -108,7 +108,7 @@ class KafkaProducer:
         )
         remaining = self.producer.flush(timeout=30)
         if remaining:
-            raise TimeoutError("Kafka-Nachricht konnte nicht bestätigt werden.")
+            raise TimeoutError("Kafka message could not be confirmed.")
         if errors:
             raise errors[0]
 

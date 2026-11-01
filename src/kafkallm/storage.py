@@ -18,9 +18,9 @@ logger = logging.getLogger(__name__)
 class S3Storage:
     def __init__(self, settings: Settings) -> None:
         if not settings.s3_endpoint_url:
-            raise ValueError("S3_ENDPOINT_URL ist nicht konfiguriert.")
+            raise ValueError("S3_ENDPOINT_URL is not configured.")
         if not settings.s3_access_key_id or not settings.s3_secret_access_key:
-            raise ValueError("S3-Zugangsdaten sind nicht vollständig konfiguriert.")
+            raise ValueError("S3 credentials are incomplete.")
 
         self.bucket = settings.s3_bucket
         self.client = boto3.client(
@@ -68,19 +68,21 @@ class S3Storage:
     ) -> list[FileRef]:
         paths = [path for path in sorted(outputs.rglob("*")) if path.is_file()]
         if len(paths) > 100:
-            raise RuntimeError("Es sind maximal 100 Ergebnisdateien pro Job erlaubt.")
+            raise RuntimeError("A job may produce at most 100 result files.")
 
         artifacts: list[FileRef] = []
         try:
             for path in paths:
                 if time.monotonic() > deadline:
-                    raise TimeoutError("Das Job-Timeout wurde beim Hochladen erreicht.")
+                    raise TimeoutError(
+                        "The job timeout was reached while uploading."
+                    )
                 relative = path.relative_to(outputs).as_posix()
                 key = f"{job_id}/{run_id}/{relative}"
                 for attempt in range(3):
                     if time.monotonic() > deadline:
                         raise TimeoutError(
-                            "Das Job-Timeout wurde beim Hochladen erreicht."
+                            "The job timeout was reached while uploading."
                         )
                     try:
                         self.client.upload_file(str(path), self.bucket, key)
@@ -104,5 +106,5 @@ class S3Storage:
                         },
                     )
                 except Exception:
-                    logger.exception("Bereinigung hochgeladener Artefakte fehlgeschlagen")
+                    logger.exception("Failed to clean up uploaded artifacts")
             raise

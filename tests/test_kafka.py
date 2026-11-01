@@ -9,5 +9,5 @@ from kafkallm.settings import Settings
 def test_wait_for_kafka_honors_disabled_startup_timeout() -> None:
     settings = replace(Settings.from_env(), kafka_startup_timeout_seconds=0)
 
-    with pytest.raises(RuntimeError, match="Startup-Timeouts"):
+    with pytest.raises(RuntimeError, match="startup timeout"):
         wait_for_kafka(settings)

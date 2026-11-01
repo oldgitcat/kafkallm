@@ -35,7 +35,7 @@ class Worker:
         self.settings = settings
         self.running = True
         logger.info(
-            "Warte bis zu %ss auf Redpanda unter %s",
+            "Waiting up to %ss for Redpanda at %s",
             settings.kafka_startup_timeout_seconds,
             settings.kafka_bootstrap_servers,
         )
@@ -62,7 +62,7 @@ class Worker:
 
     def stop(self, signum: int, frame: FrameType | None) -> None:
         del frame
-        logger.info("Signal %s empfangen; Worker wird beendet", signum)
+        logger.info("Received signal %s; shutting down worker", signum)
         self.running = False
 
     def _invalid_job_result(self, raw: object, error: str) -> JobResult:
@@ -97,7 +97,7 @@ class Worker:
             try:
                 value = message.value()
                 if value is None:
-                    raise ValueError("Leere Kafka-Nachrichten sind keine gültigen Jobs.")
+                    raise ValueError("Empty Kafka messages are not valid jobs.")
                 raw = json.loads(value.decode("utf-8"))
                 job = Job.model_validate(raw)
                 trace_id = job.trace_id or current_trace_id() or new_trace_id()
@@ -116,7 +116,7 @@ class Worker:
                         "max_steps": job.max_steps,
                     },
                 )
-                logger.info("Starte Job %s / Run %s", job.job_id, job.run_id)
+                logger.info("Starting job %s / run %s", job.job_id, job.run_id)
                 result = self.harness.process(job, job_audit=job_audit)
                 job_audit.emit(
                     "job.completed",
@@ -136,8 +136,8 @@ class Worker:
                 ValidationError,
                 ValueError,
             ) as exc:
-                logger.warning("Ungültige Job-Nachricht: %s", exc)
-                result = self._invalid_job_result(raw, f"Ungültiger Job: {exc}")
+                logger.warning("Invalid job message: %s", exc)
+                result = self._invalid_job_result(raw, f"Invalid job: {exc}")
 
             span.set_attribute("job.status", result.status)
             set_content(span, "output.value", result.result)
@@ -152,7 +152,7 @@ class Worker:
             )
             self.consumer.commit(message=message, asynchronous=False)
             logger.info(
-                "Beendet: Job %s / Run %s mit Status %s",
+                "Finished: job %s / run %s with status %s",
                 result.job_id,
                 result.run_id,
                 result.status,
@@ -163,7 +163,7 @@ class Worker:
         signal.signal(signal.SIGINT, self.stop)
         self.consumer.subscribe([self.settings.jobs_topic])
         logger.info(
-            "Worker %s wartet auf Jobs in %s",
+            "Worker %s is waiting for jobs in %s",
             self.settings.worker_id,
             self.settings.jobs_topic,
         )
@@ -180,4 +180,4 @@ class Worker:
         finally:
             self.consumer.close()
             self.producer.close()
-            logger.info("Worker beendet")
+            logger.info("Worker stopped")

@@ -26,7 +26,7 @@ from kafkallm.worker import Worker
 def _file_ref(value: str) -> FileRef:
     bucket, separator, key = value.partition("/")
     if not separator or not bucket or not key:
-        raise argparse.ArgumentTypeError("Dateireferenz muss die Form bucket/key haben.")
+        raise argparse.ArgumentTypeError("File reference must use the form bucket/key.")
     return FileRef(bucket=bucket, key=key)
 
 
@@ -37,36 +37,36 @@ def _add_consumer_arguments(parser: argparse.ArgumentParser) -> None:
         "--idle-timeout",
         type=float,
         default=0,
-        help="Nach dieser Anzahl Sekunden ohne Nachricht beenden; 0 = unbegrenzt",
+        help="Stop after this many seconds without a message; 0 = unlimited",
     )
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="kafkallm", description="LLM-Jobs über Redpanda verarbeiten"
+        prog="kafkallm", description="Process LLM jobs through Redpanda"
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    subparsers.add_parser("worker", help="Agent-Worker starten")
+    subparsers.add_parser("worker", help="Start the agent worker")
 
-    submit = subparsers.add_parser("submit", help="Job an jobs.in senden")
-    submit.add_argument("instruction", help="Aufgabe für den Agenten")
-    submit.add_argument("--input", default="{}", help="JSON-Objekt mit Eingabedaten")
+    submit = subparsers.add_parser("submit", help="Send a job to jobs.in")
+    submit.add_argument("instruction", help="Task for the agent")
+    submit.add_argument("--input", default="{}", help="JSON object with input data")
     submit.add_argument(
         "--input-file",
         action="append",
         default=[],
         type=_file_ref,
-        help="S3-Referenz im Format bucket/key; mehrfach verwendbar",
+        help="S3 reference in bucket/key form; may be repeated",
     )
     submit.add_argument("--job-id")
     submit.add_argument("--run-id")
     submit.add_argument("--timeout", type=int, default=300)
     submit.add_argument("--max-steps", type=int, default=6)
 
-    results = subparsers.add_parser("results", help="Ergebnisse aus jobs.out lesen")
+    results = subparsers.add_parser("results", help="Read results from jobs.out")
     _add_consumer_arguments(results)
-    events = subparsers.add_parser("events", help="Audit-Events aus agent.events lesen")
+    events = subparsers.add_parser("events", help="Read audit events from agent.events")
     _add_consumer_arguments(events)
     return parser
 
@@ -74,7 +74,7 @@ def build_parser() -> argparse.ArgumentParser:
 def submit(settings: Settings, args: argparse.Namespace) -> None:
     input_data = json.loads(args.input)
     if not isinstance(input_data, dict):
-        raise ValueError("--input muss ein JSON-Objekt sein.")
+        raise ValueError("--input must be a JSON object.")
     ensure_topics(settings)
     producer = KafkaProducer(settings)
     try:
@@ -167,7 +167,7 @@ def main() -> None:
         elif args.command == "events":
             consume(settings, args, settings.events_topic)
     except (KafkaException, RuntimeError, ValueError, json.JSONDecodeError) as exc:
-        parser.exit(1, f"Fehler: {exc}\n")
+        parser.exit(1, f"Error: {exc}\n")
     finally:
         shutdown_telemetry()
 

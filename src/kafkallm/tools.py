@@ -18,30 +18,30 @@ class Workspace:
     def resolve(self, relative_path: str) -> Path:
         candidate = Path(relative_path)
         if candidate.is_absolute():
-            raise ToolError("Nur relative Workspace-Pfade sind erlaubt.")
+            raise ToolError("Only relative workspace paths are allowed.")
 
         resolved = (self.root / candidate).resolve()
         try:
             resolved.relative_to(self.root)
         except ValueError as exc:
-            raise ToolError("Der Pfad verlässt den Workspace.") from exc
+            raise ToolError("The path escapes the workspace.") from exc
         return resolved
 
     def read(self, relative_path: str) -> str:
         path = self.resolve(relative_path)
         if not path.is_file():
-            raise ToolError(f"Datei nicht gefunden: {relative_path}")
+            raise ToolError(f"File not found: {relative_path}")
         if path.stat().st_size > 200_000:
-            raise ToolError("Die Datei ist größer als das Leselimit von 200.000 Bytes.")
+            raise ToolError("The file exceeds the 200,000-byte read limit.")
         return path.read_text(encoding="utf-8")
 
     def write(self, relative_path: str, content: str) -> dict[str, Any]:
         path = self.resolve(relative_path)
         if path == self.root:
-            raise ToolError("Der Workspace selbst ist keine Datei.")
+            raise ToolError("The workspace root is not a file.")
         encoded = content.encode("utf-8")
         if len(encoded) > 1_000_000:
-            raise ToolError("Die Datei überschreitet das Schreiblimit von 1 MB.")
+            raise ToolError("The file exceeds the 1 MB write limit.")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(encoded)
         return {"path": path.relative_to(self.root).as_posix(), "bytes": len(encoded)}
@@ -49,7 +49,7 @@ class Workspace:
     def list_files(self, relative_path: str = ".") -> list[str]:
         path = self.resolve(relative_path)
         if not path.is_dir():
-            raise ToolError(f"Verzeichnis nicht gefunden: {relative_path}")
+            raise ToolError(f"Directory not found: {relative_path}")
         files = [
             item.relative_to(self.root).as_posix()
             for item in path.rglob("*")
@@ -83,11 +83,11 @@ class ToolRegistry:
     @property
     def specifications(self) -> list[dict[str, Any]]:
         descriptions = {
-            "read_workspace_file": "Liest eine UTF-8-Textdatei aus dem Job-Workspace.",
+            "read_workspace_file": "Read a UTF-8 text file from the job workspace.",
             "write_workspace_file": (
-                "Schreibt eine Textdatei. Ergebnisdateien gehören in outputs/."
+                "Write a text file. Result files belong under outputs/."
             ),
-            "list_workspace_files": "Listet Dateien im Job-Workspace auf.",
+            "list_workspace_files": "List files in the job workspace.",
         }
         return [
             {
@@ -103,12 +103,12 @@ class ToolRegistry:
 
     def execute(self, name: str, arguments_json: str) -> dict[str, Any]:
         if name not in self._args:
-            raise ToolError(f"Unbekanntes Tool: {name}")
+            raise ToolError(f"Unknown tool: {name}")
         try:
             arguments = json.loads(arguments_json)
             args = self._args[name].model_validate(arguments)
         except (json.JSONDecodeError, ValidationError) as exc:
-            raise ToolError(f"Ungültige Tool-Argumente: {exc}") from exc
+            raise ToolError(f"Invalid tool arguments: {exc}") from exc
 
         if name == "read_workspace_file":
             return {"content": self.workspace.read(args.path)}

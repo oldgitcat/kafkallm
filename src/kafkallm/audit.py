@@ -71,7 +71,7 @@ class JobAudit:
             )
         except Exception:
             logger.exception(
-                "Audit-Event %s für Job %s konnte nicht eingereiht werden",
+                "Could not enqueue audit event %s for job %s",
                 event.type,
                 self.job_id,
             )

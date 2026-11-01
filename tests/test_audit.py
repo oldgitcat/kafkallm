@@ -27,7 +27,7 @@ def test_audit_events_keep_trace_and_parent_relationship() -> None:
         agent_name="test-agent",
         events_topic="agent.events",
     )
-    job = Job(instruction="Hallo", trace_id="trace-123")
+    job = Job(instruction="Hello", trace_id="trace-123")
     audit = AuditLogger(settings, producer).for_job(job)
 
     llm_event_id = audit.emit(
@@ -39,7 +39,7 @@ def test_audit_events_keep_trace_and_parent_relationship() -> None:
         parent_event_id=llm_event_id,
         duration_ms=12.5,
         attributes={"tool": "example"},
-        error="Fehler",
+        error="Error",
     )
 
     job_event_id = audit.emit("job.completed", "succeeded")
@@ -54,7 +54,7 @@ def test_audit_events_keep_trace_and_parent_relationship() -> None:
     assert tool_event.parent_event_id == llm_event_id
     assert tool_event.status == "failed"
     assert tool_event.duration_ms == 12.5
-    assert tool_event.error == "Fehler"
+    assert tool_event.error == "Error"
     assert producer.messages[1][0] == "agent.events"
     assert producer.messages[1][1] == job.job_id
     assert job_event.event_id == job_event_id
@@ -64,7 +64,7 @@ def test_audit_events_keep_trace_and_parent_relationship() -> None:
 def test_audit_failure_does_not_raise() -> None:
     settings = replace(Settings.from_env(), agent_name="test-agent")
     audit = AuditLogger(settings, FailingProducer()).for_job(
-        Job(instruction="Hallo", trace_id="trace-123")
+        Job(instruction="Hello", trace_id="trace-123")
     )
 
     assert audit.emit("job.received") is None

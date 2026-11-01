@@ -69,9 +69,9 @@ class EchoLLM:
 class OpenAICompatibleLLM:
     def __init__(self, model: str, api_key: str, base_url: str = "") -> None:
         if not model:
-            raise ValueError("LLM_MODEL muss für den OpenAI-Provider gesetzt sein.")
+            raise ValueError("LLM_MODEL must be set for the OpenAI provider.")
         if not api_key:
-            raise ValueError("LLM_API_KEY muss für den OpenAI-Provider gesetzt sein.")
+            raise ValueError("LLM_API_KEY must be set for the OpenAI provider.")
         options: dict[str, Any] = {"api_key": api_key, "max_retries": 0}
         if base_url:
             options["base_url"] = base_url

@@ -82,7 +82,7 @@ class Harness:
                         for index, reference in enumerate(job.input_files):
                             if time.monotonic() > deadline:
                                 raise TimeoutError(
-                                    "Das Job-Timeout wurde beim Herunterladen erreicht."
+                                    "The job timeout was reached while downloading."
                                 )
                             filename = Path(reference.key).name or f"input-{index}"
                             storage.download(
@@ -113,8 +113,8 @@ class Harness:
                     if output_files:
                         if not self.settings.storage_configured:
                             artifact_error = (
-                                f"{len(output_files)} Ergebnisdatei(en) wurden nicht "
-                                "gespeichert, weil kein S3-Endpunkt konfiguriert ist."
+                                f"{len(output_files)} result file(s) were not stored "
+                                "because no S3 endpoint is configured."
                             )
                         else:
                             try:
@@ -126,7 +126,7 @@ class Harness:
                                 )
                             except Exception as exc:
                                 logger.exception(
-                                    "Artefakt-Upload für Job %s fehlgeschlagen",
+                                    "Artifact upload failed for job %s",
                                     job.job_id,
                                 )
                                 artifact_error = str(exc)[:4000]
@@ -188,7 +188,7 @@ class Harness:
             except Exception as exc:
                 set_error(span, exc)
                 logger.exception(
-                    "Job %s / Run %s fehlgeschlagen", job.job_id, job.run_id
+                    "Job %s / run %s failed", job.job_id, job.run_id
                 )
                 if job_audit:
                     job_audit.emit(

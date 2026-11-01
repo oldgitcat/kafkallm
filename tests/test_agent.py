@@ -27,14 +27,14 @@ class ToolUsingLLM:
                         id="call-1",
                         name="write_workspace_file",
                         arguments_json=json.dumps(
-                            {"path": "outputs/result.txt", "content": "Ergebnis"}
+                            {"path": "outputs/result.txt", "content": "Result"}
                         ),
                     )
                 ],
                 usage={"total_tokens": 3},
             )
         assert messages[-1]["role"] == "tool"
-        return LLMReply(content="Datei wurde erstellt.", usage={"total_tokens": 2})
+        return LLMReply(content="File created.", usage={"total_tokens": 2})
 
 
 def test_agent_executes_tool_and_returns_result(tmp_path: Path) -> None:
@@ -42,13 +42,13 @@ def test_agent_executes_tool_and_returns_result(tmp_path: Path) -> None:
     runner = AgentRunner(ToolUsingLLM(), ToolRegistry(workspace))
 
     result = runner.run(
-        instruction="Speichere das Ergebnis",
+        instruction="Save the result",
         job_input={},
         deadline=time.monotonic() + 10,
         max_steps=3,
     )
 
-    assert result.text == "Datei wurde erstellt."
+    assert result.text == "File created."
     assert result.steps == 2
     assert result.usage == {"total_tokens": 5}
-    assert workspace.read("outputs/result.txt") == "Ergebnis"
+    assert workspace.read("outputs/result.txt") == "Result"
