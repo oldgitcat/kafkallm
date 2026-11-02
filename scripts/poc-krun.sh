@@ -8,7 +8,7 @@
 # Usage: scripts/poc-krun.sh [image]
 set -eu
 
-IMAGE="${1:-nousresearch/hermes-agent@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d}"
+IMAGE="${1:-docker.io/nousresearch/hermes-agent@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d}"
 RAM_MIB="${KRAM_MIB:-2048}"
 CPUS="${KCPUS:-2}"
 
