@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import logging
-import tempfile
+import shutil
 import time
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 from hermes.agent import AgentResult, AgentRunner
 from hermes.audit import AuditLogger, JobAudit
+from hermes.hermes_runtime import HermesRunner
 from hermes.llm import LLM
 from hermes.models import FileRef, Job, JobResult, utc_now
 from hermes.settings import Settings
@@ -24,17 +27,48 @@ from hermes.tools import ToolRegistry, Workspace
 logger = logging.getLogger(__name__)
 
 
+@contextmanager
+def _job_workspace(root: Path, job: Job) -> Iterator[Path]:
+    workspace = root / f"{job.job_id}-{job.run_id}"
+    workspace.mkdir(parents=True, exist_ok=True)
+    try:
+        yield workspace
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
 class Harness:
     def __init__(
         self,
         settings: Settings,
-        llm: LLM,
+        llm: LLM | None,
         audit: AuditLogger | None = None,
     ) -> None:
         self.settings = settings
         self.llm = llm
         self.audit = audit
+        if settings.agent_runtime not in {"hermes", "local"}:
+            raise ValueError(
+                f"Unknown AGENT_RUNTIME: {settings.agent_runtime}"
+            )
+        self.hermes = (
+            HermesRunner(settings)
+            if settings.agent_runtime == "hermes"
+            else None
+        )
         self._storage: S3Storage | None = None
+
+    def wait_ready(self) -> None:
+        if self.hermes is not None:
+            self.hermes.wait_ready()
+
+    def cancel(self) -> None:
+        if self.hermes is not None:
+            self.hermes.cancel_active()
+
+    def close(self) -> None:
+        if self.hermes is not None:
+            self.hermes.close()
 
     def _get_storage(self) -> S3Storage:
         if self._storage is None:
@@ -60,6 +94,7 @@ class Harness:
             attributes={
                 "openinference.span.kind": "AGENT",
                 "agent.name": self.settings.agent_name,
+                "agent.runtime": self.settings.agent_runtime,
                 "job.id": job.job_id,
                 "job.run_id": job.run_id,
                 "hermes.trace_id": trace_id,
@@ -68,14 +103,11 @@ class Harness:
         ) as span:
             set_content(span, "input.value", job.instruction)
             try:
-                with tempfile.TemporaryDirectory(
-                    prefix=f"{job.run_id}-", dir=workspace_root
-                ) as temporary_directory:
-                    root = Path(temporary_directory)
+                with _job_workspace(workspace_root, job) as root:
                     inputs = root / "inputs"
                     outputs = root / "outputs"
-                    inputs.mkdir()
-                    outputs.mkdir()
+                    inputs.mkdir(exist_ok=True)
+                    outputs.mkdir(exist_ok=True)
 
                     if job.input_files:
                         storage = self._get_storage()
@@ -89,19 +121,38 @@ class Harness:
                                 reference, inputs / f"{index:02d}-{filename}"
                             )
 
-                    agent = AgentRunner(
-                        llm=self.llm,
-                        tools=ToolRegistry(Workspace(root)),
-                        audit=job_audit,
-                        provider_name=self.settings.llm_provider,
-                        model_name=self.settings.llm_model or self.settings.llm_provider,
+                    max_steps = min(
+                        job.max_steps, self.settings.max_agent_steps
                     )
-                    agent_result: AgentResult = agent.run(
-                        instruction=job.instruction,
-                        job_input=job.input,
-                        deadline=deadline,
-                        max_steps=min(job.max_steps, self.settings.max_agent_steps),
-                    )
+                    if self.hermes is not None:
+                        agent_result: AgentResult = self.hermes.run(
+                            job=job,
+                            workspace=root,
+                            deadline=deadline,
+                            max_steps=max_steps,
+                            audit=job_audit,
+                        )
+                    else:
+                        if self.llm is None:
+                            raise RuntimeError(
+                                "AGENT_RUNTIME=local requires an LLM."
+                            )
+                        agent = AgentRunner(
+                            llm=self.llm,
+                            tools=ToolRegistry(Workspace(root)),
+                            audit=job_audit,
+                            provider_name=self.settings.llm_provider,
+                            model_name=(
+                                self.settings.llm_model
+                                or self.settings.llm_provider
+                            ),
+                        )
+                        agent_result = agent.run(
+                            instruction=job.instruction,
+                            job_input=job.input,
+                            deadline=deadline,
+                            max_steps=max_steps,
+                        )
                     steps = agent_result.steps
                     usage = agent_result.usage
 

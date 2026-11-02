@@ -35,6 +35,12 @@ class Settings:
     llm_model: str
     llm_api_key: str
     llm_base_url: str
+    agent_runtime: str
+    hermes_api_url: str
+    hermes_api_key: str
+    hermes_model: str
+    hermes_provider: str
+    hermes_startup_timeout_seconds: int
     s3_endpoint_url: str
     s3_region: str
     s3_bucket: str
@@ -71,6 +77,16 @@ class Settings:
             llm_model=os.getenv("LLM_MODEL", ""),
             llm_api_key=os.getenv("LLM_API_KEY", ""),
             llm_base_url=os.getenv("LLM_BASE_URL", ""),
+            agent_runtime=os.getenv("AGENT_RUNTIME", "local").lower(),
+            hermes_api_url=os.getenv(
+                "HERMES_API_URL", "http://localhost:8642"
+            ).rstrip("/"),
+            hermes_api_key=os.getenv("HERMES_API_KEY", ""),
+            hermes_model=os.getenv("HERMES_MODEL", ""),
+            hermes_provider=os.getenv("HERMES_PROVIDER", ""),
+            hermes_startup_timeout_seconds=_int_env(
+                "HERMES_STARTUP_TIMEOUT_SECONDS", 300
+            ),
             s3_endpoint_url=os.getenv("S3_ENDPOINT_URL", ""),
             s3_region=os.getenv("S3_REGION", "local"),
             s3_bucket=os.getenv("S3_BUCKET", "jobs"),

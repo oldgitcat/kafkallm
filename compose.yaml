@@ -9,6 +9,12 @@ x-app-environment: &app-environment
   KAFKA_TOPIC_PARTITIONS: ${KAFKA_TOPIC_PARTITIONS:-3}
   KAFKA_TOPIC_RETENTION_MS: ${KAFKA_TOPIC_RETENTION_MS:-604800000}
   KAFKA_STARTUP_TIMEOUT_SECONDS: ${KAFKA_STARTUP_TIMEOUT_SECONDS:-300}
+  AGENT_RUNTIME: ${AGENT_RUNTIME:-hermes}
+  HERMES_API_URL: ${HERMES_API_URL:-http://hermes-agent:8642}
+  HERMES_API_KEY: ${HERMES_API_KEY:-change-me-local-dev}
+  HERMES_MODEL: ${HERMES_MODEL:-}
+  HERMES_PROVIDER: ${HERMES_PROVIDER:-}
+  HERMES_STARTUP_TIMEOUT_SECONDS: ${HERMES_STARTUP_TIMEOUT_SECONDS:-300}
   LLM_PROVIDER: ${LLM_PROVIDER:-echo}
   LLM_MODEL: ${LLM_MODEL:-}
   LLM_API_KEY: ${LLM_API_KEY:-}
@@ -79,6 +85,55 @@ services:
       - phoenix-data:/mnt/data
     restart: unless-stopped
 
+  workspace-init:
+    image: busybox:1.37
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        mkdir -p /workspace
+        if [ "$(stat -c '%u:%g' /workspace)" = "10001:10001" ]; then
+          exit 0
+        fi
+        for attempt in 1 2 3 4 5; do
+          chown -R 10001:10001 /workspace && exit 0
+          sleep 1
+        done
+        exit 1
+    volumes:
+      - agent-workspace:/workspace
+    restart: "no"
+
+  hermes-agent:
+    image: ${HERMES_IMAGE:-nousresearch/hermes-agent@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d}
+    command: ["gateway", "run"]
+    environment:
+      API_SERVER_ENABLED: "true"
+      API_SERVER_HOST: 0.0.0.0
+      API_SERVER_KEY: ${HERMES_API_KEY:-change-me-local-dev}
+      TERMINAL_CWD: /workspace
+      HERMES_WRITE_SAFE_ROOT: /workspace:/opt/data
+      HERMES_UID: "10001"
+      HERMES_GID: "10001"
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - hermes-data:/opt/data
+      - agent-workspace:/workspace
+    depends_on:
+      workspace-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8642/health >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    restart: unless-stopped
+    stop_grace_period: 30s
+
   agent-worker:
     build: .
     environment: *app-environment
@@ -87,6 +142,8 @@ services:
     depends_on:
       redpanda:
         condition: service_healthy
+      workspace-init:
+        condition: service_completed_successfully
     restart: unless-stopped
     read_only: true
     tmpfs:
@@ -133,3 +190,4 @@ volumes:
   agent-workspace:
   rustfs-data:
   phoenix-data:
+  hermes-data:

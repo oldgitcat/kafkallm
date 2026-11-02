@@ -42,7 +42,9 @@ class Worker:
         wait_for_kafka(settings)
         self.producer = KafkaProducer(settings)
         self.audit = AuditLogger(settings, self.producer)
-        self.harness = Harness(settings, build_llm(settings), audit=self.audit)
+        llm = build_llm(settings) if settings.agent_runtime == "local" else None
+        self.harness = Harness(settings, llm, audit=self.audit)
+        self.harness.wait_ready()
         self.consumer = Consumer(
             {
                 "bootstrap.servers": settings.kafka_bootstrap_servers,
@@ -64,6 +66,7 @@ class Worker:
         del frame
         logger.info("Received signal %s; shutting down worker", signum)
         self.running = False
+        self.harness.cancel()
 
     def _invalid_job_result(self, raw: object, error: str) -> JobResult:
         result = JobResult.failure(error, self.settings.worker_id)
@@ -180,4 +183,5 @@ class Worker:
         finally:
             self.consumer.close()
             self.producer.close()
+            self.harness.close()
             logger.info("Worker stopped")

@@ -3,6 +3,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from hermes.agent import AgentResult
 from hermes.harness import Harness
 from hermes.llm import EchoLLM, LLMReply, ToolCall
 from hermes.models import Job
@@ -42,6 +43,13 @@ class FailingStorage:
         raise RuntimeError("Upload failed")
 
 
+class FakeHermesRunner:
+    def run(self, **kwargs: Any) -> AgentResult:
+        assert "job" in kwargs
+        assert "workspace" in kwargs
+        return AgentResult(text="Hermes result", steps=0, usage={"total_tokens": 2})
+
+
 def test_harness_processes_echo_job(tmp_path: Path) -> None:
     settings = replace(
         Settings.from_env(),
@@ -59,6 +67,25 @@ def test_harness_processes_echo_job(tmp_path: Path) -> None:
     assert result.result is not None
     assert "Hello" in result.result
     assert list(tmp_path.iterdir()) == []
+
+
+def test_harness_uses_hermes_runtime(tmp_path: Path) -> None:
+    settings = replace(
+        Settings.from_env(),
+        worker_id="test-worker",
+        workspace_root=str(tmp_path),
+        agent_runtime="hermes",
+        hermes_api_key="test-key",
+        s3_endpoint_url="",
+    )
+    harness = Harness(settings, None)
+    harness.hermes = FakeHermesRunner()
+
+    result = harness.process(Job(instruction="Run with Hermes"))
+
+    assert result.status == "succeeded"
+    assert result.result == "Hermes result"
+    assert result.usage == {"total_tokens": 2}
 
 
 def test_missing_storage_does_not_fail_successful_agent(tmp_path: Path) -> None:

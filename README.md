@@ -1,40 +1,77 @@
 # Hermes
 
-Hermes is a small, containerized LLM job processor using **Redpanda for jobs, results, and audit events**. It intentionally has no PostgreSQL and no scheduler. Arize Phoenix is optional as a graphical trace viewer, not as a job store.
-
-> **Rename note:** This branch renames the application from `kafkallm` to Hermes. Kafka topic names remain unchanged. The Compose project, Python package, CLI command, and default Phoenix project are now Hermes, so Docker creates separate `hermes_*` volumes. Existing `kafkallm` containers and volumes are left untouched and must be migrated separately if needed.
+Hermes is a small Kafka/Redpanda job queue where every job is executed by an isolated
+[Hermes Agent](https://github.com/NousResearch/hermes-agent) runtime. Redpanda carries jobs,
+results, and audit events. There is no PostgreSQL and no scheduler.
 
 ```text
-Producer/CLI → Redpanda jobs.in → isolated agent worker
-                                      ├─→ Redpanda jobs.out
-                                      ├─→ Redpanda agent.events
-                                      ├─→ OpenTelemetry → Phoenix
-                                      └─→ optional RustFS for files
+Producer/CLI ──→ Redpanda jobs.in ──→ Hermes job worker
+                                         │
+                                         │ POST /v1/runs
+                                         ▼
+                                  Hermes Agent container
+                                  ├─ agent loop and tools
+                                  └─ shared job workspace
+
+Hermes job worker ──→ Redpanda jobs.out
+                  ├─→ Redpanda agent.events
+                  ├─→ OpenTelemetry → Phoenix
+                  └─→ optional RustFS for result files
 ```
+
+> **Rename note:** This branch renames the application from `kafkallm` to Hermes. Kafka topic
+> names remain unchanged. The Compose project, Python package, CLI command, and default Phoenix
+> project are now Hermes, so Docker creates separate `hermes_*` volumes. Existing `kafkallm`
+> containers and volumes are left untouched.
 
 ## Included
 
-- Redpanda with the topics `jobs.in`, `jobs.out`, and `agent.events`
-- Python worker with manual Kafka offset commits
-- Correlated traces for submit, worker, agent, LLM, and tool calls
-- Local Arize Phoenix UI with a persistent SQLite volume
-- Agent harness with timeout, step limit, and a separate workspace per run
-- Tools for reading, writing, and listing workspace files
-- OpenAI-compatible LLM integration with tool calling
-- Echo provider for tests without an LLM or API key
-- Optional S3-compatible RustFS container for input and output files
+- Hermes Agent running as its own container with its official HTTP API server
+- Redpanda topics `jobs.in`, `jobs.out`, and `agent.events`
+- Kafka worker with manual offset commits and a bounded startup wait
+- Shared workspace between the Kafka worker and Hermes Agent
+- Correlated traces for submission, worker, agent, Hermes API run, LLM, and local tool calls
+- Structured Kafka audit events
+- Arize Phoenix UI with a persistent SQLite volume
+- Optional S3-compatible RustFS container for input files and result artifacts
+- OpenAI-compatible local fallback runtime for tests without provider credentials
 - Redpanda Console and a CLI for submitting jobs and reading results
+
+## Requirements
+
+- Docker and Docker Compose
+- A model provider configured for Hermes Agent, either through per-run
+  `HERMES_PROVIDER` / `HERMES_MODEL` settings plus provider credentials, or through a configured
+  Hermes profile in its data volume
+
+The official Hermes Agent image is large because it includes the complete Hermes runtime.
 
 ## Quick start
 
-Requirements: Docker and Docker Compose.
-
 ```bash
 cp .env.example .env
-docker compose up -d --build
 ```
 
-The default worker uses `LLM_PROVIDER=echo`. This lets you test the entire pipeline without an external LLM service.
+Configure a Hermes provider. For example:
+
+```dotenv
+AGENT_RUNTIME=hermes
+HERMES_API_KEY=change-me-local-dev
+HERMES_PROVIDER=openrouter
+HERMES_MODEL=anthropic/claude-sonnet-4.6
+OPENROUTER_API_KEY=your-openrouter-key
+```
+
+OpenAI and Anthropic credentials are passed through as well: use `HERMES_PROVIDER=openai` with
+`OPENAI_API_KEY`, or `HERMES_PROVIDER=anthropic` with `ANTHROPIC_API_KEY`. If no provider is
+configured, Hermes falls back to its own profile settings in the `hermes-data` volume; without
+either, jobs fail with Hermes' "not connected to any AI provider" message.
+
+Then start the stack:
+
+```bash
+docker compose --profile storage up -d --build
+```
 
 Submit a job:
 
@@ -45,93 +82,160 @@ docker compose run --rm jobctl submit "Say hello"
 Read results:
 
 ```bash
-docker compose run --rm jobctl results --from-beginning --idle-timeout 3
+docker compose run --rm jobctl results --from-beginning --idle-timeout 5
 ```
 
-View worker logs:
+Read audit events:
+
+```bash
+docker compose run --rm jobctl events --from-beginning --idle-timeout 5
+```
+
+Worker logs:
 
 ```bash
 docker compose logs -f agent-worker
 ```
 
-Redpanda Console is available at <http://localhost:8080>, where you can inspect topics and individual messages. The Phoenix UI is available at <http://localhost:6006>.
+Hermes Agent logs:
+
+```bash
+docker compose logs -f hermes-agent
+```
+
+Redpanda Console is available at <http://localhost:8080>. The Phoenix UI runs at
+<http://localhost:6006>.
+
+## Runtime modes
+
+`AGENT_RUNTIME` selects the execution engine:
+
+| Value | Behavior |
+|---|---|
+| `hermes` | The worker submits each job to the Hermes Agent `/v1/runs` API. This is the production path. |
+| `local` | The worker uses the built-in Python harness and `LLM_PROVIDER`. Intended for tests and debugging. |
+
+The Hermes API is internal to the Compose network and is not published on a host port.
+`HERMES_API_KEY` authenticates the worker against it. Change the default before exposing the
+stack beyond a trusted local machine.
+
+Compose always starts the Hermes Agent container. In `local` mode it is unused; to avoid the
+extra container, start only the services you need:
+
+```bash
+docker compose up -d redpanda agent-worker
+```
+
+If you prefer to configure Hermes interactively instead of passing provider/model per request,
+run its setup inside the persistent Hermes data volume:
+
+```bash
+docker compose exec --user 10001 hermes-agent hermes model
+```
+
+The picker is interactive and stores the choice in the persistent `hermes-data` volume.
+
+## How jobs are executed
+
+1. The producer writes a JSON job to `jobs.in`.
+2. The worker validates it and prepares a unique directory under the shared `/workspace`.
+3. Referenced input files are downloaded from RustFS into `inputs/`.
+4. The worker submits a Hermes run with an idempotency key derived from `run_id`.
+5. Hermes executes the instruction with its own tools and writes result files under `outputs/`.
+6. The worker polls the Hermes run, publishes the final answer to `jobs.out`, uploads artifacts,
+   and commits the Kafka offset.
+7. Audit events are written to `agent.events`.
+
+Hermes has its own broad tool registry and agent loop. The Kafka worker does not reimplement
+the LLM loop. Hermes admits up to ten concurrent runs by default; when that limit is reached it
+returns HTTP 429 and the worker retries with backoff until the job deadline.
+
+The worker does not copy individual Hermes tool calls into `agent.events`; it publishes
+job-level and run-level events only. Full tool progress remains available through Hermes' run
+event stream (`GET /v1/runs/{run_id}/events`), its session store, and the agent container logs.
+
+Unattended jobs cannot answer interactive approval prompts. If a run enters
+`waiting_for_approval`, the worker stops it and fails the job with an explicit error. For trusted
+workloads, set the persistent approval policy in the Hermes profile instead:
+
+```bash
+docker compose exec --user 10001 hermes-agent hermes config set approvals.mode off
+```
+
+Use `manual` (the default) or `smart` when commands must still be reviewed.
 
 ## Traceability and Phoenix
 
-Every job receives a `trace_id`. It is propagated through Kafka headers and connects the submission, worker, agent, and all LLM and tool calls. The worker also writes structured audit events to `agent.events`:
+Every job receives a `trace_id`. It is propagated through Kafka headers and connects job
+submission, worker processing, the agent span, and the Hermes API run.
+
+The worker writes these audit events to `agent.events`:
 
 - `job.received` and `job.completed`
 - `agent.completed`
-- `llm.completed`
-- `tool.completed`
+- `hermes.started` and `hermes.completed`
 - `artifact.stored` and `artifact.failed`
+- `llm.completed` and `tool.completed` in local runtime mode
 
-The events contain duration, status, errors, token usage, and relationships through `parent_event_id`. You can read audit messages without Phoenix:
-
-```bash
-docker compose run --rm jobctl events --from-beginning --idle-timeout 3
-```
-
-Phoenix displays the same distributed execution as a span tree. Prompts, LLM responses, and tool input/output are **not** captured by default. If this content may be stored locally in Phoenix, set the following in `.env`:
+Phoenix displays the distributed trace as a span tree. Prompts, LLM responses, and tool
+input/output are **not** captured by default. If this content may be stored locally in Phoenix,
+set:
 
 ```dotenv
 PHOENIX_CAPTURE_CONTENT=true
 ```
 
-Then recreate the worker and CLI images as needed. Audit events still contain only metadata with this setting; content is sent exclusively to Phoenix. The Phoenix container stores data in a persistent volume, and the job pipeline does not depend on Phoenix.
+Phoenix is optional and does not affect job success. Its ports are bound to `127.0.0.1`.
+`PHOENIX_ENABLED=false` disables OTLP export.
 
-`PHOENIX_ENABLED=false` disables OTLP export from the worker and CLI. `PHOENIX_UI_PORT` and `OTLP_GRPC_PORT` can be used to change occupied host ports. The Compose setup runs Phoenix without authentication and therefore binds it exclusively to `127.0.0.1`. Network or production deployments must configure authentication and TLS separately.
+## Hermes workspace and artifacts
 
-## Using a real LLM
+The `agent-workspace` volume is mounted at `/workspace` in both the Kafka worker and the Hermes
+Agent container. The worker creates a separate run directory with `inputs/` and `outputs/` for
+each job. The prompt gives Hermes the exact absolute paths.
 
-Set values such as the following in `.env`:
+The worker runs as UID/GID `10001`. The Hermes container is configured with the same UID/GID so
+files written by Hermes are readable and uploadable by the worker.
 
-```dotenv
-LLM_PROVIDER=openai
-LLM_MODEL=your-model
-LLM_API_KEY=your-api-key
-# Optional for Ollama, vLLM, or another OpenAI-compatible endpoint:
-LLM_BASE_URL=
-```
+`/workspace` is a shared trust boundary, not a per-job security sandbox. Every Hermes run can
+read the directories of other runs in the same container, and anyone who holds `HERMES_API_KEY`
+can execute tools in that container. The worker only uploads files below the current job's
+`outputs/` directory. Run a separate Hermes Agent container per trust domain if stronger
+isolation is required.
 
-Then recreate the worker:
+The workspace path is deterministic for `job_id` / `run_id`, which keeps the Hermes request
+fingerprint stable so a redelivered message reuses the original idempotent run. The directory is
+removed when the job finishes.
 
-```bash
-docker compose up -d --build --force-recreate agent-worker
-```
+Artifacts are uploaded only from `outputs/`. A missing or unreachable artifact store does not
+turn a successful agent run into a failed job. The job remains `succeeded`, with an
+`artifact_error` describing the failed upload. Uploads are attempted three times, and partially
+uploaded files are cleaned up after a final failure.
 
-For a local OpenAI-compatible endpoint without authentication, `LLM_API_KEY` may remain empty. The endpoint must be reachable from the worker container.
+## RustFS and input files
 
-The agent can use these tools:
-
-| Tool | Purpose |
-|---|---|
-| `read_workspace_file` | Read a UTF-8 file from the workspace |
-| `write_workspace_file` | Write a text file; result files belong under `outputs/` |
-| `list_workspace_files` | List existing workspace files |
-
-There is intentionally no shell tool and no host access.
-
-## Enabling RustFS and files
+Start with the storage profile:
 
 ```bash
 docker compose --profile storage up -d --build
 ```
 
-- S3 API: <http://localhost:9000>
-- RustFS Console: <http://localhost:9001/rustfs/console/>
-- Local default account: `rustfs`
-- Local default secret: `hermes-secret`
-
-These credentials are for local development only and should be changed in `.env`. If the ports are already in use, adjust `RUSTFS_API_PORT` and `RUSTFS_CONSOLE_PORT` in `.env`.
-
-The S3 endpoint must be configured in `.env`, for example:
+The S3 endpoint must be configured in `.env`:
 
 ```dotenv
 S3_ENDPOINT_URL=http://rustfs:9000
 ```
 
-Input files are provided as S3 references:
+Local RustFS defaults:
+
+- S3 API: <http://localhost:9000>
+- Console: <http://localhost:9001/rustfs/console/>
+- Account: `rustfs`
+- Secret: `hermes-secret`
+
+These credentials are for local development only.
+
+Submit a job with an input file:
 
 ```bash
 docker compose run --rm jobctl submit \
@@ -139,9 +243,7 @@ docker compose run --rm jobctl submit \
   --input-file jobs/example.txt
 ```
 
-The bucket must already contain the file. The worker downloads it into `inputs/`. Files created by the agent under `outputs/` are uploaded to RustFS by the harness. The result in `jobs.out` then contains the bucket and key.
-
-A missing or unreachable artifact store no longer turns an otherwise successful agent run into a failed job. The job remains `succeeded`, but the files are missing and `artifact_error` describes the upload failure. Uploads are attempted three times, and partially uploaded files are cleaned up after a final failure.
+The bucket must already contain the file.
 
 ## Job format
 
@@ -159,15 +261,33 @@ A missing or unreachable artifact store no longer turns an otherwise successful 
 }
 ```
 
-`job_id` and `run_id` are generated automatically as UUIDs. Messages use `job_id` as the Kafka key.
+`job_id` and `run_id` are generated as UUIDs if omitted. Messages use `job_id` as the Kafka key.
+`max_steps` applies to `AGENT_RUNTIME=local`; Hermes manages its own agent turn limits.
 
 A result includes:
 
 - `status`: `succeeded` or `failed`
 - `result` or `error`
 - `artifacts`: uploaded files
-- `artifact_error`: optional failure while storing generated files; does not change job status
+- `artifact_error`: optional upload failure; does not change job status
 - `trace_id`, `worker_id`, timestamps, steps, and token usage
+
+## Local Echo mode
+
+For a quick end-to-end test without an LLM provider, temporarily set:
+
+```dotenv
+AGENT_RUNTIME=local
+LLM_PROVIDER=echo
+```
+
+Then recreate the worker:
+
+```bash
+docker compose up -d --build --force-recreate agent-worker
+```
+
+Switch back to `AGENT_RUNTIME=hermes` for real agent execution.
 
 ## Multiple workers
 
@@ -175,21 +295,23 @@ A result includes:
 docker compose up -d --scale agent-worker=2
 ```
 
-Workers share the `agent-workers` consumer group. Each worker processes one job at a time. Topics are created with three partitions by default.
+Workers share the `agent-workers` consumer group. Each worker processes one job at a time.
 
 ## Operations and guarantees
 
-- On startup, the worker waits up to `KAFKA_STARTUP_TIMEOUT_SECONDS` (default: 300 seconds) for Redpanda with exponential backoff instead of entering a crash loop.
-- Redpanda, Console, RustFS, and the worker have restart policies. The stack recovers automatically after a machine or Docker restart.
-- The Kafka offset is committed only after the result has been successfully written to `jobs.out`.
-- Processing is **at-least-once**. A job may run again after a crash.
-- Audit events are queued asynchronously. An audit or Phoenix failure changes neither job status nor result.
-- Topics have a default retention of seven days, configurable through `KAFKA_TOPIC_RETENTION_MS`. Increase it for longer audit retention.
-- Phoenix is only an optional trace viewer; failed OTLP exports do not change any job result.
-- The worker runs as non-root with a read-only root filesystem, no Linux capabilities, and no host mounts.
-- The Compose setup is intended for development and testing. Redpanda has no SASL/TLS configuration here.
+- The worker waits for Redpanda and Hermes Agent with exponential backoff before consuming jobs.
+- Redpanda, Console, RustFS, Hermes Agent, Phoenix, and the worker have restart policies.
+- The Kafka offset is committed only after the result is written to `jobs.out`.
+- Processing is **at-least-once**. A job can run again after a crash.
+- Hermes requests use `run_id` as the `Idempotency-Key`, so retries within Hermes' retention
+  window are deduplicated by the agent runtime.
+- Audit delivery is asynchronous and best effort and does not change job status.
+- Topics have seven days of retention by default (`KAFKA_TOPIC_RETENTION_MS`).
+- The Compose configuration is for local development. Redpanda has no SASL/TLS here.
+- The Hermes API server has full access to Hermes tools, including terminal commands inside its
+  container. Keep `HERMES_API_KEY` secret and do not expose port `8642`.
 
-Stop without deleting data volumes:
+Stop without deleting volumes:
 
 ```bash
 docker compose down
@@ -203,4 +325,4 @@ python3 -m venv .venv
 .venv/bin/pytest
 ```
 
-The unit tests require neither Docker nor Redpanda.
+The unit tests use mocked Hermes HTTP responses and require neither Docker nor Redpanda.
