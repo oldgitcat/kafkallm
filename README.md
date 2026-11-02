@@ -219,15 +219,20 @@ kernel exploit no longer reaches the host.
 Prerequisites on the host:
 
 ```bash
-dnf install crun-krun          # the krun runtime for Podman
-sudo systemctl enable --now podman.socket   # rootful Podman API on /run/podman/podman.sock
-podman pull nousresearch/hermes-agent@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d
+dnf install crun-krun                              # the krun runtime for Podman
+sudo systemctl enable --now podman.socket          # rootful Podman API on /run/podman/podman.sock
+sudo podman pull nousresearch/hermes-agent@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d
 ```
 
-Then switch the runtime and recreate the worker:
+Then switch the runtime and recreate the worker. The `vm` profile adds the Podman proxy that
+fronts the rootful Podman API:
 
 ```dotenv
 AGENT_RUNTIME=hermes-job-vm
+```
+
+```bash
+docker compose --profile vm up -d --build --force-recreate agent-worker
 ```
 
 How it works:
