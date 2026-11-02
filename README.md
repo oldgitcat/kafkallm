@@ -258,6 +258,7 @@ Containers are enough for jobs you trust. For untrusted input, raise the boundar
 |---|---|---|---|
 | Containers (default) | Namespaces, seccomp, capabilities | Low | What this setup does today |
 | gVisor (`runsc`) | User-space kernel between the app and the host kernel | Low to medium | Drop-in Docker runtime, small overhead, a few syscalls unsupported |
+| libkrun via `podman --runtime=krun` | Real microVM with its own kernel | Medium | Keeps the container workflow, see below |
 | Kata Containers | Real VM per container on hardware virtualization | Medium | ~1-2 s startup, ~150 MB per VM, virtiofs for mounts |
 | Firecracker | Micro-VM per job | Medium to high | Fastest cold start (~125 ms), but needs a custom runtime instead of the plain Docker API |
 | Separate Docker daemon | Real VM or rootless daemon for job containers | Medium | Keeps the container API, but a job escape stays inside that daemon |
@@ -265,6 +266,38 @@ Containers are enough for jobs you trust. For untrusted input, raise the boundar
 The most effective step for untrusted jobs is the last row: point `DOCKER_HOST` at a second
 Docker daemon that runs in a VM or as a rootless user daemon. Job containers then cannot touch
 the host daemon at all, and a container escape remains contained in that daemon.
+
+#### libkrun in detail
+
+[libkrun](https://github.com/libkrun/libkrun) starts a KVM microVM with its own kernel. Through
+the `krun` mode of `crun` it keeps the container workflow: same image, same commands, but the
+workload runs behind a hypervisor.
+
+```bash
+dnf install crun-krun
+podman run --runtime=krun --rm nousresearch/hermes-agent hermes --version
+```
+
+That fits this project better than the other options because the worker already speaks the
+Docker API, and Podman exposes a Docker-compatible API: the same `containers.create`,
+`exec_run`, `put_archive`, and label-filtered listings work against Podman. The runtime code
+would only need a different socket target, plus `krun.cpus` and `krun.ram_mib` annotations and a
+decision about where Podman runs.
+
+Open points to settle before using it for jobs:
+
+- **Where Podman runs.** A host service keeps the worker simple but lets it bind host paths. A
+  Podman inside the worker container needs `/dev/kvm` and user namespaces, which weakens the
+  worker's own confinement.
+- **Cost per job.** The Hermes image is 3 GB, and a microVM needs its own memory
+  (`krun.ram_mib`). Measure the start-up time before rolling it out.
+- **Egress control.** The default TSI networking proxies guest sockets in the VMM's network
+  context and bypasses host firewall rules. `krun.use_passt=1` restores firewall control.
+- **Annotations.** The Docker API cannot set OCI annotations, so `krun.cpus` and `krun.ram_mib`
+  need a `.krun_vm.json` in a derived image or Podman's native API.
+
+`scripts/poc-krun.sh` boots the Hermes image in a microVM and reports the guest kernel, the
+start-up time, and the prerequisites.
 
 ## How jobs are executed
 
