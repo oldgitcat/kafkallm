@@ -24,14 +24,6 @@ _RUN_ID_LABEL = "hermes.run_id"
 _CREATED_AT_LABEL = "hermes.created_at"
 _WORKDIR_LABEL = "hermes.workdir"
 
-_RESULT_DIR = "/workspace/.hermes"
-_MAIN_JSONL = f"{_RESULT_DIR}/main.jsonl"
-_MAIN_STDERR = f"{_RESULT_DIR}/main.err"
-_REFLECT_JSONL = f"{_RESULT_DIR}/reflect.jsonl"
-_REFLECT_STDERR = f"{_RESULT_DIR}/reflect.err"
-
-_BUNDLE_DIR = "/jobboot"
-
 # Shared secret for the gateway's loopback HTTP API inside each microVM. It is
 # only reachable on 127.0.0.1 within the job's own microVM, so it is not a
 # cross-job secret.
@@ -81,6 +73,8 @@ hermes config set memory.memory_enabled false >/dev/null 2>&1 || true
 hermes config set memory.user_profile_enabled false >/dev/null 2>&1 || true
 hermes config set auxiliary.background_review.enabled false --force >/dev/null 2>&1 || true
 hermes config set approvals.mode off >/dev/null 2>&1 || true
+hermes config set agent.max_turns "${HERMES_JOB_MAX_TURNS:-100}" >/dev/null 2>&1 || true
+hermes config set agent.run_budget_seconds "${HERMES_JOB_MAIN_RUN_BUDGET:-300}" >/dev/null 2>&1 || true
 
 # The microVM boots without the s6 supervision tree, so start the gateway here.
 # The job is submitted through its HTTP API, which works inside the microVM;
