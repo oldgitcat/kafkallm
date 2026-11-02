@@ -423,11 +423,25 @@ class HermesVmJobRunner:
     def _ensure_image(self) -> None:
         try:
             self.client.images.get(self.settings.hermes_vm_image)
+            return
+        except Exception:
+            pass
+        logger.info(
+            "Pulling %s into the Podman storage", self.settings.hermes_vm_image
+        )
+        try:
+            self.client.images.pull(self.settings.hermes_vm_image)
         except Exception as exc:
             raise HermesVmRuntimeError(
                 f"Hermes image {self.settings.hermes_vm_image} is not available "
-                "in the Podman storage. Pull it with "
-                "`podman pull <image>`."
+                f"in the Podman storage and could not be pulled: {exc}"
+            ) from exc
+        try:
+            self.client.images.get(self.settings.hermes_vm_image)
+        except Exception as exc:
+            raise HermesVmRuntimeError(
+                f"Hermes image {self.settings.hermes_vm_image} is not available "
+                "in the Podman storage."
             ) from exc
 
     def _cleanup_orphans(self) -> None:

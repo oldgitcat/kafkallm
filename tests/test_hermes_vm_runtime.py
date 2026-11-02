@@ -128,6 +128,12 @@ class FakeImages:
             raise RuntimeError("no such image")
         return SimpleNamespace(id="image-id", tags=[name])
 
+    def pull(self, name: str, **kwargs: Any) -> Any:
+        del kwargs
+        self.client.pulled.append(name)
+        self.client.image_available = True
+        return SimpleNamespace(id="image-id", tags=[name])
+
 
 class FakeDockerClient:
     def __init__(self) -> None:
@@ -140,6 +146,7 @@ class FakeDockerClient:
         self.exit_status = "exited"
         self.pinged = False
         self.closed = False
+        self.pulled: list[str] = []
         self.results: dict[str, str] = {}
 
     def ping(self) -> bool:
@@ -375,6 +382,17 @@ def test_vm_passt_annotation_is_opt_in(tmp_path: Path) -> None:
 
     annotations = client.create_body["HostConfig"]["Annotations"]
     assert annotations["krun.use_passt"] == "1"
+
+
+def test_vm_wait_ready_pulls_a_missing_image(tmp_path: Path) -> None:
+    client = FakeDockerClient()
+    client.image_available = False
+    runner = HermesVmJobRunner(_settings_for(tmp_path), client=client)
+
+    runner.wait_ready()
+
+    assert client.pulled == ["hermes:test"]
+    assert client.pinged
 
 
 def test_harness_selects_vm_runtime(tmp_path: Path) -> None:
