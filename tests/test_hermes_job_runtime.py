@@ -179,7 +179,6 @@ class FakeAudit:
 
 def _settings(**overrides: Any) -> Settings:
     values: dict[str, Any] = {
-        "agent_runtime": "hermes-job",
         "hermes_job_docker_host": "tcp://podman-proxy:2375",
         "hermes_image": "hermes:test",
         "hermes_job_ram_mib": 2048,
@@ -397,7 +396,7 @@ def test_vm_wait_ready_pulls_a_missing_image(tmp_path: Path) -> None:
 
 def test_harness_selects_vm_runtime(tmp_path: Path) -> None:
     settings = _settings(workspace_root=str(tmp_path))
-    harness = Harness(settings, None)
+    harness = Harness(settings)
 
     assert isinstance(harness.hermes, HermesJobRunner)
 

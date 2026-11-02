@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -12,6 +13,13 @@ ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+@dataclass(slots=True)
+class AgentResult:
+    text: str
+    steps: int
+    usage: dict[str, int] = field(default_factory=dict)
 
 
 class FileRef(BaseModel):

@@ -14,7 +14,6 @@ from pydantic import ValidationError
 from hermes.audit import AuditLogger
 from hermes.harness import Harness
 from hermes.kafka import KafkaProducer, wait_for_kafka
-from hermes.llm import build_llm
 from hermes.models import ID_PATTERN, Job, JobResult
 from hermes.settings import Settings
 from hermes.telemetry import (
@@ -42,8 +41,7 @@ class Worker:
         wait_for_kafka(settings)
         self.producer = KafkaProducer(settings)
         self.audit = AuditLogger(settings, self.producer)
-        llm = build_llm(settings) if settings.agent_runtime == "local" else None
-        self.harness = Harness(settings, llm, audit=self.audit)
+        self.harness = Harness(settings, audit=self.audit)
         self.harness.wait_ready()
         self.consumer = Consumer(
             {

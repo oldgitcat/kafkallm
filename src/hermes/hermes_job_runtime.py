@@ -9,9 +9,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from hermes.agent import AgentResult
 from hermes.audit import JobAudit
-from hermes.models import Job
+from hermes.models import AgentResult, Job
 from hermes.settings import Settings
 from hermes.telemetry import get_tracer, set_content, set_error
 

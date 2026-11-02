@@ -1,7 +1,5 @@
 name: hermes
 
-x-hermes-image: &hermes-image ${HERMES_IMAGE:-nousresearch/hermes-agent@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d}
-
 x-app-environment: &app-environment
   KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
   JOBS_TOPIC: ${JOBS_TOPIC:-jobs.in}
@@ -11,27 +9,25 @@ x-app-environment: &app-environment
   KAFKA_TOPIC_PARTITIONS: ${KAFKA_TOPIC_PARTITIONS:-3}
   KAFKA_TOPIC_RETENTION_MS: ${KAFKA_TOPIC_RETENTION_MS:-604800000}
   KAFKA_STARTUP_TIMEOUT_SECONDS: ${KAFKA_STARTUP_TIMEOUT_SECONDS:-300}
-  AGENT_RUNTIME: ${AGENT_RUNTIME:-hermes}
-  HERMES_API_URL: ${HERMES_API_URL:-http://hermes-agent:8642}
-  HERMES_API_KEY: ${HERMES_API_KEY:-change-me-local-dev}
   HERMES_MODEL: ${HERMES_MODEL:-}
   HERMES_PROVIDER: ${HERMES_PROVIDER:-}
   HERMES_STARTUP_TIMEOUT_SECONDS: ${HERMES_STARTUP_TIMEOUT_SECONDS:-300}
   HERMES_IMAGE: ${HERMES_IMAGE:-nousresearch/hermes-agent@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d}
-  HERMES_SKILLS_VOLUME: ${HERMES_SKILLS_VOLUME:-hermes-skills}
-  HERMES_JOB_TMPFS_SIZE: ${HERMES_JOB_TMPFS_SIZE:-1g}
-  HERMES_JOB_MAX_TURNS: ${HERMES_JOB_MAX_TURNS:-100}
-  HERMES_JOB_MEMORY_LIMIT: ${HERMES_JOB_MEMORY_LIMIT:-4g}
-  HERMES_JOB_PIDS_LIMIT: ${HERMES_JOB_PIDS_LIMIT:-512}
-  HERMES_JOB_CPUS: ${HERMES_JOB_CPUS:-2}
-  HERMES_JOB_REFLECT_ENABLED: ${HERMES_JOB_REFLECT_ENABLED:-true}
-  HERMES_JOB_REFLECT_TIMEOUT_SECONDS: ${HERMES_JOB_REFLECT_TIMEOUT_SECONDS:-300}
   HERMES_JOB_DOCKER_HOST: ${HERMES_JOB_DOCKER_HOST:-tcp://127.0.0.1:2375}
   HERMES_JOB_RAM_MIB: ${HERMES_JOB_RAM_MIB:-2048}
+  HERMES_JOB_CPUS: ${HERMES_JOB_CPUS:-2}
+  HERMES_JOB_MEMORY_LIMIT: ${HERMES_JOB_MEMORY_LIMIT:-4g}
+  HERMES_JOB_PIDS_LIMIT: ${HERMES_JOB_PIDS_LIMIT:-512}
+  HERMES_JOB_TMPFS_SIZE: ${HERMES_JOB_TMPFS_SIZE:-1g}
+  HERMES_JOB_MAX_TURNS: ${HERMES_JOB_MAX_TURNS:-100}
+  HERMES_JOB_REFLECT_ENABLED: ${HERMES_JOB_REFLECT_ENABLED:-true}
+  HERMES_JOB_REFLECT_TIMEOUT_SECONDS: ${HERMES_JOB_REFLECT_TIMEOUT_SECONDS:-300}
   HERMES_JOB_USE_PASST: ${HERMES_JOB_USE_PASST:-false}
-  HERMES_JOB_ROOT: ${HERMES_JOB_ROOT:-/var/lib/hermes}
   HERMES_JOB_WORKSPACE_ROOT: ${HERMES_JOB_WORKSPACE_ROOT:-/var/lib/hermes/jobs}
   HERMES_JOB_SKILLS_DIR: ${HERMES_JOB_SKILLS_DIR:-/var/lib/hermes/skills}
+  WORKSPACE_ROOT: ${WORKSPACE_ROOT:-/var/lib/hermes/staging}
+  MAX_JOB_TIMEOUT_SECONDS: ${MAX_JOB_TIMEOUT_SECONDS:-900}
+  MAX_AGENT_STEPS: ${MAX_AGENT_STEPS:-8}
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
   OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -44,13 +40,6 @@ x-app-environment: &app-environment
   TOGETHER_API_KEY: ${TOGETHER_API_KEY:-}
   FIREWORKS_API_KEY: ${FIREWORKS_API_KEY:-}
   NOUS_API_KEY: ${NOUS_API_KEY:-}
-  LLM_PROVIDER: ${LLM_PROVIDER:-echo}
-  LLM_MODEL: ${LLM_MODEL:-}
-  LLM_API_KEY: ${LLM_API_KEY:-}
-  LLM_BASE_URL: ${LLM_BASE_URL:-}
-  WORKSPACE_ROOT: /workspace
-  MAX_JOB_TIMEOUT_SECONDS: ${MAX_JOB_TIMEOUT_SECONDS:-900}
-  MAX_AGENT_STEPS: ${MAX_AGENT_STEPS:-8}
   S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-}
   S3_REGION: ${S3_REGION:-local}
   S3_BUCKET: ${S3_BUCKET:-jobs}
@@ -114,24 +103,18 @@ services:
       - phoenix-data:/mnt/data
     restart: unless-stopped
 
-  workspace-init:
+  hermes-job-init:
     image: busybox:1.37
     command:
       - sh
       - -c
       - |
         set -eu
-        mkdir -p /workspace
-        if [ "$(stat -c '%u:%g' /workspace)" = "10001:10001" ]; then
-          exit 0
-        fi
-        for attempt in 1 2 3 4 5; do
-          chown -R 10001:10001 /workspace && exit 0
-          sleep 1
-        done
-        exit 1
+        mkdir -p /var/lib/hermes/jobs /var/lib/hermes/staging /var/lib/hermes/skills
+        chown -R 10001:10001 /var/lib/hermes
+        chmod -R 777 /var/lib/hermes
     volumes:
-      - agent-workspace:/workspace
+      - ${HERMES_JOB_ROOT:-/var/lib/hermes}:/var/lib/hermes:z
     restart: "no"
 
   podman-proxy:
@@ -163,97 +146,16 @@ services:
         condition: service_started
     restart: unless-stopped
 
-  hermes-job-init:
-    image: busybox:1.37
-    command:
-      - sh
-      - -c
-      - |
-        set -eu
-        mkdir -p /var/lib/hermes/jobs /var/lib/hermes/skills
-        chown -R 10001:10001 /var/lib/hermes
-        chmod -R 777 /var/lib/hermes
-    volumes:
-      - ${HERMES_JOB_ROOT:-/var/lib/hermes}:/var/lib/hermes:z
-    restart: "no"
-
-  hermes-skills-init:
-    image: *hermes-image
-    command:
-      - sh
-      - -c
-      - |
-        set -eu
-        mkdir -p /opt/data/skills
-        chown -R 10001:10001 /opt/data/skills
-        /opt/hermes/.venv/bin/python /opt/hermes/tools/skills_sync.py
-        chown -R 10001:10001 /opt/data/skills
-    environment:
-      HERMES_UID: "10001"
-      HERMES_GID: "10001"
-      HERMES_WRITE_SAFE_ROOT: /opt/data
-    tmpfs:
-      - /opt/data:size=256m,mode=0700
-    volumes:
-      - hermes-skills:/opt/data/skills
-    restart: "no"
-
-  hermes-agent:
-    image: *hermes-image
-    command: ["gateway", "run"]
-    environment:
-      API_SERVER_ENABLED: "true"
-      API_SERVER_HOST: 0.0.0.0
-      API_SERVER_KEY: ${HERMES_API_KEY:-change-me-local-dev}
-      TERMINAL_CWD: /workspace
-      HERMES_WRITE_SAFE_ROOT: /workspace:/opt/data
-      HERMES_UID: "10001"
-      HERMES_GID: "10001"
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
-      XAI_API_KEY: ${XAI_API_KEY:-}
-      MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
-      GROQ_API_KEY: ${GROQ_API_KEY:-}
-      TOGETHER_API_KEY: ${TOGETHER_API_KEY:-}
-      FIREWORKS_API_KEY: ${FIREWORKS_API_KEY:-}
-      NOUS_API_KEY: ${NOUS_API_KEY:-}
-    volumes:
-      - hermes-data:/opt/data
-      - hermes-skills:/opt/data/skills
-      - agent-workspace:/workspace
-    depends_on:
-      workspace-init:
-        condition: service_completed_successfully
-      hermes-skills-init:
-        condition: service_completed_successfully
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8642/health >/dev/null"]
-      interval: 10s
-      timeout: 5s
-      retries: 30
-      start_period: 30s
-    restart: unless-stopped
-    stop_grace_period: 30s
-
   agent-worker:
     build: .
     environment: *app-environment
     volumes:
-      - agent-workspace:/workspace
       - ${HERMES_JOB_ROOT:-/var/lib/hermes}:/var/lib/hermes:z
     depends_on:
       redpanda:
         condition: service_healthy
-      workspace-init:
-        condition: service_completed_successfully
       hermes-job-init:
         condition: service_completed_successfully
-    networks:
-      - default
     restart: unless-stopped
     read_only: true
     tmpfs:
@@ -297,12 +199,5 @@ services:
 
 volumes:
   redpanda-data:
-  agent-workspace:
   rustfs-data:
   phoenix-data:
-  hermes-data:
-  hermes-skills:
-    name: ${HERMES_SKILLS_VOLUME:-hermes-skills}
-
-networks:
-  default:

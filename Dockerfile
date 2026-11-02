@@ -9,9 +9,7 @@ COPY pyproject.toml README.md ./
 COPY src ./src
 
 RUN pip install --no-cache-dir . \
-    && useradd --create-home --uid 10001 appuser \
-    && mkdir -p /workspace \
-    && chown appuser:appuser /workspace
+    && useradd --create-home --uid 10001 appuser
 
 USER appuser
 

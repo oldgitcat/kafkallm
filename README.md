@@ -35,7 +35,6 @@ Hermes job worker ──→ Redpanda jobs.out
 - Structured Kafka audit events
 - Arize Phoenix UI with a persistent SQLite volume
 - Optional S3-compatible RustFS container for input files and result artifacts
-- A shared Hermes gateway runtime and a built-in Echo harness for tests
 - Redpanda Console and a CLI for submitting jobs and reading results
 
 ## Requirements
@@ -68,7 +67,6 @@ world-writable because rootless Podman maps the job's uid into a subuid range.
 Configure a Hermes provider:
 
 ```dotenv
-AGENT_RUNTIME=hermes-job
 HERMES_PROVIDER=openrouter
 HERMES_MODEL=nvidia/nemotron-3.5-lightning:free
 OPENROUTER_API_KEY=your-openrouter-key
@@ -108,44 +106,17 @@ Worker logs:
 docker compose logs -f agent-worker
 ```
 
-Hermes Agent logs:
-
-```bash
-docker compose logs -f hermes-agent
-```
-
 Redpanda Console is available at <http://localhost:8080>. The Phoenix UI runs at
 <http://localhost:6006>.
 
-## Runtime modes
+## How jobs run
 
-`AGENT_RUNTIME` selects the execution engine:
+There is a single execution path. The worker consumes a job from Kafka, writes the inputs and the
+prompt into `/var/lib/hermes/jobs/<run_id>`, starts a disposable Hermes microVM (rootless Podman,
+libkrun), reads the result from that directory, and publishes it to `jobs.out`. The microVM never
+talks to Kafka; the worker is the only Kafka participant.
 
-| Value | Behavior |
-|---|---|
-| `hermes-job` | The worker starts one disposable Hermes **microVM** per job through Podman's `krun` runtime. This is the default and the primary path. |
-| `hermes` | The worker submits each job to a shared Hermes Agent `/v1/runs` API. No per-job isolation. |
-| `local` | The worker uses the built-in Python harness and `LLM_PROVIDER`. Intended for tests and debugging. |
-
-The `hermes` and `local` modes exist as fallbacks for debugging. The `hermes` gateway is internal
-to the Compose network and is not published on a host port; `HERMES_API_KEY` authenticates the
-worker against it.
-
-To avoid starting the gateway and its init services when only `hermes-job` is used, start the
-services you need:
-
-```bash
-docker compose up -d redpanda podman-proxy agent-worker
-```
-
-If you prefer to configure Hermes interactively instead of passing provider/model per request,
-run its setup inside the persistent Hermes data volume:
-
-```bash
-docker compose exec --user 10001 hermes-agent hermes model
-```
-
-The picker is interactive and stores the choice in the persistent `hermes-data` volume.
+Hermes has its own tool registry and agent loop. The worker does not reimplement the LLM loop.
 
 ### Why Docker and Podman
 
@@ -161,6 +132,10 @@ deliberate:
 - **Rootless Podman is required.** Rootful Podman breaks libkrun's TSI networking here, so the
   microVMs would have no outbound network and every job would stall on the LLM provider.
 
+The whole stack was also tried under `podman-compose`, but this host's Wi-Fi interface advertises
+a `/0` netmask (typical for a mobile hotspot), so netavark refuses to create any bridge subnet.
+Docker's bridges already exist, so the stack stays on Docker while the job microVMs use Podman.
+
 The worker is a Docker container that reaches the rootless Podman API through the internal
 `podman-proxy`, which shares the worker's network namespace and listens on loopback only. The
 engines do not share storage: the job directory and skills live on the host under `/var/lib/hermes`,
@@ -170,7 +145,7 @@ option.
 
 ## MicroVM job containers
 
-With `AGENT_RUNTIME=hermes-job`, every job runs in its own KVM microVM through
+Every job runs in its own KVM microVM through
 [libkrun](https://github.com/libkrun/libkrun). The worker creates the microVM through the
 rootless Podman API (fronted by the internal `podman-proxy`), waits for it, reads the
 result from the shared workspace directory, copies `outputs/` back, and removes the
@@ -279,20 +254,16 @@ kernel, the start-up time, and the prerequisites.
 1. The producer writes a JSON job to `jobs.in`.
 2. The worker validates it and prepares a unique directory under its staging workspace.
 3. Referenced input files are downloaded from RustFS into `inputs/`.
-4. The selected runtime executes the job:
-   - `hermes-job`: create a microVM and a job directory, bind-mount `inputs/` and the prompt, start
-     the gateway and submit the main run through its HTTP API, then submit the optional reflect run.
-   - `hermes`: submit a run to the shared Hermes Agent API with an idempotency key derived from
-     `run_id`.
-   - `local`: run the built-in Python agent harness.
+4. The worker executes the job:
+   - create a microVM and a job directory, bind-mount `inputs/` and the prompt, start the gateway
+     and submit the main run through its HTTP API, then submit the optional reflect run.
 5. Hermes executes the instruction with its own tools and writes result files under `outputs/`.
 6. The worker collects the final answer and outputs, optionally runs reflect, publishes the result
    to `jobs.out`, uploads artifacts, and commits the Kafka offset.
 7. Audit events are written to `agent.events`.
 
 Hermes has its own broad tool registry and agent loop. The Kafka worker does not reimplement the
-LLM loop. In `hermes-job` mode concurrency is bounded by the host memory, KVM, and the number of
-workers.
+LLM loop. Concurrency is bounded by the host memory, KVM, and the number of workers.
 
 The worker does not copy individual Hermes tool calls into `agent.events`; it publishes job-level
 and run-level events only. In `hermes-job` mode the session is discarded with the microVM, so use
@@ -314,7 +285,6 @@ The worker writes these audit events to `agent.events`:
 - `hermes.started` and `hermes.completed`
 - `hermes.reflect` in `hermes-job` mode
 - `artifact.stored` and `artifact.failed`
-- `llm.completed` and `tool.completed` in local runtime mode
 
 Phoenix displays the distributed trace as a span tree. Prompts, LLM responses, and tool
 input/output are **not** captured by default. If this content may be stored locally in Phoenix,
@@ -394,9 +364,8 @@ The bucket must already contain the file.
 ```
 
 `job_id` and `run_id` are generated as UUIDs if omitted. Messages use `job_id` as the Kafka key.
-`max_steps` applies to `AGENT_RUNTIME=local`; Hermes manages its own agent turn limits. In
-`hermes-job` mode, `HERMES_JOB_MAX_TURNS` controls the main run. The reflect run resumes the same
-session and inherits its turn policy; its time budget is controlled by
+`max_steps` is advisory; Hermes manages its agent turn limit with `HERMES_JOB_MAX_TURNS` (default
+`100`). The reflect run is a fresh session, so its time budget is controlled by
 `HERMES_JOB_REFLECT_TIMEOUT_SECONDS`.
 
 A result includes:
@@ -406,23 +375,6 @@ A result includes:
 - `artifacts`: uploaded files
 - `artifact_error`: optional upload failure; does not change job status
 - `trace_id`, `worker_id`, timestamps, steps, and token usage
-
-## Local Echo mode
-
-For a quick end-to-end test without an LLM provider, temporarily set:
-
-```dotenv
-AGENT_RUNTIME=local
-LLM_PROVIDER=echo
-```
-
-Then recreate the worker:
-
-```bash
-docker compose up -d --build --force-recreate agent-worker
-```
-
-Switch back to `AGENT_RUNTIME=hermes-job` for real agent execution.
 
 ## Multiple workers
 
@@ -437,22 +389,17 @@ Workers share the `agent-workers` consumer group. Each worker processes one job 
 - The worker waits for Redpanda and the Podman API with exponential backoff before consuming
   jobs. It verifies the pinned Hermes image (pulling it into the Podman storage if missing) and
   the skills directory.
-- Redpanda, Console, RustFS, Hermes Agent, the Podman proxy, Phoenix, and the worker have restart
-  policies.
+- Redpanda, Console, RustFS, the Podman proxy, Phoenix, and the worker have restart policies.
 - The Kafka offset is committed only after the result is written to `jobs.out`.
-- Processing is **at-least-once**. A job can run again after a crash.
-- In `hermes` mode, requests use `run_id` as the `Idempotency-Key`, so retries within Hermes'
-  retention window are deduplicated by the agent runtime. In `hermes-job` mode a redelivered job
-  starts a new microVM, so side effects must be idempotent.
+- Processing is **at-least-once**. A redelivered job starts a new microVM, so side effects must be
+  idempotent.
 - Audit delivery is asynchronous and best effort and does not change job status.
 - Topics have seven days of retention by default (`KAFKA_TOPIC_RETENTION_MS`).
 - The Compose configuration is for local development. Redpanda has no SASL/TLS here.
-- The Podman socket proxy fronts the rootless Podman API. It is attached
-  to the internal `control` network that only the worker joins, and the socket is never published.
-- In `hermes` mode, the Hermes API server has full access to Hermes tools, including terminal
-  commands inside its container. Keep `HERMES_API_KEY` secret and do not expose port `8642`.
-- In `hermes-job` mode, each job has its own microVM but still shares the skills directory. Run
-  only trusted jobs and inputs. See [Isolation model](#isolation-model).
+- The Podman socket proxy shares the worker's network namespace and listens on loopback only, so
+  the job microVMs cannot reach the root-equivalent Podman API.
+- Each job has its own microVM but still shares the skills directory. Run only trusted jobs and
+  inputs. See [Isolation model](#isolation-model).
 
 Stop without deleting volumes:
 

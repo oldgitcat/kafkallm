@@ -31,13 +31,6 @@ class Settings:
     workspace_root: str
     max_job_timeout_seconds: int
     max_agent_steps: int
-    llm_provider: str
-    llm_model: str
-    llm_api_key: str
-    llm_base_url: str
-    agent_runtime: str
-    hermes_api_url: str
-    hermes_api_key: str
     hermes_model: str
     hermes_provider: str
     hermes_startup_timeout_seconds: int
@@ -86,15 +79,6 @@ class Settings:
             workspace_root=os.getenv("WORKSPACE_ROOT", "/tmp/hermes-workspace"),
             max_job_timeout_seconds=_int_env("MAX_JOB_TIMEOUT_SECONDS", 900),
             max_agent_steps=_int_env("MAX_AGENT_STEPS", 8),
-            llm_provider=os.getenv("LLM_PROVIDER", "echo").lower(),
-            llm_model=os.getenv("LLM_MODEL", ""),
-            llm_api_key=os.getenv("LLM_API_KEY", ""),
-            llm_base_url=os.getenv("LLM_BASE_URL", ""),
-            agent_runtime=os.getenv("AGENT_RUNTIME", "local").lower(),
-            hermes_api_url=os.getenv(
-                "HERMES_API_URL", "http://localhost:8642"
-            ).rstrip("/"),
-            hermes_api_key=os.getenv("HERMES_API_KEY", ""),
             hermes_model=os.getenv("HERMES_MODEL", ""),
             hermes_provider=os.getenv("HERMES_PROVIDER", ""),
             hermes_startup_timeout_seconds=_int_env(
