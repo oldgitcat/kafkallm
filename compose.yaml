@@ -26,6 +26,13 @@ x-app-environment: &app-environment
   HERMES_JOB_CPUS: ${HERMES_JOB_CPUS:-2}
   HERMES_JOB_REFLECT_ENABLED: ${HERMES_JOB_REFLECT_ENABLED:-true}
   HERMES_JOB_REFLECT_TIMEOUT_SECONDS: ${HERMES_JOB_REFLECT_TIMEOUT_SECONDS:-300}
+  HERMES_VM_DOCKER_HOST: ${HERMES_VM_DOCKER_HOST:-tcp://podman-proxy:2375}
+  HERMES_VM_IMAGE: ${HERMES_VM_IMAGE:-nousresearch/hermes-agent@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d}
+  HERMES_VM_RAM_MIB: ${HERMES_VM_RAM_MIB:-2048}
+  HERMES_VM_CPUS: ${HERMES_VM_CPUS:-2}
+  HERMES_VM_USE_PASST: ${HERMES_VM_USE_PASST:-false}
+  HERMES_VM_WORKSPACE_ROOT: ${HERMES_VM_WORKSPACE_ROOT:-/var/lib/hermes/jobs}
+  HERMES_VM_SKILLS_DIR: ${HERMES_VM_SKILLS_DIR:-/var/lib/hermes/skills}
   DOCKER_HOST: ${DOCKER_HOST:-tcp://docker-proxy:2375}
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
   OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
@@ -175,6 +182,42 @@ services:
       - hermes-skills:/opt/data/skills
     restart: "no"
 
+  podman-proxy:
+    image: tecnativa/docker-socket-proxy:v0.5.0
+    environment:
+      SOCKET_PATH: /run/podman/podman.sock
+      CONTAINERS: "1"
+      EXEC: "1"
+      IMAGES: "1"
+      VOLUMES: "1"
+      VERSION: "1"
+      PING: "1"
+      POST: "1"
+      ALLOW_START: "1"
+      ALLOW_STOP: "1"
+    volumes:
+      # Root-equivalent access to the rootful Podman API. Used by
+      # AGENT_RUNTIME=hermes-job-vm to start microVM job containers.
+      - /run/podman/podman.sock:/run/podman/podman.sock
+    security_opt:
+      - label=disable
+    networks:
+      - control
+    restart: unless-stopped
+
+  hermes-vm-init:
+    image: busybox:1.37
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        mkdir -p /var/lib/hermes/jobs /var/lib/hermes/skills
+        chown -R 10001:10001 /var/lib/hermes
+    volumes:
+      - ${HERMES_VM_ROOT:-/var/lib/hermes}:/var/lib/hermes
+    restart: "no"
+
   hermes-agent:
     image: *hermes-image
     command: ["gateway", "run"]
@@ -221,6 +264,7 @@ services:
     environment: *app-environment
     volumes:
       - agent-workspace:/workspace
+      - ${HERMES_VM_ROOT:-/var/lib/hermes}:/var/lib/hermes
     depends_on:
       redpanda:
         condition: service_healthy
@@ -229,6 +273,8 @@ services:
       workspace-init:
         condition: service_completed_successfully
       hermes-skills-init:
+        condition: service_completed_successfully
+      hermes-vm-init:
         condition: service_completed_successfully
       hermes-agent:
         condition: service_started

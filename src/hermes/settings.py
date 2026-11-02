@@ -60,6 +60,13 @@ class Settings:
     hermes_job_cpus: float
     hermes_job_reflect_enabled: bool
     hermes_job_reflect_timeout_seconds: int
+    hermes_vm_docker_host: str
+    hermes_vm_image: str
+    hermes_vm_ram_mib: int
+    hermes_vm_cpus: int
+    hermes_vm_use_passt: bool
+    hermes_vm_workspace_root: str
+    hermes_vm_skills_dir: str
     s3_endpoint_url: str
     s3_region: str
     s3_bucket: str
@@ -124,6 +131,23 @@ class Settings:
             ),
             hermes_job_reflect_timeout_seconds=_int_env(
                 "HERMES_JOB_REFLECT_TIMEOUT_SECONDS", 300
+            ),
+            hermes_vm_docker_host=os.getenv(
+                "HERMES_VM_DOCKER_HOST", "tcp://podman-proxy:2375"
+            ),
+            hermes_vm_image=os.getenv(
+                "HERMES_VM_IMAGE",
+                "nousresearch/hermes-agent@sha256:"
+                "9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d",
+            ),
+            hermes_vm_ram_mib=_int_env("HERMES_VM_RAM_MIB", 2048),
+            hermes_vm_cpus=_int_env("HERMES_VM_CPUS", 2),
+            hermes_vm_use_passt=_bool_env("HERMES_VM_USE_PASST", False),
+            hermes_vm_workspace_root=os.getenv(
+                "HERMES_VM_WORKSPACE_ROOT", "/var/lib/hermes/jobs"
+            ),
+            hermes_vm_skills_dir=os.getenv(
+                "HERMES_VM_SKILLS_DIR", "/var/lib/hermes/skills"
             ),
             s3_endpoint_url=os.getenv("S3_ENDPOINT_URL", ""),
             s3_region=os.getenv("S3_REGION", "local"),

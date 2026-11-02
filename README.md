@@ -132,6 +132,7 @@ Redpanda Console is available at <http://localhost:8080>. The Phoenix UI runs at
 |---|---|
 | `hermes` | The worker submits each job to the shared Hermes Agent `/v1/runs` API. Skills and memory live in `hermes-data`. This is the default. |
 | `hermes-job` | The worker starts a disposable Hermes container per job through the Docker socket proxy. Memory is off; learned skills persist in `hermes-skills`. |
+| `hermes-job-vm` | The worker starts a disposable Hermes **microVM** per job through Podman's `krun` runtime. Same learning model, but every job gets its own kernel. |
 | `local` | The worker uses the built-in Python harness and `LLM_PROVIDER`. Intended for tests and debugging. |
 
 The Hermes API is internal to the Compose network and is not published on a host port.
@@ -208,6 +209,42 @@ least a quarter of the remaining time, which is kept for the reflect pass. The r
 uses the time the main run left unused, capped by `HERMES_JOB_REFLECT_TIMEOUT_SECONDS`.
 `agent.run_budget_seconds` is set in the container's temporary `config.yaml`, and
 `/usr/bin/timeout` provides a hard stop.
+
+### MicroVM job containers
+
+`AGENT_RUNTIME=hermes-job-vm` runs the same job flow, but every job gets its own KVM
+microVM through [libkrun](https://github.com/libkrun/libkrun). The job keeps its own kernel, so a
+kernel exploit no longer reaches the host.
+
+Prerequisites on the host:
+
+```bash
+dnf install crun-krun          # the krun runtime for Podman
+sudo systemctl enable --now podman.socket   # rootful Podman API on /run/podman/podman.sock
+podman pull nousresearch/hermes-agent@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d
+```
+
+Then switch the runtime and recreate the worker:
+
+```dotenv
+AGENT_RUNTIME=hermes-job-vm
+```
+
+How it works:
+
+- The worker talks to the rootful Podman API through the internal `podman-proxy` service, which
+  is only reachable from the `control` network.
+- Podman exposes a Docker compatible API, so the container lifecycle uses the same calls as
+  `hermes-job`. The runtime is selected with the OCI annotation `run.oci.handler=krun`, plus
+  `krun.ram_mib` and `krun.cpus` from `HERMES_VM_RAM_MIB` and `HERMES_VM_CPUS`.
+- The job bundle (script, prompt, reflect prompt) is a bind mount from
+  `HERMES_VM_WORKSPACE_ROOT`, and the results are written back into that directory. The guest
+  filesystem lives inside the microVM, so nothing is read from the container afterwards.
+- The shared skills directory is `HERMES_VM_SKILLS_DIR`. Both the worker and the microVM see the
+  same host directory, so learned skills persist across jobs.
+
+The microVM costs more than a container: each job reserves `HERMES_VM_RAM_MIB` of memory and
+boots a guest kernel, which takes about three seconds for the Hermes image.
 
 ### Concurrency and cleanup
 
