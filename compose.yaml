@@ -26,7 +26,7 @@ x-app-environment: &app-environment
   HERMES_JOB_CPUS: ${HERMES_JOB_CPUS:-2}
   HERMES_JOB_REFLECT_ENABLED: ${HERMES_JOB_REFLECT_ENABLED:-true}
   HERMES_JOB_REFLECT_TIMEOUT_SECONDS: ${HERMES_JOB_REFLECT_TIMEOUT_SECONDS:-300}
-  HERMES_JOB_DOCKER_HOST: ${HERMES_JOB_DOCKER_HOST:-tcp://podman-proxy:2375}
+  HERMES_JOB_DOCKER_HOST: ${HERMES_JOB_DOCKER_HOST:-tcp://127.0.0.1:2375}
   HERMES_JOB_RAM_MIB: ${HERMES_JOB_RAM_MIB:-2048}
   HERMES_JOB_USE_PASST: ${HERMES_JOB_USE_PASST:-false}
   HERMES_JOB_ROOT: ${HERMES_JOB_ROOT:-/var/lib/hermes}
@@ -136,8 +136,13 @@ services:
 
   podman-proxy:
     image: tecnativa/docker-socket-proxy:v0.5.0
+    # Share the worker's network namespace and listen on its loopback only, so
+    # the root-equivalent Podman API is reachable by the worker and by nothing
+    # else (the job microVMs run in a different namespace).
+    network_mode: "service:agent-worker"
     environment:
       SOCKET_PATH: ${PODMAN_SOCKET:-/run/user/1000/podman/podman.sock}
+      BIND_CONFIG: "127.0.0.1:2375"
       CONTAINERS: "1"
       EXEC: "1"
       IMAGES: "1"
@@ -153,8 +158,9 @@ services:
       - ${PODMAN_SOCKET:-/run/user/1000/podman/podman.sock}:${PODMAN_SOCKET:-/run/user/1000/podman/podman.sock}
     security_opt:
       - label=disable
-    networks:
-      - control
+    depends_on:
+      agent-worker:
+        condition: service_started
     restart: unless-stopped
 
   hermes-job-init:
@@ -242,15 +248,12 @@ services:
     depends_on:
       redpanda:
         condition: service_healthy
-      podman-proxy:
-        condition: service_started
       workspace-init:
         condition: service_completed_successfully
       hermes-job-init:
         condition: service_completed_successfully
     networks:
       - default
-      - control
     restart: unless-stopped
     read_only: true
     tmpfs:
@@ -303,7 +306,3 @@ volumes:
 
 networks:
   default:
-  # Internal network for the Podman socket proxy. It has no route to the
-  # outside, and only the worker joins it.
-  control:
-    internal: true

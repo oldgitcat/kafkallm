@@ -75,6 +75,10 @@ hermes config set auxiliary.background_review.enabled false --force >/dev/null 2
 hermes config set approvals.mode off >/dev/null 2>&1 || true
 hermes config set agent.max_turns "${HERMES_JOB_MAX_TURNS:-100}" >/dev/null 2>&1 || true
 hermes config set agent.run_budget_seconds "${HERMES_JOB_MAIN_RUN_BUDGET:-300}" >/dev/null 2>&1 || true
+# The job may reach the model provider, nothing else. Disable the browsing tools
+# and block the common network clients even under approvals.mode=off.
+hermes config set agent.disabled_toolsets '["web","browser","computer_use","x_search"]' >/dev/null 2>&1 || true
+hermes config set approvals.deny '["curl*","wget*","nc*","ncat*","netcat*","socat*","ssh*","scp*","sftp*","telnet*","ftp*","aria2c*","httpie*","xh*"]' >/dev/null 2>&1 || true
 
 # The microVM boots without the s6 supervision tree, so start the gateway here.
 # The job is submitted through its HTTP API, which works inside the microVM;

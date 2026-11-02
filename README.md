@@ -162,10 +162,11 @@ deliberate:
   microVMs would have no outbound network and every job would stall on the LLM provider.
 
 The worker is a Docker container that reaches the rootless Podman API through the internal
-`podman-proxy`. The engines do not share storage: the job directory and skills live on the host
-under `/var/lib/hermes`, which both the worker and the microVMs see. Running the whole stack under
-Podman is possible, but nested rootless Podman inside a rootless Podman container is fragile, so
-the split is the simpler option.
+`podman-proxy`, which shares the worker's network namespace and listens on loopback only. The
+engines do not share storage: the job directory and skills live on the host under `/var/lib/hermes`,
+which both the worker and the microVMs see. Running the whole stack under Podman is possible, but
+nested rootless Podman inside a rootless Podman container is fragile, so the split is the simpler
+option.
 
 ## MicroVM job containers
 
@@ -247,7 +248,8 @@ Each job runs in its own KVM microVM. What that boundary covers:
 | Privilege escalation | `no-new-privileges:true` blocks the setuid binaries in the image |
 | Resources | `HERMES_JOB_RAM_MIB` (default `2048`), `HERMES_JOB_CPUS` (default `2`), `HERMES_JOB_PIDS_LIMIT` (default `512`) |
 | Filesystem | Disposable job directory, tmpfs `/opt/data`, no host paths beyond the two bind mounts |
-| Network | TSI by default (the VMM's network context); `HERMES_JOB_USE_PASST=true` for firewall control |
+| Network | Reaches the model provider only. The Compose services and the Podman API are not reachable: the proxy listens on the worker's loopback, and `scripts/host-firewall.sh` blocks the Docker ranges |
+| Tools | The `web`, `browser`, `computer_use`, and `x_search` toolsets are disabled, and `curl`/`wget`/`nc`/`ssh`/`scp` are denied in the terminal |
 | Lifetime | The microVM and its job directory are removed after the job |
 
 What the boundary does **not** cover:
@@ -255,18 +257,21 @@ What the boundary does **not** cover:
 - **The hypervisor.** libkrun and KVM run on the host, so a VMM bug is still a host compromise.
   A microVM raises the bar, but it is not a bulletproof boundary.
 - **Root-equivalent Podman API.** The worker creates microVMs through the socket proxy, which is
-  equivalent to root on the host. The proxy sits on the internal `control` network that only the
-  worker joins, and the socket is never published, but a compromised worker still means a
+  equivalent to root on the host. The proxy shares the worker's network namespace and listens on
+  loopback only, so the job microVMs cannot reach it, but a compromised worker still means a
   compromised host.
 - **Shared skills directory.** `HERMES_JOB_SKILLS_DIR` is writable by every job. A job can poison
   the skills that later jobs load. Use one skills directory per trust domain.
-- **Internet egress.** Jobs can reach the internet and can therefore exfiltrate whatever they can
-  read. Use `HERMES_JOB_USE_PASST=true` and a firewall, or an egress proxy.
+- **General internet egress.** The browsing tools and the common network clients are blocked, but
+  the microVM can still reach the internet (it must reach the provider). A job that writes its own
+  HTTP client can exfiltrate data. Use `scripts/host-firewall.sh` and an egress allowlist if that
+  matters.
 - **Provider credentials.** The provider keys are passed into every job.
 
-For untrusted input, the practical next step is to run the Podman service on a separate host or
-VM. The job microVMs then cannot reach the host daemon at all, and a VMM bug stays contained in
-that machine. `scripts/poc-krun.sh` boots the Hermes image in a microVM and reports the guest
+For untrusted input, run `sudo scripts/host-firewall.sh` to block the Podman user from the Docker
+bridge ranges (Redpanda, RustFS, Phoenix, the worker). The microVMs then only reach the public
+internet. A stronger setup runs the Podman service on a separate host or VM, so a VMM bug stays
+contained there. `scripts/poc-krun.sh` boots the Hermes image in a microVM and reports the guest
 kernel, the start-up time, and the prerequisites.
 
 ## How jobs are executed
