@@ -59,7 +59,14 @@ _VM_RUN_SCRIPT = r"""#!/bin/sh
 set -u
 
 RESULT_DIR=/workspace/.hermes
-mkdir -p "$RESULT_DIR" 2>/dev/null || true
+if ! mkdir -p "$RESULT_DIR" 2>/dev/null; then
+  echo "Cannot create $RESULT_DIR in the shared workspace." >&2
+  exit 3
+fi
+if [ ! -w "$RESULT_DIR" ]; then
+  echo "$RESULT_DIR is not writable. The job uid must own the workspace." >&2
+  exit 3
+fi
 
 # Ephemeral jobs keep skills, but deliberately disable the small per-agent
 # memory stores and the automatic post-turn review. Learning happens in the
@@ -493,6 +500,9 @@ class HermesVmJobRunner:
         (workdir / "inputs").mkdir(parents=True, exist_ok=True)
         (workdir / "outputs").mkdir(parents=True, exist_ok=True)
         (workdir / "bundle").mkdir(parents=True, exist_ok=True)
+        # The guest writes its results here. Creating it on the host means the
+        # job only needs write access, not the right to create directories.
+        (workdir / ".hermes").mkdir(parents=True, exist_ok=True)
         inputs = workspace / "inputs"
         if inputs.is_dir():
             for entry in inputs.rglob("*"):
@@ -550,7 +560,6 @@ class HermesVmJobRunner:
                 "PidsLimit": self.settings.hermes_job_pids_limit,
                 "NanoCpus": int(self.settings.hermes_job_cpus * 1_000_000_000),
                 "SecurityOpt": ["no-new-privileges:true"],
-                "Ulimits": [{"Name": "nofile", "Soft": 65536, "Hard": 65536}],
             },
         }
         api = self.client.api
