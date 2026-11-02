@@ -32,6 +32,11 @@ _REFLECT_STDERR = f"{_RESULT_DIR}/reflect.err"
 
 _BUNDLE_DIR = "/jobboot"
 
+# Shared secret for the gateway's loopback HTTP API inside each microVM. It is
+# only reachable on 127.0.0.1 within the job's own microVM, so it is not a
+# cross-job secret.
+_JOB_API_KEY = "hermes-job-local-0123456789abcdef"
+
 _REFLECT_MIN_REMAINING_SECONDS = 60
 _SCHEDULE_RESERVE_SECONDS = 25
 _CONTAINER_POLL_SECONDS = 1.0
@@ -70,100 +75,138 @@ fi
 
 # Ephemeral jobs keep skills, but deliberately disable the small per-agent
 # memory stores and the automatic post-turn review. Learning happens in the
-# explicit reflect run below, before this container is removed.
+# explicit reflect run below.
 hermes config set memory.memory_enabled false >/dev/null 2>&1 || true
 hermes config set memory.user_profile_enabled false >/dev/null 2>&1 || true
 hermes config set auxiliary.background_review.enabled false --force >/dev/null 2>&1 || true
 
-START=$(date +%s)
-BUDGET="${HERMES_JOB_BUDGET_SECONDS:-0}"
-RESERVE=25
+# The microVM boots without the s6 supervision tree, so start the gateway here.
+# The job is submitted through its HTTP API, which works inside the microVM;
+# the `hermes chat` thin client does not connect without the supervised tree.
+hermes gateway run >/tmp/hermes-gateway.log 2>&1 &
+GATEWAY_PID=$!
+trap 'kill "$GATEWAY_PID" 2>/dev/null || true' EXIT
 
-hermes config set agent.run_budget_seconds "${HERMES_JOB_MAIN_RUN_BUDGET:-300}" >/dev/null 2>&1 || true
-
-set -- --oneshot --query-file /jobboot/hermes-job-prompt.txt --format stream-json --source tool --yolo --in /workspace
-if [ -n "${HERMES_JOB_MODEL:-}" ]; then
-  set -- "$@" --model "$HERMES_JOB_MODEL"
-  if [ -n "${HERMES_JOB_PROVIDER:-}" ]; then
-    set -- "$@" --provider "$HERMES_JOB_PROVIDER"
-  fi
-fi
-if [ -n "${HERMES_JOB_MAX_TURNS:-}" ]; then
-  set -- "$@" --max-turns "$HERMES_JOB_MAX_TURNS"
-fi
-
-/usr/bin/timeout -s TERM -k 10 "${HERMES_JOB_MAIN_TIMEOUT:-330}" hermes chat "$@" \
-  > "$RESULT_DIR/main.jsonl" 2> "$RESULT_DIR/main.err"
-MAIN_RC=$?
-
-if [ "$MAIN_RC" -ne 0 ]; then
-  exit "$MAIN_RC"
-fi
-
-if [ "${HERMES_JOB_REFLECT_ENABLED:-0}" != "1" ]; then
-  exit 0
-fi
-
-SESSION_ID=$(/opt/hermes/.venv/bin/python /jobboot/hermes-session-id.py "$RESULT_DIR/main.jsonl" 2>/dev/null || true)
-if [ -z "$SESSION_ID" ]; then
-  exit 0
-fi
-
-# The reflect pass inherits the time the main run did not use. The cap keeps a
-# single reflect bounded even for long jobs.
-NOW=$(date +%s)
-ELAPSED=$(( NOW - START ))
-LEFT=$(( BUDGET - ELAPSED - RESERVE ))
-if [ "$LEFT" -lt 30 ]; then
-  exit 0
-fi
-REFLECT_TIMEOUT=$LEFT
-CAP="${HERMES_JOB_REFLECT_TIMEOUT:-300}"
-if [ "$REFLECT_TIMEOUT" -gt "$CAP" ]; then
-  REFLECT_TIMEOUT=$CAP
-fi
-REFLECT_BUDGET=$(( REFLECT_TIMEOUT - 15 ))
-if [ "$REFLECT_BUDGET" -lt 10 ]; then
-  REFLECT_BUDGET=10
-fi
-
-hermes config set agent.run_budget_seconds "$REFLECT_BUDGET" >/dev/null 2>&1 || true
-set -- --oneshot --resume "$SESSION_ID" --query-file /jobboot/hermes-reflect-prompt.txt --format stream-json --source tool --yolo --in /workspace
-if [ -n "${HERMES_JOB_MODEL:-}" ]; then
-  set -- "$@" --model "$HERMES_JOB_MODEL"
-  if [ -n "${HERMES_JOB_PROVIDER:-}" ]; then
-    set -- "$@" --provider "$HERMES_JOB_PROVIDER"
-  fi
-fi
-
-# A resumed Hermes session keeps its original turn policy. Passing --max-turns
-# here would fail whenever it differs from the main run, so the reflect pass is
-# bounded by its run budget and the hard timeout instead.
-
-/usr/bin/timeout -s TERM -k 10 "$REFLECT_TIMEOUT" hermes chat "$@" \
-  > "$RESULT_DIR/reflect.jsonl" 2> "$RESULT_DIR/reflect.err"
-exit 0
+HERMES_API_KEY=hermes-job-local-0123456789abcdef /opt/hermes/.venv/bin/python /jobboot/run-job.py
 """
 
-_SESSION_ID_SCRIPT = r"""import json
+_JOB_RUNNER_SCRIPT = r"""import json
+import os
 import sys
+import time
 
-session_id = ""
-with open(sys.argv[1], encoding="utf-8", errors="replace") as stream:
-    for line in stream:
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
+import httpx
+
+BASE = "http://127.0.0.1:8642"
+HEADERS = {"Authorization": f"Bearer {os.environ.get('HERMES_API_KEY', 'hermes-job-local-0123456789abcdef')}"}
+RESULT_DIR = "/workspace/.hermes"
+
+
+def wait_ready(client):
+    for _ in range(120):
         try:
-            event = json.loads(line)
-        except ValueError:
+            if client.get("/health", timeout=5).status_code == 200:
+                return True
+        except httpx.HTTPError:
+            pass
+        time.sleep(1)
+    return False
+
+
+def submit(client, text, model, provider):
+    payload = {
+        "input": text,
+        "instructions": (
+            "You are Hermes Agent executing one automated job. Work inside the "
+            "provided workspace and return only the completed result."
+        ),
+    }
+    if model:
+        payload["model"] = model
+    if provider:
+        payload["provider"] = provider
+    response = client.post("/v1/runs", json=payload, timeout=30)
+    if response.status_code not in (200, 202):
+        raise SystemExit(
+            f"run submission failed: {response.status_code} {response.text[:300]}"
+        )
+    return response.json().get("run_id")
+
+
+def poll(client, run_id, deadline):
+    while time.time() < deadline:
+        try:
+            status = client.get(f"/v1/runs/{run_id}", timeout=15).json()
+        except (httpx.HTTPError, ValueError):
+            time.sleep(2)
             continue
-        if event.get("type") == "result":
-            session_id = str(event.get("session_id") or "")
-print(session_id)
+        if status.get("status") in {"completed", "failed", "cancelled", "interrupted"}:
+            return status
+        time.sleep(2)
+    return {"status": "timeout", "error": "The Hermes run exceeded the job deadline."}
+
+
+def write_result(path, status):
+    output = status.get("output") or ""
+    error = status.get("error") or status.get("turn_exit_reason")
+    succeeded = status.get("status") == "completed"
+    event = {
+        "type": "result",
+        "session_id": status.get("session_id") or "",
+        "exit_code": 0 if succeeded else 1,
+        "text": output,
+        "tokens": status.get("usage") or {},
+    }
+    if error:
+        event["error"] = error
+    with open(path, "w", encoding="utf-8") as stream:
+        stream.write(json.dumps(event) + "\n")
+
+
+def main():
+    model = os.environ.get("HERMES_JOB_MODEL", "")
+    provider = os.environ.get("HERMES_JOB_PROVIDER", "")
+    reflect_enabled = os.environ.get("HERMES_JOB_REFLECT_ENABLED", "0") == "1"
+    budget = int(os.environ.get("HERMES_JOB_BUDGET_SECONDS", "0"))
+    main_timeout = int(os.environ.get("HERMES_JOB_MAIN_TIMEOUT", "300"))
+    start = time.time()
+
+    with httpx.Client(base_url=BASE, headers=HEADERS, timeout=60) as client:
+        if not wait_ready(client):
+            sys.exit(2)
+
+        with open("/jobboot/hermes-job-prompt.txt", encoding="utf-8") as stream:
+            main_prompt = stream.read()
+        run_id = submit(client, main_prompt, model, provider)
+        status = poll(client, run_id, time.time() + main_timeout)
+        write_result(f"{RESULT_DIR}/main.jsonl", status)
+        if status.get("status") != "completed":
+            sys.exit(1)
+
+        if not reflect_enabled:
+            sys.exit(0)
+
+        # The reflect pass is a review run with the main result as context. It
+        # runs as a fresh session, so it is bounded by the leftover time budget.
+        left = budget - (time.time() - start) - 25
+        cap = int(os.environ.get("HERMES_JOB_REFLECT_TIMEOUT", "300"))
+        if left < 30:
+            sys.exit(0)
+        reflect_timeout = min(left, cap)
+        with open("/jobboot/hermes-reflect-prompt.txt", encoding="utf-8") as stream:
+            reflect_prompt = stream.read()
+        reflect_prompt += f"\n\nThe completed job returned:\n{status.get('output', '')[:4000]}"
+        reflect_run = submit(client, reflect_prompt, model, provider)
+        reflect_status = poll(client, reflect_run, time.time() + reflect_timeout)
+        write_result(f"{RESULT_DIR}/reflect.jsonl", reflect_status)
+        sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
 """
 
-_REFLECT_PROMPT = """Review the completed job session you just resumed. Improve Hermes' reusable skills for this class of job.
+_REFLECT_PROMPT = """Review the job that just completed. Improve Hermes' reusable skills for this class of job.
 
 1. Call skills_list once. Inspect at most the two most relevant skills with skill_view.
 2. Update the best match with skill_manage, or create one class-level skill if none fits. Never name a skill after this job, run, error, or one-off artifact.
@@ -528,9 +571,7 @@ class HermesJobRunner:
                     shutil.copy2(entry, target)
         bundle = workdir / "bundle"
         (bundle / "hermes-job.sh").write_text(_VM_RUN_SCRIPT, encoding="utf-8")
-        (bundle / "hermes-session-id.py").write_text(
-            _SESSION_ID_SCRIPT, encoding="utf-8"
-        )
+        (bundle / "run-job.py").write_text(_JOB_RUNNER_SCRIPT, encoding="utf-8")
         (bundle / "hermes-job-prompt.txt").write_text(prompt, encoding="utf-8")
         (bundle / "hermes-reflect-prompt.txt").write_text(
             _REFLECT_PROMPT, encoding="utf-8"
@@ -747,6 +788,12 @@ class HermesJobRunner:
             "HOME": "/opt/data",
             "HERMES_WRITE_SAFE_ROOT": "/workspace:/opt/data",
             "TERMINAL_CWD": "/workspace",
+            # The job is submitted through the gateway's loopback HTTP API. The
+            # key is not secret (the port is bound to 127.0.0.1 inside the
+            # microVM) but must be consistent between the gateway and the job.
+            "API_SERVER_ENABLED": "true",
+            "API_SERVER_HOST": "127.0.0.1",
+            "API_SERVER_KEY": _JOB_API_KEY,
             "HERMES_JOB_MAX_TURNS": str(self.settings.hermes_job_max_turns),
             "HERMES_JOB_BUDGET_SECONDS": str(max(0, budget)),
             "HERMES_JOB_MAIN_RUN_BUDGET": str(main_budget),

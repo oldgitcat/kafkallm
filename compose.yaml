@@ -167,7 +167,7 @@ services:
         mkdir -p /var/lib/hermes/jobs /var/lib/hermes/skills
         chown -R 10001:10001 /var/lib/hermes
     volumes:
-      - ${HERMES_JOB_ROOT:-/var/lib/hermes}:/var/lib/hermes
+      - ${HERMES_JOB_ROOT:-/var/lib/hermes}:/var/lib/hermes:z
     restart: "no"
 
   hermes-skills-init:
@@ -237,7 +237,7 @@ services:
     environment: *app-environment
     volumes:
       - agent-workspace:/workspace
-      - ${HERMES_JOB_ROOT:-/var/lib/hermes}:/var/lib/hermes
+      - ${HERMES_JOB_ROOT:-/var/lib/hermes}:/var/lib/hermes:z
     depends_on:
       redpanda:
         condition: service_healthy
