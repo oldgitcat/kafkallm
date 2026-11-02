@@ -75,10 +75,12 @@ fi
 
 # Ephemeral jobs keep skills, but deliberately disable the small per-agent
 # memory stores and the automatic post-turn review. Learning happens in the
-# explicit reflect run below.
+# explicit reflect run below. Approvals are off because the job is unattended
+# and has no channel to answer a prompt.
 hermes config set memory.memory_enabled false >/dev/null 2>&1 || true
 hermes config set memory.user_profile_enabled false >/dev/null 2>&1 || true
 hermes config set auxiliary.background_review.enabled false --force >/dev/null 2>&1 || true
+hermes config set approvals.mode off >/dev/null 2>&1 || true
 
 # The microVM boots without the s6 supervision tree, so start the gateway here.
 # The job is submitted through its HTTP API, which works inside the microVM;
@@ -140,7 +142,20 @@ def poll(client, run_id, deadline):
         except (httpx.HTTPError, ValueError):
             time.sleep(2)
             continue
-        if status.get("status") in {"completed", "failed", "cancelled", "interrupted"}:
+        run_status = status.get("status")
+        if run_status == "waiting_for_approval":
+            try:
+                client.post(f"/v1/runs/{run_id}/stop", timeout=5)
+            except httpx.HTTPError:
+                pass
+            return {
+                "status": "failed",
+                "error": (
+                    "The Hermes run requires human approval. Set "
+                    "approvals.mode to off for unattended jobs."
+                ),
+            }
+        if run_status in {"completed", "failed", "cancelled", "interrupted"}:
             return status
         time.sleep(2)
     return {"status": "timeout", "error": "The Hermes run exceeded the job deadline."}
