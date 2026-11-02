@@ -47,7 +47,6 @@ class Settings:
     hermes_job_max_turns: int
     hermes_job_reflect_enabled: bool
     hermes_job_reflect_timeout_seconds: int
-    hermes_job_reflect_max_turns: int
     s3_endpoint_url: str
     s3_region: str
     s3_bucket: str
@@ -108,10 +107,7 @@ class Settings:
                 "HERMES_JOB_REFLECT_ENABLED", True
             ),
             hermes_job_reflect_timeout_seconds=_int_env(
-                "HERMES_JOB_REFLECT_TIMEOUT_SECONDS", 180
-            ),
-            hermes_job_reflect_max_turns=_int_env(
-                "HERMES_JOB_REFLECT_MAX_TURNS", 30
+                "HERMES_JOB_REFLECT_TIMEOUT_SECONDS", 300
             ),
             s3_endpoint_url=os.getenv("S3_ENDPOINT_URL", ""),
             s3_region=os.getenv("S3_REGION", "local"),

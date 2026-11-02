@@ -60,12 +60,15 @@ hermes config set memory.memory_enabled false >/dev/null 2>&1 || true
 hermes config set memory.user_profile_enabled false >/dev/null 2>&1 || true
 hermes config set auxiliary.background_review.enabled false --force >/dev/null 2>&1 || true
 
-# The job container runs as root so it can prepare the mounted workspace.
-# Normalize skill ownership before the container is removed so the shared
-# skills volume stays writable by the gateway runtime (uid 10001).
+# The skills volume is shared between jobs. Keep it owned by the runtime user
+# so the next job and the gateway runtime can write to it.
 trap 'chown -R 10001:10001 /opt/data/skills 2>/dev/null || true' EXIT
 
 mkdir -p /workspace/outputs 2>/dev/null || true
+
+START=$(date +%s)
+BUDGET="${HERMES_JOB_BUDGET_SECONDS:-0}"
+RESERVE=25
 
 hermes config set agent.run_budget_seconds "${HERMES_JOB_MAIN_RUN_BUDGET:-300}" >/dev/null 2>&1 || true
 
@@ -97,7 +100,25 @@ if [ -z "$SESSION_ID" ]; then
   exit 0
 fi
 
-hermes config set agent.run_budget_seconds "${HERMES_JOB_REFLECT_RUN_BUDGET:-120}" >/dev/null 2>&1 || true
+# The reflect pass inherits the time the main run did not use. The cap keeps a
+# single reflect bounded even for long jobs.
+NOW=$(date +%s)
+ELAPSED=$(( NOW - START ))
+LEFT=$(( BUDGET - ELAPSED - RESERVE ))
+if [ "$LEFT" -lt 30 ]; then
+  exit 0
+fi
+REFLECT_TIMEOUT=$LEFT
+CAP="${HERMES_JOB_REFLECT_TIMEOUT:-300}"
+if [ "$REFLECT_TIMEOUT" -gt "$CAP" ]; then
+  REFLECT_TIMEOUT=$CAP
+fi
+REFLECT_BUDGET=$(( REFLECT_TIMEOUT - 15 ))
+if [ "$REFLECT_BUDGET" -lt 10 ]; then
+  REFLECT_BUDGET=10
+fi
+
+hermes config set agent.run_budget_seconds "$REFLECT_BUDGET" >/dev/null 2>&1 || true
 set -- --oneshot --resume "$SESSION_ID" --query-file /tmp/hermes-reflect-prompt.txt --format stream-json --source tool --yolo --in /workspace
 if [ -n "${HERMES_JOB_MODEL:-}" ]; then
   set -- "$@" --model "$HERMES_JOB_MODEL"
@@ -105,15 +126,15 @@ if [ -n "${HERMES_JOB_MODEL:-}" ]; then
     set -- "$@" --provider "$HERMES_JOB_PROVIDER"
   fi
 fi
-if [ -n "${HERMES_JOB_REFLECT_MAX_TURNS:-}" ]; then
-  set -- "$@" --max-turns "$HERMES_JOB_REFLECT_MAX_TURNS"
-fi
 
-/usr/bin/timeout -s TERM -k 10 "${HERMES_JOB_REFLECT_TIMEOUT:-130}" hermes chat "$@" \
+# A resumed Hermes session keeps its original turn policy. Passing --max-turns
+# here would fail whenever it differs from the main run, so the reflect pass is
+# bounded by its run budget and the hard timeout instead.
+
+/usr/bin/timeout -s TERM -k 10 "$REFLECT_TIMEOUT" hermes chat "$@" \
   > /tmp/hermes-reflect.jsonl 2> /tmp/hermes-reflect.err
 exit 0
 """
-
 _SESSION_ID_SCRIPT = r"""import json
 import sys
 
@@ -132,20 +153,15 @@ with open(sys.argv[1], encoding="utf-8", errors="replace") as stream:
 print(session_id)
 """
 
-_REFLECT_PROMPT = """Review the completed job session you just resumed. Your only task is to improve
-Hermes' reusable skills for this class of job.
+_REFLECT_PROMPT = """Review the completed job session you just resumed. Improve Hermes' reusable skills for this class of job.
 
-1. Use skills_list and skill_view to find an existing skill that covers this class of task.
-2. If one fits, update it with skill_manage (patch or write_file). Prefer updating an existing
-   umbrella skill over creating a new one.
-3. If no skill fits, create one class-level skill with a clear name. Do not name it after this
-   job, run, error, or one-off artifact.
-4. Capture durable procedures, commands, tool quirks, verification steps, and templates. Do not
-   store secrets, credentials, customer data, job-specific outputs, or transient facts.
-5. Do not write to memory; it is disabled for this runtime.
-6. If there is nothing durable to save, do nothing.
+1. Call skills_list once. Inspect at most the two most relevant skills with skill_view.
+2. Update the best match with skill_manage, or create one class-level skill if none fits. Never name a skill after this job, run, error, or one-off artifact.
+3. Capture durable procedures, commands, tool quirks, verification steps, and templates. Do not store secrets, credentials, customer data, job-specific outputs, or transient facts.
+4. Do not write to memory; it is disabled for this runtime.
+5. If there is nothing durable to save, do nothing.
 
-Return a short summary of what you changed.
+Keep it short: at most one skill change and a few tool calls. Return a one-line summary.
 """
 
 
@@ -237,11 +253,14 @@ class HermesJobRunner:
         workspace = Path(workspace)
         prompt = self._build_prompt(job)
         remaining = max(0.0, deadline - time.monotonic())
-        reflect_budget = self._reflect_budget(remaining)
-        main_budget = max(1, int(remaining - reflect_budget - _SCHEDULE_RESERVE_SECONDS))
+        reflect_reserve = self._reflect_reserve(remaining)
+        main_budget = max(
+            1, int(remaining - reflect_reserve - _SCHEDULE_RESERVE_SECONDS)
+        )
         environment = self._environment(
+            budget=int(remaining),
             main_budget=main_budget,
-            reflect_budget=reflect_budget,
+            reflect_reserve=reflect_reserve,
         )
         created_at = int(time.time())
         labels = {
@@ -293,7 +312,7 @@ class HermesJobRunner:
                             "skills_volume": self.settings.hermes_skills_volume,
                             "model": self.settings.hermes_model or None,
                             "provider": self.settings.hermes_provider or None,
-                            "reflect_enabled": bool(reflect_budget),
+                            "reflect_enabled": bool(reflect_reserve),
                         },
                     )
 
@@ -344,7 +363,7 @@ class HermesJobRunner:
                 span.set_attribute("hermes.session_id", session_id)
                 span.set_attribute("hermes.exit_code", int(exit_code or 0))
                 self._collect_outputs(container, workspace)
-                self._audit_reflect(container, audit, reflect_budget)
+                self._audit_reflect(container, audit, reflect_reserve)
                 if audit:
                     audit.emit(
                         "hermes.completed",
@@ -356,7 +375,7 @@ class HermesJobRunner:
                             "container_id": container.id,
                             "session_id": session_id,
                             "usage": usage,
-                            "reflect_enabled": bool(reflect_budget),
+                            "reflect_enabled": bool(reflect_reserve),
                         },
                     )
                     audit_completed = True
@@ -648,11 +667,11 @@ class HermesJobRunner:
         self,
         container: Any,
         audit: JobAudit | None,
-        reflect_budget: int,
+        reflect_reserve: int,
     ) -> None:
         if audit is None:
             return
-        if not reflect_budget:
+        if not reflect_reserve:
             audit.emit(
                 "hermes.reflect",
                 attributes={"status": "skipped", "reason": "no time budget"},
@@ -705,7 +724,12 @@ class HermesJobRunner:
             },
         )
 
-    def _reflect_budget(self, remaining: float) -> int:
+    def _reflect_reserve(self, remaining: float) -> int:
+        """Time reserved for the reflect pass when the main run uses its budget.
+
+        The container computes the actual reflect timeout from the time the
+        main run left unused, so this only bounds the main run.
+        """
         if not self.settings.hermes_job_reflect_enabled:
             return 0
         if remaining < _REFLECT_MIN_REMAINING_SECONDS:
@@ -720,8 +744,9 @@ class HermesJobRunner:
 
     def _environment(
         self,
+        budget: int,
         main_budget: int,
-        reflect_budget: int,
+        reflect_reserve: int,
     ) -> dict[str, str]:
         environment = {
             "HERMES_UID": "10001",
@@ -730,14 +755,13 @@ class HermesJobRunner:
             "HERMES_WRITE_SAFE_ROOT": "/workspace:/opt/data",
             "TERMINAL_CWD": "/workspace",
             "HERMES_JOB_MAX_TURNS": str(self.settings.hermes_job_max_turns),
-            "HERMES_JOB_REFLECT_MAX_TURNS": str(
-                self.settings.hermes_job_reflect_max_turns
-            ),
+            "HERMES_JOB_BUDGET_SECONDS": str(max(0, budget)),
             "HERMES_JOB_MAIN_RUN_BUDGET": str(main_budget),
             "HERMES_JOB_MAIN_TIMEOUT": str(main_budget + 10),
-            "HERMES_JOB_REFLECT_ENABLED": "1" if reflect_budget else "0",
-            "HERMES_JOB_REFLECT_RUN_BUDGET": str(reflect_budget or 0),
-            "HERMES_JOB_REFLECT_TIMEOUT": str((reflect_budget or 0) + 10),
+            "HERMES_JOB_REFLECT_ENABLED": "1" if reflect_reserve else "0",
+            "HERMES_JOB_REFLECT_TIMEOUT": str(
+                self.settings.hermes_job_reflect_timeout_seconds
+            ),
         }
         if self.settings.hermes_model:
             environment["HERMES_JOB_MODEL"] = self.settings.hermes_model

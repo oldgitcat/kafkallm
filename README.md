@@ -194,15 +194,20 @@ the result.
 
 Reflect is best-effort. A reflect failure is reported as a `hermes.reflect` audit event with
 status `failed`, but the job remains `succeeded`. Set `HERMES_JOB_REFLECT_ENABLED=false` to skip
-it, or tune it with `HERMES_JOB_REFLECT_TIMEOUT_SECONDS` (default `180`) and
-`HERMES_JOB_REFLECT_MAX_TURNS` (default `30`). The main run is limited by
-`HERMES_JOB_MAX_TURNS` (default `100`).
+it, or tune it with `HERMES_JOB_REFLECT_TIMEOUT_SECONDS` (default `300`). The main run is limited
+by `HERMES_JOB_MAX_TURNS` (default `100`); the reflect run resumes that session and therefore
+inherits the same turn policy.
+
+Provider errors are reported the same way. A rate-limited or quota-exhausted model (for example
+an OpenRouter free tier without credits) fails only the reflect pass; the job result stays
+`succeeded`.
 
 Each job starts with the full time budget from `timeout_seconds`, capped by
-`MAX_JOB_TIMEOUT_SECONDS`. If at least 60 seconds remain, reflect receives at most 25% of the
-remaining time, capped by `HERMES_JOB_REFLECT_TIMEOUT_SECONDS`; the main run gets the rest minus
-a 25-second reserve for startup, cleanup, and container removal. `agent.run_budget_seconds` is
-set in the container's temporary `config.yaml`, and `/usr/bin/timeout` provides a hard stop.
+`MAX_JOB_TIMEOUT_SECONDS`. The main run may use the budget minus a reserve of 25 seconds and at
+least a quarter of the remaining time, which is kept for the reflect pass. The reflect pass then
+uses the time the main run left unused, capped by `HERMES_JOB_REFLECT_TIMEOUT_SECONDS`.
+`agent.run_budget_seconds` is set in the container's temporary `config.yaml`, and
+`/usr/bin/timeout` provides a hard stop.
 
 ### Concurrency and cleanup
 
@@ -375,8 +380,9 @@ The bucket must already contain the file.
 
 `job_id` and `run_id` are generated as UUIDs if omitted. Messages use `job_id` as the Kafka key.
 `max_steps` applies to `AGENT_RUNTIME=local`; Hermes manages its own agent turn limits. In
-`hermes-job` mode, `HERMES_JOB_MAX_TURNS` controls the main run, and
-`HERMES_JOB_REFLECT_MAX_TURNS` controls the reflect run.
+`hermes-job` mode, `HERMES_JOB_MAX_TURNS` controls the main run. The reflect run resumes the same
+session and inherits its turn policy; its time budget is controlled by
+`HERMES_JOB_REFLECT_TIMEOUT_SECONDS`.
 
 A result includes:
 

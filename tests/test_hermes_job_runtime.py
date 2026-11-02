@@ -12,7 +12,11 @@ from typing import Any
 import pytest
 
 from hermes.harness import Harness
-from hermes.hermes_job_runtime import HermesJobRunner, HermesJobRuntimeError
+from hermes.hermes_job_runtime import (
+    _RUN_SCRIPT,
+    HermesJobRunner,
+    HermesJobRuntimeError,
+)
 from hermes.models import Job
 from hermes.settings import Settings
 
@@ -213,7 +217,6 @@ def _settings(**overrides: Any) -> Settings:
         "hermes_job_max_turns": 20,
         "hermes_job_reflect_enabled": True,
         "hermes_job_reflect_timeout_seconds": 60,
-        "hermes_job_reflect_max_turns": 5,
         "hermes_model": "test-model",
         "hermes_provider": "openrouter",
     }
@@ -313,6 +316,8 @@ def test_run_creates_isolated_container_and_collects_result(
     assert environment["OPENAI_API_KEY"] == "provider-secret"
     assert environment["HERMES_JOB_MODEL"] == "test-model"
     assert environment["HERMES_JOB_PROVIDER"] == "openrouter"
+    assert 100 <= int(environment["HERMES_JOB_BUDGET_SECONDS"]) <= 120
+    assert environment["HERMES_JOB_REFLECT_TIMEOUT"] == "60"
 
     volumes = client.volumes.items
     assert len(volumes) == 1
@@ -338,6 +343,11 @@ def test_run_creates_isolated_container_and_collects_result(
     ]
     assert audit.events[1]["status"] == "succeeded"
     assert audit.events[2]["status"] == "succeeded"
+
+
+def test_run_script_keeps_the_session_turn_policy_on_resume() -> None:
+    reflect_section = _RUN_SCRIPT.split("--resume", 1)[1]
+    assert '"--max-turns"' not in reflect_section
 
 
 def test_result_error_is_propagated_and_resources_removed(
