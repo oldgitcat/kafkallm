@@ -147,6 +147,26 @@ docker compose exec --user 10001 hermes-agent hermes model
 
 The picker is interactive and stores the choice in the persistent `hermes-data` volume.
 
+### Why Docker and Podman
+
+The stack runs under Docker Compose, but the job microVMs run under Podman. The split is
+deliberate:
+
+- **Podman runs the microVMs.** Only Podman's `crun` krun runtime can start a libkrun microVM,
+  and it is selected through the `run.oci.handler=krun` annotation. Docker's runc has no krun
+  handler.
+- **Docker runs the control plane.** The worker, Redpanda, RustFS, Phoenix, and the socket proxy
+  are ordinary containers. Keeping them on Docker leaves the worker image and the Compose file
+  unchanged.
+- **Rootless Podman is required.** Rootful Podman breaks libkrun's TSI networking here, so the
+  microVMs would have no outbound network and every job would stall on the LLM provider.
+
+The worker is a Docker container that reaches the rootless Podman API through the internal
+`podman-proxy`. The engines do not share storage: the job directory and skills live on the host
+under `/var/lib/hermes`, which both the worker and the microVMs see. Running the whole stack under
+Podman is possible, but nested rootless Podman inside a rootless Podman container is fragile, so
+the split is the simpler option.
+
 ## MicroVM job containers
 
 With `AGENT_RUNTIME=hermes-job`, every job runs in its own KVM microVM through
@@ -173,35 +193,36 @@ boots a guest kernel, which takes about three seconds for the Hermes image.
 
 ### Learning: skills and reflect
 
-The job disables the built-in memory stores and Hermes' automatic background review:
+The job disables the built-in memory stores, the automatic background review, and interactive
+approvals:
 
 - `memory.memory_enabled=false`
 - `memory.user_profile_enabled=false`
 - `auxiliary.background_review.enabled=false`
+- `approvals.mode=off` (unattended jobs have no channel to answer a prompt)
 
-The automatic review cannot be relied on in a one-shot process because `hermes chat --oneshot`
-exits with `os._exit`, which also stops Hermes' daemon review thread. Instead, after a successful
-main run, the worker starts a second one-shot run with `--resume <session_id>` and a fixed review
-prompt. That reflect run can inspect the completed session and update or create reusable skills
-through `skill_manage`. It runs before the microVM is removed, so the shared skills directory sees
-the result.
+The automatic review cannot be relied on in a one-shot process because the gateway exits with
+`os._exit`, which also stops Hermes' daemon review thread. Instead, after a successful main run,
+the worker submits a second HTTP run with a fixed review prompt and the main result as context.
+That reflect run can update or create reusable skills through `skill_manage`. It runs before the
+microVM is removed, so the shared skills directory sees the result.
 
 Reflect is best-effort. A reflect failure is reported as a `hermes.reflect` audit event with
 status `failed`, but the job remains `succeeded`. Set `HERMES_JOB_REFLECT_ENABLED=false` to skip
 it, or tune it with `HERMES_JOB_REFLECT_TIMEOUT_SECONDS` (default `300`). The main run is limited
-by `HERMES_JOB_MAX_TURNS` (default `100`); the reflect run resumes that session and therefore
-inherits the same turn policy.
+by `HERMES_JOB_MAX_TURNS` (default `100`). The reflect run is a fresh session (the HTTP API
+creates a new run per submission), so it is bounded by its timeout and the remaining job budget
+rather than a session resume.
 
 Provider errors are reported the same way. A rate-limited or quota-exhausted model (for example
 an OpenRouter free tier without credits) fails only the reflect pass; the job result stays
 `succeeded`.
 
 Each job starts with the full time budget from `timeout_seconds`, capped by
-`MAX_JOB_TIMEOUT_SECONDS`. The main run may use the budget minus a reserve of 25 seconds and at
-least a quarter of the remaining time, which is kept for the reflect pass. The reflect pass then
-uses the time the main run left unused, capped by `HERMES_JOB_REFLECT_TIMEOUT_SECONDS`.
-`agent.run_budget_seconds` is set in the microVM's temporary `config.yaml`, and `/usr/bin/timeout`
-provides a hard stop.
+`MAX_JOB_TIMEOUT_SECONDS`. The main run gets the budget minus a 25-second reserve and the reflect
+share; the reflect run uses the time the main run left unused, capped by
+`HERMES_JOB_REFLECT_TIMEOUT_SECONDS`. The job runner polls the run and stops waiting at its
+deadline.
 
 ### Concurrency and cleanup
 
@@ -254,8 +275,8 @@ kernel, the start-up time, and the prerequisites.
 2. The worker validates it and prepares a unique directory under its staging workspace.
 3. Referenced input files are downloaded from RustFS into `inputs/`.
 4. The selected runtime executes the job:
-   - `hermes-job`: create a microVM and a job directory, copy `inputs/` and the prompt into it,
-     start the main one-shot run, then run the optional reflect pass.
+   - `hermes-job`: create a microVM and a job directory, bind-mount `inputs/` and the prompt, start
+     the gateway and submit the main run through its HTTP API, then submit the optional reflect run.
    - `hermes`: submit a run to the shared Hermes Agent API with an idempotency key derived from
      `run_id`.
    - `local`: run the built-in Python agent harness.
@@ -272,9 +293,9 @@ The worker does not copy individual Hermes tool calls into `agent.events`; it pu
 and run-level events only. In `hermes-job` mode the session is discarded with the microVM, so use
 the `hermes.started` / `hermes.completed` / `hermes.reflect` events and the job result.
 
-Unattended jobs cannot answer interactive approval prompts. If a run enters
-`waiting_for_approval`, the worker stops it and fails the job with an explicit error. The job
-passes `--yolo`, so dangerous command approvals are bypassed for trusted workloads.
+Unattended jobs cannot answer interactive approval prompts. The job sets `approvals.mode=off`, and
+if a run still enters `waiting_for_approval`, the worker stops it and fails the job with an
+explicit error.
 
 ## Traceability and Phoenix
 
