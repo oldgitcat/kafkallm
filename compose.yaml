@@ -137,7 +137,7 @@ services:
   podman-proxy:
     image: tecnativa/docker-socket-proxy:v0.5.0
     environment:
-      SOCKET_PATH: /run/podman/podman.sock
+      SOCKET_PATH: ${PODMAN_SOCKET:-/run/user/1000/podman/podman.sock}
       CONTAINERS: "1"
       EXEC: "1"
       IMAGES: "1"
@@ -148,9 +148,9 @@ services:
       ALLOW_START: "1"
       ALLOW_STOP: "1"
     volumes:
-      # Root-equivalent access to the rootful Podman API. The worker uses it
-      # to start one microVM per job.
-      - /run/podman/podman.sock:/run/podman/podman.sock
+      # Rootless Podman API (systemctl --user enable --now podman.socket).
+      # Adjust PODMAN_SOCKET if your UID is not 1000.
+      - ${PODMAN_SOCKET:-/run/user/1000/podman/podman.sock}:${PODMAN_SOCKET:-/run/user/1000/podman/podman.sock}
     security_opt:
       - label=disable
     networks:
@@ -166,6 +166,7 @@ services:
         set -eu
         mkdir -p /var/lib/hermes/jobs /var/lib/hermes/skills
         chown -R 10001:10001 /var/lib/hermes
+        chmod -R 777 /var/lib/hermes
     volumes:
       - ${HERMES_JOB_ROOT:-/var/lib/hermes}:/var/lib/hermes:z
     restart: "no"

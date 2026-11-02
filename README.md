@@ -42,7 +42,7 @@ Hermes job worker ──→ Redpanda jobs.out
 
 - Docker and Docker Compose
 - KVM (`/dev/kvm`) plus Podman with the `krun` runtime (`crun-krun`)
-- A rootful Podman API socket: `sudo systemctl enable --now podman.socket`
+- A rootless Podman API socket: `systemctl --user enable --now podman.socket`
 - A model provider configured through `HERMES_PROVIDER` / `HERMES_MODEL` plus the matching key
 
 The official Hermes Agent image is large because it includes the complete Hermes runtime.
@@ -53,12 +53,17 @@ The official Hermes Agent image is large because it includes the complete Hermes
 cp .env.example .env
 ```
 
-On Fedora, install the microVM runtime and start the rootful Podman API:
+On Fedora, install the microVM runtime and start the rootless Podman API:
 
 ```bash
 dnf install crun-krun
-sudo systemctl enable --now podman.socket
+systemctl --user enable --now podman.socket
 ```
+
+Rootful Podman breaks libkrun's TSI networking on this setup, so the job
+microVMs get no outbound network there. The rootless socket is the supported
+path. The worker and the microVMs share `/var/lib/hermes`, which is made
+world-writable because rootless Podman maps the job's uid into a subuid range.
 
 Configure a Hermes provider:
 
@@ -146,8 +151,8 @@ The picker is interactive and stores the choice in the persistent `hermes-data` 
 
 With `AGENT_RUNTIME=hermes-job`, every job runs in its own KVM microVM through
 [libkrun](https://github.com/libkrun/libkrun). The worker creates the microVM through the
-rootful Podman API (fronted by the internal `podman-proxy`), waits for it, reads the
-`stream-json` result from the shared workspace directory, copies `outputs/` back, and removes the
+rootless Podman API (fronted by the internal `podman-proxy`), waits for it, reads the
+result from the shared workspace directory, copies `outputs/` back, and removes the
 microVM and its job directory. Each job gets its own kernel, so a kernel exploit no longer
 reaches the host.
 
@@ -238,10 +243,10 @@ What the boundary does **not** cover:
   read. Use `HERMES_JOB_USE_PASST=true` and a firewall, or an egress proxy.
 - **Provider credentials.** The provider keys are passed into every job.
 
-For untrusted input, the practical next step is to run the rootful Podman service on a separate
-host or VM. The job microVMs then cannot reach the host daemon at all, and a VMM bug stays
-contained in that machine. `scripts/poc-krun.sh` boots the Hermes image in a microVM and reports
-the guest kernel, the start-up time, and the prerequisites.
+For untrusted input, the practical next step is to run the Podman service on a separate host or
+VM. The job microVMs then cannot reach the host daemon at all, and a VMM bug stays contained in
+that machine. `scripts/poc-krun.sh` boots the Hermes image in a microVM and reports the guest
+kernel, the start-up time, and the prerequisites.
 
 ## How jobs are executed
 
@@ -416,7 +421,7 @@ Workers share the `agent-workers` consumer group. Each worker processes one job 
 - Audit delivery is asynchronous and best effort and does not change job status.
 - Topics have seven days of retention by default (`KAFKA_TOPIC_RETENTION_MS`).
 - The Compose configuration is for local development. Redpanda has no SASL/TLS here.
-- The Podman socket proxy grants root-equivalent access to the rootful Podman API. It is attached
+- The Podman socket proxy fronts the rootless Podman API. It is attached
   to the internal `control` network that only the worker joins, and the socket is never published.
 - In `hermes` mode, the Hermes API server has full access to Hermes tools, including terminal
   commands inside its container. Keep `HERMES_API_KEY` secret and do not expose port `8642`.

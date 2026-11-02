@@ -592,6 +592,17 @@ class HermesJobRunner:
             _REFLECT_PROMPT, encoding="utf-8"
         )
         os.chmod(bundle / "hermes-job.sh", 0o755)
+        # Rootless Podman maps the job's uid into a subuid range, so the worker's
+        # files are not owned by the job. Make the shared directories writable so
+        # the microVM can write its results and the next job can read them.
+        for directory in (
+            workdir,
+            workdir / ".hermes",
+            workdir / "inputs",
+            workdir / "outputs",
+            bundle,
+        ):
+            os.chmod(directory, 0o777)
 
     def _create_container(
         self,
