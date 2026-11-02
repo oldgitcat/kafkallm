@@ -7,11 +7,15 @@ results, and audit events. There is no PostgreSQL and no scheduler.
 ```text
 Producer/CLI ──→ Redpanda jobs.in ──→ Hermes job worker
                                          │
-                                         │ POST /v1/runs
-                                         ▼
-                                  Hermes Agent container
-                                  ├─ agent loop and tools
-                                  └─ shared job workspace
+              ┌──────────────────────────┴──────────────────────────┐
+              │ AGENT_RUNTIME=hermes                                │ AGENT_RUNTIME=hermes-job
+              │ POST /v1/runs                                       │ Docker API via socket proxy
+              ▼                                                     ▼
+       Hermes Agent container                              disposable Hermes container
+       ├─ agent loop and tools                             ├─ agent loop and tools
+       └─ shared job workspace                             ├─ tmpfs /opt/data (memory off)
+                                                           ├─ per-job /workspace volume
+                                                           └─ shared hermes-skills volume
 
 Hermes job worker ──→ Redpanda jobs.out
                   ├─→ Redpanda agent.events
@@ -27,9 +31,10 @@ Hermes job worker ──→ Redpanda jobs.out
 ## Included
 
 - Hermes Agent running as its own container with its official HTTP API server
+- Optional disposable per-job Hermes containers with a persistent skills volume
 - Redpanda topics `jobs.in`, `jobs.out`, and `agent.events`
 - Kafka worker with manual offset commits and a bounded startup wait
-- Shared workspace between the Kafka worker and Hermes Agent
+- Shared workspace for the gateway runtime and per-job workspace volumes for `hermes-job`
 - Correlated traces for submission, worker, agent, Hermes API run, LLM, and local tool calls
 - Structured Kafka audit events
 - Arize Phoenix UI with a persistent SQLite volume
@@ -43,6 +48,8 @@ Hermes job worker ──→ Redpanda jobs.out
 - A model provider configured for Hermes Agent, either through per-run
   `HERMES_PROVIDER` / `HERMES_MODEL` settings plus provider credentials, or through a configured
   Hermes profile in its data volume
+- Docker socket access for `AGENT_RUNTIME=hermes-job`; the included Compose stack provides an
+  internal socket proxy
 
 The official Hermes Agent image is large because it includes the complete Hermes runtime.
 
@@ -63,9 +70,20 @@ OPENROUTER_API_KEY=your-openrouter-key
 ```
 
 OpenAI and Anthropic credentials are passed through as well: use `HERMES_PROVIDER=openai` with
-`OPENAI_API_KEY`, or `HERMES_PROVIDER=anthropic` with `ANTHROPIC_API_KEY`. If no provider is
-configured, Hermes falls back to its own profile settings in the `hermes-data` volume; without
-either, jobs fail with Hermes' "not connected to any AI provider" message.
+`OPENAI_API_KEY`, or `HERMES_PROVIDER=anthropic` with `ANTHROPIC_API_KEY`. In `hermes` mode, if
+no provider is configured, Hermes falls back to its own profile settings in the `hermes-data`
+volume; without either, jobs fail with Hermes' "not connected to any AI provider" message. In
+`hermes-job` mode each container starts with an empty profile, so set `HERMES_PROVIDER`,
+`HERMES_MODEL`, and the matching key.
+
+For one disposable Hermes container per job, set:
+
+```dotenv
+AGENT_RUNTIME=hermes-job
+```
+
+The same provider credentials are passed to each job container. Learned skills persist in the
+`hermes-skills` volume; memory is disabled. See [Ephemeral job containers](#ephemeral-job-containers).
 
 Then start the stack:
 
@@ -112,7 +130,8 @@ Redpanda Console is available at <http://localhost:8080>. The Phoenix UI runs at
 
 | Value | Behavior |
 |---|---|
-| `hermes` | The worker submits each job to the Hermes Agent `/v1/runs` API. This is the production path. |
+| `hermes` | The worker submits each job to the shared Hermes Agent `/v1/runs` API. Skills and memory live in `hermes-data`. This is the default. |
+| `hermes-job` | The worker starts a disposable Hermes container per job through the Docker socket proxy. Memory is off; learned skills persist in `hermes-skills`. |
 | `local` | The worker uses the built-in Python harness and `LLM_PROVIDER`. Intended for tests and debugging. |
 
 The Hermes API is internal to the Compose network and is not published on a host port.
@@ -126,6 +145,10 @@ extra container, start only the services you need:
 docker compose up -d redpanda agent-worker
 ```
 
+In `hermes-job` mode the gateway container is still useful: it provides the pinned image used by
+job containers, seeds bundled skills, and remains available as the `hermes` fallback. The worker
+talks to Docker only through the internal `docker-proxy` service.
+
 If you prefer to configure Hermes interactively instead of passing provider/model per request,
 run its setup inside the persistent Hermes data volume:
 
@@ -135,24 +158,104 @@ docker compose exec --user 10001 hermes-agent hermes model
 
 The picker is interactive and stores the choice in the persistent `hermes-data` volume.
 
+## Ephemeral job containers
+
+With `AGENT_RUNTIME=hermes-job`, every job runs in a fresh Hermes container. The worker creates
+the container through the Docker SDK and the internal `docker-proxy`, waits for it, reads the
+`stream-json` result, copies `outputs/` back to its own staging workspace, and removes the
+container and its workspace volume.
+
+Per-job layout:
+
+| Mount | Type | Purpose |
+|---|---|---|
+| `/workspace` | named volume `hermes-job-<run_id>` | `inputs/` and `outputs/`; removed after collection |
+| `/opt/data` | tmpfs (`HERMES_JOB_TMPFS_SIZE`, default `1g`) | sessions, config, cache; discarded with the container |
+| `/opt/data/skills` | named volume `hermes-skills` | bundled and learned skills shared across jobs |
+
+Job containers use the default Docker bridge network. They are not attached to the Compose
+network, so they can reach model providers on the internet but cannot resolve `redpanda`,
+`hermes-agent`, `phoenix`, or `docker-proxy`.
+
+### Learning: skills and reflect
+
+The job container disables the built-in memory stores and Hermes' automatic background review:
+
+- `memory.memory_enabled=false`
+- `memory.user_profile_enabled=false`
+- `auxiliary.background_review.enabled=false`
+
+The automatic review cannot be relied on in a one-shot process because `hermes chat --oneshot`
+exits with `os._exit`, which also stops Hermes' daemon review thread. Instead, after a successful
+main run, the worker starts a second one-shot run with `--resume <session_id>` and a fixed review
+prompt. That reflect run can inspect the completed session and update or create reusable skills
+through `skill_manage`. It runs before the container is removed, so the shared skills volume sees
+the result.
+
+Reflect is best-effort. A reflect failure is reported as a `hermes.reflect` audit event with
+status `failed`, but the job remains `succeeded`. Set `HERMES_JOB_REFLECT_ENABLED=false` to skip
+it, or tune it with `HERMES_JOB_REFLECT_TIMEOUT_SECONDS` (default `180`) and
+`HERMES_JOB_REFLECT_MAX_TURNS` (default `30`). The main run is limited by
+`HERMES_JOB_MAX_TURNS` (default `100`).
+
+Each job starts with the full time budget from `timeout_seconds`, capped by
+`MAX_JOB_TIMEOUT_SECONDS`. If at least 60 seconds remain, reflect receives at most 25% of the
+remaining time, capped by `HERMES_JOB_REFLECT_TIMEOUT_SECONDS`; the main run gets the rest minus
+a 25-second reserve for startup, cleanup, and container removal. `agent.run_budget_seconds` is
+set in the container's temporary `config.yaml`, and `/usr/bin/timeout` provides a hard stop.
+
+### Concurrency and cleanup
+
+Multiple workers and jobs can run at the same time. The `hermes-skills` volume is shared and has
+no locking, so concurrent reflect runs use last-writer-wins semantics. Use one worker or separate
+skills volumes per trust domain when deterministic skill updates matter.
+
+The worker removes the job container and workspace volume in a `finally` block. At startup it
+also removes job containers and volumes labeled `hermes.job=1` that are older than
+`MAX_JOB_TIMEOUT_SECONDS + 300` seconds. A job that is redelivered after a crash gets a new
+container; the volume name is derived from `run_id`, and an existing volume with that name is
+replaced first.
+
+### Security boundary
+
+The Docker socket proxy is root-equivalent access to the host Docker daemon. Use it only for
+trusted local development, never expose port `2375`, and do not give untrusted producers access
+to `jobs.in`.
+
+A job container is process isolation, not a hardened security sandbox. Hermes runs with broad
+tool access inside its own container, can reach the internet, and writes to the shared skills
+volume. A malicious or manipulated job can poison skills used by later jobs. Run only trusted
+instructions and inputs.
+
+On SELinux hosts, the proxy uses `security_opt: ["label=disable"]` so it can reach the Docker
+socket without relabeling the host socket.
+
 ## How jobs are executed
 
 1. The producer writes a JSON job to `jobs.in`.
-2. The worker validates it and prepares a unique directory under the shared `/workspace`.
+2. The worker validates it and prepares a unique directory under its staging workspace.
 3. Referenced input files are downloaded from RustFS into `inputs/`.
-4. The worker submits a Hermes run with an idempotency key derived from `run_id`.
+4. The selected runtime executes the job:
+   - `hermes`: submit a run to the shared Hermes Agent API with an idempotency key derived from
+     `run_id`.
+   - `hermes-job`: create a disposable container and workspace volume, copy `inputs/` and the
+     prompt into it, start the main one-shot run, then run the optional reflect pass.
+   - `local`: run the built-in Python agent harness.
 5. Hermes executes the instruction with its own tools and writes result files under `outputs/`.
-6. The worker polls the Hermes run, publishes the final answer to `jobs.out`, uploads artifacts,
-   and commits the Kafka offset.
+6. The worker collects the final answer and outputs, optionally runs reflect, publishes the result
+   to `jobs.out`, uploads artifacts, and commits the Kafka offset.
 7. Audit events are written to `agent.events`.
 
 Hermes has its own broad tool registry and agent loop. The Kafka worker does not reimplement
-the LLM loop. Hermes admits up to ten concurrent runs by default; when that limit is reached it
-returns HTTP 429 and the worker retries with backoff until the job deadline.
+the LLM loop. In `hermes` mode Hermes admits up to ten concurrent runs by default; when that
+limit is reached it returns HTTP 429 and the worker retries with backoff until the job deadline.
+In `hermes-job` mode concurrency is bounded by the Docker host and the number of workers.
 
 The worker does not copy individual Hermes tool calls into `agent.events`; it publishes
-job-level and run-level events only. Full tool progress remains available through Hermes' run
-event stream (`GET /v1/runs/{run_id}/events`), its session store, and the agent container logs.
+job-level and run-level events only. In `hermes` mode full tool progress remains available
+through Hermes' run event stream (`GET /v1/runs/{run_id}/events`), its session store, and the
+agent container logs. In `hermes-job` mode the session is discarded with the container, so use
+the `hermes.started` / `hermes.completed` / `hermes.reflect` events and the job result.
 
 Unattended jobs cannot answer interactive approval prompts. If a run enters
 `waiting_for_approval`, the worker stops it and fails the job with an explicit error. For trusted
@@ -174,6 +277,7 @@ The worker writes these audit events to `agent.events`:
 - `job.received` and `job.completed`
 - `agent.completed`
 - `hermes.started` and `hermes.completed`
+- `hermes.reflect` in `hermes-job` mode
 - `artifact.stored` and `artifact.failed`
 - `llm.completed` and `tool.completed` in local runtime mode
 
@@ -190,22 +294,30 @@ Phoenix is optional and does not affect job success. Its ports are bound to `127
 
 ## Hermes workspace and artifacts
 
-The `agent-workspace` volume is mounted at `/workspace` in both the Kafka worker and the Hermes
-Agent container. The worker creates a separate run directory with `inputs/` and `outputs/` for
-each job. The prompt gives Hermes the exact absolute paths.
+In `hermes` mode, the `agent-workspace` volume is mounted at `/workspace` in both the Kafka
+worker and the Hermes Agent container. In `local` mode only the worker uses it. The worker creates
+a separate run directory with `inputs/` and `outputs/` for each job, and the prompt gives Hermes
+the exact absolute paths.
 
-The worker runs as UID/GID `10001`. The Hermes container is configured with the same UID/GID so
-files written by Hermes are readable and uploadable by the worker.
+In `hermes-job` mode, the worker uses `/workspace` only for staging. Each job container receives
+its own disposable `hermes-job-<run_id>` volume at `/workspace`; the worker copies inputs in and
+copies `outputs/` back before deleting the volume.
 
-`/workspace` is a shared trust boundary, not a per-job security sandbox. Every Hermes run can
-read the directories of other runs in the same container, and anyone who holds `HERMES_API_KEY`
-can execute tools in that container. The worker only uploads files below the current job's
-`outputs/` directory. Run a separate Hermes Agent container per trust domain if stronger
-isolation is required.
+The worker runs as UID/GID `10001`. The shared Hermes container is configured with the same
+UID/GID so files written by Hermes are readable and uploadable by the worker. Job containers
+start as root so they can prepare the mounted workspace and normalize ownership of the shared
+skills volume to `10001:10001` before they exit.
 
-The workspace path is deterministic for `job_id` / `run_id`, which keeps the Hermes request
-fingerprint stable so a redelivered message reuses the original idempotent run. The directory is
-removed when the job finishes.
+In `hermes` mode, `/workspace` is a shared trust boundary, not a per-job security sandbox. Every
+Hermes run can read the directories of other runs in the same container, and anyone who holds
+`HERMES_API_KEY` can execute tools in that container. The worker only uploads files below the
+current job's `outputs/` directory. Use `hermes-job` mode for per-job process isolation, or run a
+separate Hermes Agent container per trust domain.
+
+For `hermes` mode, the workspace path is deterministic for `job_id` / `run_id`, which keeps the
+request fingerprint stable so a redelivered message reuses the original idempotent run. In
+`hermes-job` mode, the workspace volume name is derived from `run_id`; an existing volume with
+that name is replaced before the new container starts. Both are removed when the job finishes.
 
 Artifacts are uploaded only from `outputs/`. A missing or unreachable artifact store does not
 turn a successful agent run into a failed job. The job remains `succeeded`, with an
@@ -262,7 +374,9 @@ The bucket must already contain the file.
 ```
 
 `job_id` and `run_id` are generated as UUIDs if omitted. Messages use `job_id` as the Kafka key.
-`max_steps` applies to `AGENT_RUNTIME=local`; Hermes manages its own agent turn limits.
+`max_steps` applies to `AGENT_RUNTIME=local`; Hermes manages its own agent turn limits. In
+`hermes-job` mode, `HERMES_JOB_MAX_TURNS` controls the main run, and
+`HERMES_JOB_REFLECT_MAX_TURNS` controls the reflect run.
 
 A result includes:
 
@@ -287,7 +401,7 @@ Then recreate the worker:
 docker compose up -d --build --force-recreate agent-worker
 ```
 
-Switch back to `AGENT_RUNTIME=hermes` for real agent execution.
+Switch back to `AGENT_RUNTIME=hermes` or `AGENT_RUNTIME=hermes-job` for real agent execution.
 
 ## Multiple workers
 
@@ -299,17 +413,25 @@ Workers share the `agent-workers` consumer group. Each worker processes one job 
 
 ## Operations and guarantees
 
-- The worker waits for Redpanda and Hermes Agent with exponential backoff before consuming jobs.
-- Redpanda, Console, RustFS, Hermes Agent, Phoenix, and the worker have restart policies.
+- The worker waits for Redpanda and the selected runtime with exponential backoff before consuming
+  jobs. In `hermes-job` mode it also pings Docker through `docker-proxy` and verifies the pinned
+  image and skills volume.
+- Redpanda, Console, RustFS, Hermes Agent, the Docker proxy, Phoenix, and the worker have restart
+  policies.
 - The Kafka offset is committed only after the result is written to `jobs.out`.
 - Processing is **at-least-once**. A job can run again after a crash.
-- Hermes requests use `run_id` as the `Idempotency-Key`, so retries within Hermes' retention
-  window are deduplicated by the agent runtime.
+- In `hermes` mode, requests use `run_id` as the `Idempotency-Key`, so retries within Hermes'
+  retention window are deduplicated by the agent runtime. In `hermes-job` mode a redelivered job
+  starts a new container, so side effects must be idempotent.
 - Audit delivery is asynchronous and best effort and does not change job status.
 - Topics have seven days of retention by default (`KAFKA_TOPIC_RETENTION_MS`).
 - The Compose configuration is for local development. Redpanda has no SASL/TLS here.
-- The Hermes API server has full access to Hermes tools, including terminal commands inside its
-  container. Keep `HERMES_API_KEY` secret and do not expose port `8642`.
+- The Docker socket proxy grants root-equivalent Docker access. Keep it on the internal Compose
+  network and never publish port `2375`.
+- In `hermes` mode, the Hermes API server has full access to Hermes tools, including terminal
+  commands inside its container. Keep `HERMES_API_KEY` secret and do not expose port `8642`.
+- In `hermes-job` mode, each job has its own container but still shares the skills volume. Run
+  only trusted jobs and inputs. See [Security boundary](#security-boundary).
 
 Stop without deleting volumes:
 
@@ -325,4 +447,5 @@ python3 -m venv .venv
 .venv/bin/pytest
 ```
 
-The unit tests use mocked Hermes HTTP responses and require neither Docker nor Redpanda.
+The unit tests use mocked Hermes HTTP responses and a fake Docker client. They require neither a
+Docker daemon nor Redpanda.

@@ -41,6 +41,13 @@ class Settings:
     hermes_model: str
     hermes_provider: str
     hermes_startup_timeout_seconds: int
+    hermes_image: str
+    hermes_skills_volume: str
+    hermes_job_tmpfs_size: str
+    hermes_job_max_turns: int
+    hermes_job_reflect_enabled: bool
+    hermes_job_reflect_timeout_seconds: int
+    hermes_job_reflect_max_turns: int
     s3_endpoint_url: str
     s3_region: str
     s3_bucket: str
@@ -86,6 +93,25 @@ class Settings:
             hermes_provider=os.getenv("HERMES_PROVIDER", ""),
             hermes_startup_timeout_seconds=_int_env(
                 "HERMES_STARTUP_TIMEOUT_SECONDS", 300
+            ),
+            hermes_image=os.getenv(
+                "HERMES_IMAGE",
+                "nousresearch/hermes-agent@sha256:"
+                "9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d",
+            ),
+            hermes_skills_volume=os.getenv(
+                "HERMES_SKILLS_VOLUME", "hermes-skills"
+            ),
+            hermes_job_tmpfs_size=os.getenv("HERMES_JOB_TMPFS_SIZE", "1g"),
+            hermes_job_max_turns=_int_env("HERMES_JOB_MAX_TURNS", 100),
+            hermes_job_reflect_enabled=_bool_env(
+                "HERMES_JOB_REFLECT_ENABLED", True
+            ),
+            hermes_job_reflect_timeout_seconds=_int_env(
+                "HERMES_JOB_REFLECT_TIMEOUT_SECONDS", 180
+            ),
+            hermes_job_reflect_max_turns=_int_env(
+                "HERMES_JOB_REFLECT_MAX_TURNS", 30
             ),
             s3_endpoint_url=os.getenv("S3_ENDPOINT_URL", ""),
             s3_region=os.getenv("S3_REGION", "local"),

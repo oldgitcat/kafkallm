@@ -9,6 +9,7 @@ from typing import Iterator
 
 from hermes.agent import AgentResult, AgentRunner
 from hermes.audit import AuditLogger, JobAudit
+from hermes.hermes_job_runtime import HermesJobRunner
 from hermes.hermes_runtime import HermesRunner
 from hermes.llm import LLM
 from hermes.models import FileRef, Job, JobResult, utc_now
@@ -47,15 +48,18 @@ class Harness:
         self.settings = settings
         self.llm = llm
         self.audit = audit
-        if settings.agent_runtime not in {"hermes", "local"}:
+        if settings.agent_runtime not in {"hermes", "hermes-job", "local"}:
             raise ValueError(
                 f"Unknown AGENT_RUNTIME: {settings.agent_runtime}"
             )
-        self.hermes = (
-            HermesRunner(settings)
-            if settings.agent_runtime == "hermes"
-            else None
-        )
+        if settings.agent_runtime == "hermes":
+            self.hermes: HermesRunner | HermesJobRunner | None = HermesRunner(
+                settings
+            )
+        elif settings.agent_runtime == "hermes-job":
+            self.hermes = HermesJobRunner(settings)
+        else:
+            self.hermes = None
         self._storage: S3Storage | None = None
 
     def wait_ready(self) -> None:

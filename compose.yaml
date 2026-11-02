@@ -1,5 +1,7 @@
 name: hermes
 
+x-hermes-image: &hermes-image ${HERMES_IMAGE:-nousresearch/hermes-agent@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d}
+
 x-app-environment: &app-environment
   KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
   JOBS_TOPIC: ${JOBS_TOPIC:-jobs.in}
@@ -15,6 +17,26 @@ x-app-environment: &app-environment
   HERMES_MODEL: ${HERMES_MODEL:-}
   HERMES_PROVIDER: ${HERMES_PROVIDER:-}
   HERMES_STARTUP_TIMEOUT_SECONDS: ${HERMES_STARTUP_TIMEOUT_SECONDS:-300}
+  HERMES_IMAGE: ${HERMES_IMAGE:-nousresearch/hermes-agent@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d}
+  HERMES_SKILLS_VOLUME: ${HERMES_SKILLS_VOLUME:-hermes-skills}
+  HERMES_JOB_TMPFS_SIZE: ${HERMES_JOB_TMPFS_SIZE:-1g}
+  HERMES_JOB_MAX_TURNS: ${HERMES_JOB_MAX_TURNS:-100}
+  HERMES_JOB_REFLECT_ENABLED: ${HERMES_JOB_REFLECT_ENABLED:-true}
+  HERMES_JOB_REFLECT_TIMEOUT_SECONDS: ${HERMES_JOB_REFLECT_TIMEOUT_SECONDS:-180}
+  HERMES_JOB_REFLECT_MAX_TURNS: ${HERMES_JOB_REFLECT_MAX_TURNS:-30}
+  DOCKER_HOST: ${DOCKER_HOST:-tcp://docker-proxy:2375}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+  GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+  DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+  XAI_API_KEY: ${XAI_API_KEY:-}
+  MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
+  GROQ_API_KEY: ${GROQ_API_KEY:-}
+  TOGETHER_API_KEY: ${TOGETHER_API_KEY:-}
+  FIREWORKS_API_KEY: ${FIREWORKS_API_KEY:-}
+  NOUS_API_KEY: ${NOUS_API_KEY:-}
   LLM_PROVIDER: ${LLM_PROVIDER:-echo}
   LLM_MODEL: ${LLM_MODEL:-}
   LLM_API_KEY: ${LLM_API_KEY:-}
@@ -105,8 +127,50 @@ services:
       - agent-workspace:/workspace
     restart: "no"
 
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:v0.5.0
+    environment:
+      CONTAINERS: "1"
+      EXEC: "1"
+      IMAGES: "1"
+      VOLUMES: "1"
+      VERSION: "1"
+      PING: "1"
+      POST: "1"
+      ALLOW_START: "1"
+      ALLOW_STOP: "1"
+    volumes:
+      # Root-equivalent access. This proxy is for trusted local development only.
+      - /var/run/docker.sock:/var/run/docker.sock
+    # Required on SELinux hosts so the proxy can reach the session's Docker socket
+    # without relabeling the host socket.
+    security_opt:
+      - label=disable
+    restart: unless-stopped
+
+  hermes-skills-init:
+    image: *hermes-image
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        mkdir -p /opt/data/skills
+        chown -R 10001:10001 /opt/data/skills
+        /opt/hermes/.venv/bin/python /opt/hermes/tools/skills_sync.py
+        chown -R 10001:10001 /opt/data/skills
+    environment:
+      HERMES_UID: "10001"
+      HERMES_GID: "10001"
+      HERMES_WRITE_SAFE_ROOT: /opt/data
+    tmpfs:
+      - /opt/data:size=256m,mode=0700
+    volumes:
+      - hermes-skills:/opt/data/skills
+    restart: "no"
+
   hermes-agent:
-    image: ${HERMES_IMAGE:-nousresearch/hermes-agent@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d}
+    image: *hermes-image
     command: ["gateway", "run"]
     environment:
       API_SERVER_ENABLED: "true"
@@ -119,11 +183,23 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      XAI_API_KEY: ${XAI_API_KEY:-}
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      TOGETHER_API_KEY: ${TOGETHER_API_KEY:-}
+      FIREWORKS_API_KEY: ${FIREWORKS_API_KEY:-}
+      NOUS_API_KEY: ${NOUS_API_KEY:-}
     volumes:
       - hermes-data:/opt/data
+      - hermes-skills:/opt/data/skills
       - agent-workspace:/workspace
     depends_on:
       workspace-init:
+        condition: service_completed_successfully
+      hermes-skills-init:
         condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8642/health >/dev/null"]
@@ -142,8 +218,14 @@ services:
     depends_on:
       redpanda:
         condition: service_healthy
+      docker-proxy:
+        condition: service_started
       workspace-init:
         condition: service_completed_successfully
+      hermes-skills-init:
+        condition: service_completed_successfully
+      hermes-agent:
+        condition: service_started
     restart: unless-stopped
     read_only: true
     tmpfs:
@@ -163,6 +245,8 @@ services:
     depends_on:
       redpanda:
         condition: service_healthy
+      docker-proxy:
+        condition: service_started
 
   rustfs:
     image: rustfs/rustfs:1.0.0
@@ -191,3 +275,5 @@ volumes:
   rustfs-data:
   phoenix-data:
   hermes-data:
+  hermes-skills:
+    name: ${HERMES_SKILLS_VOLUME:-hermes-skills}
