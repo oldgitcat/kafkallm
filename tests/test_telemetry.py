@@ -1,4 +1,4 @@
-from kafkallm.telemetry import extract_trace_context
+from hermes.telemetry import extract_trace_context
 
 
 def test_trace_extraction_ignores_unrelated_binary_headers() -> None:

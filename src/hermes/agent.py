@@ -7,10 +7,10 @@ from typing import Any
 
 from opentelemetry.trace import Status, StatusCode
 
-from kafkallm.audit import JobAudit
-from kafkallm.llm import LLM
-from kafkallm.telemetry import get_tracer, set_content, set_error
-from kafkallm.tools import ToolError, ToolRegistry
+from hermes.audit import JobAudit
+from hermes.llm import LLM
+from hermes.telemetry import get_tracer, set_content, set_error
+from hermes.tools import ToolError, ToolRegistry
 
 
 SYSTEM_PROMPT = """You are an agent inside a restricted job workspace.

@@ -3,7 +3,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from kafkallm.models import Job, to_json_bytes
+from hermes.models import Job, to_json_bytes
 
 
 def test_job_defaults_and_serialization() -> None:

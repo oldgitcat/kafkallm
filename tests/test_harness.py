@@ -3,10 +3,10 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from kafkallm.harness import Harness
-from kafkallm.llm import EchoLLM, LLMReply, ToolCall
-from kafkallm.models import Job
-from kafkallm.settings import Settings
+from hermes.harness import Harness
+from hermes.llm import EchoLLM, LLMReply, ToolCall
+from hermes.models import Job
+from hermes.settings import Settings
 
 
 class ArtifactLLM:

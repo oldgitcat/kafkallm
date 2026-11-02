@@ -11,13 +11,13 @@ from confluent_kafka import Consumer, KafkaError, KafkaException, Message
 from opentelemetry.trace import Status, StatusCode
 from pydantic import ValidationError
 
-from kafkallm.audit import AuditLogger
-from kafkallm.harness import Harness
-from kafkallm.kafka import KafkaProducer, wait_for_kafka
-from kafkallm.llm import build_llm
-from kafkallm.models import ID_PATTERN, Job, JobResult
-from kafkallm.settings import Settings
-from kafkallm.telemetry import (
+from hermes.audit import AuditLogger
+from hermes.harness import Harness
+from hermes.kafka import KafkaProducer, wait_for_kafka
+from hermes.llm import build_llm
+from hermes.models import ID_PATTERN, Job, JobResult
+from hermes.settings import Settings
+from hermes.telemetry import (
     current_trace_id,
     extract_trace_context,
     get_tracer,
@@ -104,7 +104,7 @@ class Worker:
                 job = job.model_copy(update={"trace_id": trace_id})
                 span.set_attribute("job.id", job.job_id)
                 span.set_attribute("job.run_id", job.run_id)
-                span.set_attribute("kafkallm.trace_id", trace_id)
+                span.set_attribute("hermes.trace_id", trace_id)
                 set_content(span, "input.value", job.instruction)
 
                 job_audit = self.audit.for_job(job)

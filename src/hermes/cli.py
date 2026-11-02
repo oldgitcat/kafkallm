@@ -8,10 +8,10 @@ import uuid
 
 from confluent_kafka import Consumer, KafkaError, KafkaException
 
-from kafkallm.kafka import KafkaProducer, ensure_topics
-from kafkallm.models import FileRef, Job
-from kafkallm.settings import Settings
-from kafkallm.telemetry import (
+from hermes.kafka import KafkaProducer, ensure_topics
+from hermes.models import FileRef, Job
+from hermes.settings import Settings
+from hermes.telemetry import (
     configure_telemetry,
     current_trace_id,
     get_tracer,
@@ -20,7 +20,7 @@ from kafkallm.telemetry import (
     set_content,
     shutdown_telemetry,
 )
-from kafkallm.worker import Worker
+from hermes.worker import Worker
 
 
 def _file_ref(value: str) -> FileRef:
@@ -43,7 +43,7 @@ def _add_consumer_arguments(parser: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="kafkallm", description="Process LLM jobs through Redpanda"
+        prog="hermes", description="Process LLM jobs through Redpanda"
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -114,7 +114,7 @@ def consume(settings: Settings, args: argparse.Namespace, topic: str) -> None:
     consumer = Consumer(
         {
             "bootstrap.servers": settings.kafka_bootstrap_servers,
-            "group.id": f"kafkallm-topic-viewer-{uuid.uuid4()}",
+            "group.id": f"hermes-topic-viewer-{uuid.uuid4()}",
             "auto.offset.reset": "earliest" if args.from_beginning else "latest",
             "enable.auto.commit": False,
         }

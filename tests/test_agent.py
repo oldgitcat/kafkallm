@@ -3,9 +3,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-from kafkallm.agent import AgentRunner
-from kafkallm.llm import LLMReply, ToolCall
-from kafkallm.tools import ToolRegistry, Workspace
+from hermes.agent import AgentRunner
+from hermes.llm import LLMReply, ToolCall
+from hermes.tools import ToolRegistry, Workspace
 
 
 class ToolUsingLLM:

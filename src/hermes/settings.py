@@ -64,7 +64,7 @@ class Settings:
                 "KAFKA_STARTUP_TIMEOUT_SECONDS", 300
             ),
             worker_id=os.getenv("WORKER_ID", socket.gethostname()),
-            workspace_root=os.getenv("WORKSPACE_ROOT", "/tmp/kafkallm-workspace"),
+            workspace_root=os.getenv("WORKSPACE_ROOT", "/tmp/hermes-workspace"),
             max_job_timeout_seconds=_int_env("MAX_JOB_TIMEOUT_SECONDS", 900),
             max_agent_steps=_int_env("MAX_AGENT_STEPS", 8),
             llm_provider=os.getenv("LLM_PROVIDER", "echo").lower(),
@@ -81,7 +81,7 @@ class Settings:
             phoenix_collector_endpoint=os.getenv(
                 "PHOENIX_COLLECTOR_ENDPOINT", "http://localhost:6006"
             ),
-            phoenix_project_name=os.getenv("PHOENIX_PROJECT_NAME", "kafkallm"),
+            phoenix_project_name=os.getenv("PHOENIX_PROJECT_NAME", "hermes"),
             phoenix_capture_content=_bool_env("PHOENIX_CAPTURE_CONTENT", False),
         )
 

@@ -1,6 +1,8 @@
-# kafkallm
+# Hermes
 
-A small, containerized LLM job processor using **Redpanda for jobs, results, and audit events**. It intentionally has no PostgreSQL and no scheduler. Arize Phoenix is optional as a graphical trace viewer, not as a job store.
+Hermes is a small, containerized LLM job processor using **Redpanda for jobs, results, and audit events**. It intentionally has no PostgreSQL and no scheduler. Arize Phoenix is optional as a graphical trace viewer, not as a job store.
+
+> **Rename note:** This branch renames the application from `kafkallm` to Hermes. Kafka topic names remain unchanged. The Compose project, Python package, CLI command, and default Phoenix project are now Hermes, so Docker creates separate `hermes_*` volumes. Existing `kafkallm` containers and volumes are left untouched and must be migrated separately if needed.
 
 ```text
 Producer/CLI → Redpanda jobs.in → isolated agent worker
@@ -119,7 +121,7 @@ docker compose --profile storage up -d --build
 - S3 API: <http://localhost:9000>
 - RustFS Console: <http://localhost:9001/rustfs/console/>
 - Local default account: `rustfs`
-- Local default secret: `kafkallm-secret`
+- Local default secret: `hermes-secret`
 
 These credentials are for local development only and should be changed in `.env`. If the ports are already in use, adjust `RUSTFS_API_PORT` and `RUSTFS_CONSOLE_PORT` in `.env`.
 

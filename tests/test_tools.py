@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from kafkallm.tools import ToolError, Workspace
+from hermes.tools import ToolError, Workspace
 
 
 def test_workspace_file_roundtrip(tmp_path: Path) -> None:

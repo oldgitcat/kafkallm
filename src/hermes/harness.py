@@ -5,20 +5,20 @@ import tempfile
 import time
 from pathlib import Path
 
-from kafkallm.agent import AgentResult, AgentRunner
-from kafkallm.audit import AuditLogger, JobAudit
-from kafkallm.llm import LLM
-from kafkallm.models import FileRef, Job, JobResult, utc_now
-from kafkallm.settings import Settings
-from kafkallm.storage import S3Storage
-from kafkallm.telemetry import (
+from hermes.agent import AgentResult, AgentRunner
+from hermes.audit import AuditLogger, JobAudit
+from hermes.llm import LLM
+from hermes.models import FileRef, Job, JobResult, utc_now
+from hermes.settings import Settings
+from hermes.storage import S3Storage
+from hermes.telemetry import (
     current_trace_id,
     get_tracer,
     new_trace_id,
     set_content,
     set_error,
 )
-from kafkallm.tools import ToolRegistry, Workspace
+from hermes.tools import ToolRegistry, Workspace
 
 
 logger = logging.getLogger(__name__)
@@ -62,7 +62,7 @@ class Harness:
                 "agent.name": self.settings.agent_name,
                 "job.id": job.job_id,
                 "job.run_id": job.run_id,
-                "kafkallm.trace_id": trace_id,
+                "hermes.trace_id": trace_id,
                 "worker.id": self.settings.worker_id,
             },
         ) as span:

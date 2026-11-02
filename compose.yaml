@@ -1,4 +1,4 @@
-name: kafkallm
+name: hermes
 
 x-app-environment: &app-environment
   KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
@@ -20,11 +20,11 @@ x-app-environment: &app-environment
   S3_REGION: ${S3_REGION:-local}
   S3_BUCKET: ${S3_BUCKET:-jobs}
   S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-rustfs}
-  S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-kafkallm-secret}
+  S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-hermes-secret}
   AGENT_NAME: ${AGENT_NAME:-agent-worker}
   PHOENIX_ENABLED: ${PHOENIX_ENABLED:-true}
   PHOENIX_COLLECTOR_ENDPOINT: ${PHOENIX_COLLECTOR_ENDPOINT:-http://phoenix:6006}
-  PHOENIX_PROJECT_NAME: ${PHOENIX_PROJECT_NAME:-kafkallm}
+  PHOENIX_PROJECT_NAME: ${PHOENIX_PROJECT_NAME:-hermes}
   PHOENIX_CAPTURE_CONTENT: ${PHOENIX_CAPTURE_CONTENT:-false}
 
 services:
@@ -100,7 +100,7 @@ services:
   jobctl:
     build: .
     profiles: ["cli"]
-    entrypoint: ["kafkallm"]
+    entrypoint: ["hermes"]
     command: ["--help"]
     environment: *app-environment
     depends_on:
@@ -112,7 +112,7 @@ services:
     profiles: ["storage"]
     environment:
       RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY_ID:-rustfs}
-      RUSTFS_SECRET_KEY: ${S3_SECRET_ACCESS_KEY:-kafkallm-secret}
+      RUSTFS_SECRET_KEY: ${S3_SECRET_ACCESS_KEY:-hermes-secret}
       RUSTFS_CONSOLE_ENABLE: "true"
       RUSTFS_REGION: ${S3_REGION:-local}
     ports:

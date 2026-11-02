@@ -2,8 +2,8 @@ from dataclasses import replace
 
 import pytest
 
-from kafkallm.kafka import wait_for_kafka
-from kafkallm.settings import Settings
+from hermes.kafka import wait_for_kafka
+from hermes.settings import Settings
 
 
 def test_wait_for_kafka_honors_disabled_startup_timeout() -> None:

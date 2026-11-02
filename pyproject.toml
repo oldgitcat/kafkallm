@@ -3,9 +3,9 @@ requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "kafkallm"
+name = "hermes"
 version = "0.1.0"
-description = "Kafka/Redpanda-based job processing with isolated LLM agent workers"
+description = "Hermes: Kafka/Redpanda-based job processing with isolated LLM agent workers"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -24,7 +24,7 @@ dev = [
 ]
 
 [project.scripts]
-kafkallm = "kafkallm.cli:main"
+hermes = "hermes.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

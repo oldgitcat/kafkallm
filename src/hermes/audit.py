@@ -4,10 +4,10 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from kafkallm.kafka import KafkaProducer
-from kafkallm.models import AgentEvent, Job
-from kafkallm.settings import Settings
-from kafkallm.telemetry import inject_trace_headers, new_trace_id
+from hermes.kafka import KafkaProducer
+from hermes.models import AgentEvent, Job
+from hermes.settings import Settings
+from hermes.telemetry import inject_trace_headers, new_trace_id
 
 
 logger = logging.getLogger(__name__)

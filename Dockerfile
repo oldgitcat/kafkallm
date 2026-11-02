@@ -15,4 +15,4 @@ RUN pip install --no-cache-dir . \
 
 USER appuser
 
-CMD ["kafkallm", "worker"]
+CMD ["hermes", "worker"]

@@ -1,8 +1,8 @@
 from dataclasses import replace
 
-from kafkallm.audit import AuditLogger
-from kafkallm.models import AgentEvent, Job
-from kafkallm.settings import Settings
+from hermes.audit import AuditLogger
+from hermes.models import AgentEvent, Job
+from hermes.settings import Settings
 
 
 class RecordingProducer:

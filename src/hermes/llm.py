@@ -5,7 +5,7 @@ from typing import Any, Protocol
 
 from openai import OpenAI
 
-from kafkallm.settings import Settings
+from hermes.settings import Settings
 
 
 @dataclass(frozen=True, slots=True)

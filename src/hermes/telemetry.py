@@ -10,8 +10,8 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace import Span, Status, StatusCode
 
-from kafkallm import __version__
-from kafkallm.settings import Settings
+from hermes import __version__
+from hermes.settings import Settings
 
 
 _provider: TracerProvider | None = None
@@ -53,7 +53,7 @@ def shutdown_telemetry() -> None:
 
 
 def get_tracer() -> trace.Tracer:
-    return trace.get_tracer("kafkallm", __version__)
+    return trace.get_tracer("hermes", __version__)
 
 
 def capture_content() -> bool:

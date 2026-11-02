@@ -7,8 +7,8 @@ from confluent_kafka import KafkaError, KafkaException, Producer
 from confluent_kafka.admin import AdminClient, NewTopic
 from pydantic import BaseModel
 
-from kafkallm.models import to_json_bytes
-from kafkallm.settings import Settings
+from hermes.models import to_json_bytes
+from hermes.settings import Settings
 
 
 logger = logging.getLogger(__name__)
