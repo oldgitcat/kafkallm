@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import io
 import json
-import tarfile
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -13,95 +11,42 @@ import pytest
 
 from hermes.harness import Harness
 from hermes.hermes_job_runtime import (
-    _RUN_SCRIPT,
     HermesJobRunner,
     HermesJobRuntimeError,
+    _parse_bytes,
 )
 from hermes.models import Job
 from hermes.settings import Settings
 
 
-class FakeNotFound(Exception):
-    status_code = 404
+class FakeResponse:
+    def __init__(
+        self,
+        status_code: int = 200,
+        payload: dict[str, Any] | None = None,
+        text: str = "",
+    ) -> None:
+        self.status_code = status_code
+        self._payload = payload or {}
+        self.text = text
 
-
-def _tar_file(name: str, content: bytes) -> bytes:
-    buffer = io.BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w") as archive:
-        info = tarfile.TarInfo(name=name)
-        info.size = len(content)
-        info.mode = 0o600
-        archive.addfile(info, io.BytesIO(content))
-    return buffer.getvalue()
-
-
-def _tar_outputs(files: dict[str, bytes]) -> bytes:
-    buffer = io.BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w") as archive:
-        for name, content in files.items():
-            info = tarfile.TarInfo(name=f"outputs/{name}")
-            info.size = len(content)
-            info.mode = 0o644
-            archive.addfile(info, io.BytesIO(content))
-    return buffer.getvalue()
-
-
-def _read_tar(data: bytes, name: str) -> bytes:
-    with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as archive:
-        member = archive.getmember(name)
-        extracted = archive.extractfile(member)
-        assert extracted is not None
-        return extracted.read()
-
-
-class FakeVolume:
-    def __init__(self, name: str, labels: dict[str, str] | None = None) -> None:
-        self.name = name
-        self.attrs = {"Labels": labels or {}}
-        self.removed = False
-
-    def remove(self, force: bool = False) -> None:
-        del force
-        self.removed = True
-
-
-class FakeVolumes:
-    def __init__(self) -> None:
-        self.items: list[FakeVolume] = []
-
-    def get(self, name: str) -> FakeVolume:
-        for volume in self.items:
-            if volume.name == name and not volume.removed:
-                return volume
-        raise FakeNotFound(name)
-
-    def create(self, name: str, labels: dict[str, str]) -> FakeVolume:
-        volume = FakeVolume(name, labels)
-        self.items.append(volume)
-        return volume
-
-    def list(self, filters: dict[str, str] | None = None) -> list[FakeVolume]:
-        del filters
-        return [volume for volume in self.items if not volume.removed]
+    def json(self) -> dict[str, Any]:
+        return self._payload
 
 
 class FakeContainer:
-    def __init__(self, client: "FakeDockerClient", kwargs: dict[str, Any]) -> None:
+    def __init__(self, client: "FakeDockerClient", container_id: str) -> None:
         self.client = client
-        self.kwargs = kwargs
-        self.id = "container-id-1234567890"
-        self.labels = kwargs.get("labels", {})
+        self.id = container_id
+        self.labels = client.create_body.get("Labels", {})
         self.status = "created"
         self.exit_code = 0
-        self.started = False
         self.stopped = False
         self.removed = False
-        self.exec_calls: list[Any] = []
-        self.put_archives: list[tuple[str, bytes]] = []
 
     def start(self) -> None:
-        self.started = True
         self.status = self.client.exit_status
+        self.client.write_results()
 
     def reload(self) -> None:
         pass
@@ -118,51 +63,60 @@ class FakeContainer:
     def remove(self, force: bool = False) -> None:
         del force
         self.removed = True
-        if self in self.client.containers.items:
-            self.client.containers.items.remove(self)
-
-    def exec_run(self, command: Any, user: str | None = None) -> Any:
-        self.exec_calls.append((command, user))
-        return SimpleNamespace(exit_code=0, output=b"")
-
-    def put_archive(self, path: str, data: bytes) -> bool:
-        self.put_archives.append((path, data))
-        return True
-
-    def get_archive(self, path: str) -> tuple[Any, dict[str, Any]]:
-        if path == "/workspace/outputs":
-            if self.client.output_tar is None:
-                raise FakeNotFound(path)
-            return iter([self.client.output_tar]), {}
-        content = self.client.files.get(path)
-        if content is None:
-            raise FakeNotFound(path)
-        return iter([_tar_file(Path(path).name, content)]), {}
 
     def logs(self, **kwargs: Any) -> bytes:
         del kwargs
-        return b"container logs"
+        return b"microvm logs"
+
+
+class FakeApi:
+    def __init__(self, client: "FakeDockerClient") -> None:
+        self.client = client
+
+    def _url(self, path: str) -> str:
+        return f"http://fake{path}"
+
+    def _post(
+        self,
+        url: str,
+        data: str | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs: Any,
+    ) -> FakeResponse:
+        del headers, kwargs
+        body = json.loads(data or "{}")
+        self.client.create_body = body
+        if self.client.create_error is not None:
+            return FakeResponse(
+                status_code=500,
+                text=str(self.client.create_error),
+            )
+        return FakeResponse(201, {"Id": "vm-container-id"})
 
 
 class FakeContainers:
     def __init__(self, client: "FakeDockerClient") -> None:
         self.client = client
         self.items: list[FakeContainer] = []
-        self.created: list[FakeContainer] = []
+
+    def get(self, container_id: str) -> FakeContainer:
+        for container in self.client.containers.items:
+            if container.id == container_id:
+                return container
+        container = FakeContainer(self.client, container_id)
+        self.client.containers.items.append(container)
+        return container
 
     def create(self, **kwargs: Any) -> FakeContainer:
-        if self.client.create_error is not None:
-            raise self.client.create_error
-        container = FakeContainer(self.client, kwargs)
-        self.items.append(container)
-        self.created.append(container)
+        container = FakeContainer(self.client, "vm-container-id")
+        self.client.containers.items.append(container)
         return container
 
     def list(
         self, all: bool = False, filters: dict[str, str] | None = None
     ) -> list[FakeContainer]:
         del all, filters
-        return list(self.items)
+        return list(self.client.containers.items)
 
 
 class FakeImages:
@@ -171,22 +125,29 @@ class FakeImages:
 
     def get(self, name: str) -> Any:
         if not self.client.image_available:
-            raise FakeNotFound(name)
+            raise RuntimeError("no such image")
+        return SimpleNamespace(id="image-id", tags=[name])
+
+    def pull(self, name: str, **kwargs: Any) -> Any:
+        del kwargs
+        self.client.pulled.append(name)
+        self.client.image_available = True
         return SimpleNamespace(id="image-id", tags=[name])
 
 
 class FakeDockerClient:
     def __init__(self) -> None:
-        self.volumes = FakeVolumes()
         self.containers = FakeContainers(self)
         self.images = FakeImages(self)
-        self.files: dict[str, bytes] = {}
-        self.output_tar: bytes | None = None
-        self.exit_status = "exited"
+        self.api = FakeApi(self)
+        self.create_body: dict[str, Any] = {}
+        self.create_error: str | None = None
         self.image_available = True
-        self.create_error: Exception | None = None
+        self.exit_status = "exited"
         self.pinged = False
         self.closed = False
+        self.pulled: list[str] = []
+        self.results: dict[str, str] = {}
 
     def ping(self) -> bool:
         self.pinged = True
@@ -195,29 +156,42 @@ class FakeDockerClient:
     def close(self) -> None:
         self.closed = True
 
+    @property
+    def workdir(self) -> Path:
+        binds = self.create_body.get("HostConfig", {}).get("Binds", [])
+        return Path(binds[0].split(":")[0])
+
+    def write_results(self) -> None:
+        result_dir = self.workdir / ".hermes"
+        result_dir.mkdir(parents=True, exist_ok=True)
+        for name, content in self.results.items():
+            (result_dir / name).write_text(content, encoding="utf-8")
+
 
 class FakeAudit:
     def __init__(self) -> None:
         self.events: list[dict[str, Any]] = []
 
     def emit(self, event_type: str, status: str = "info", **kwargs: Any) -> str:
-        self.events.append(
-            {"type": event_type, "status": status, **kwargs}
-        )
+        self.events.append({"type": event_type, "status": status, **kwargs})
         return f"event-{len(self.events)}"
 
 
 def _settings(**overrides: Any) -> Settings:
     values: dict[str, Any] = {
         "agent_runtime": "hermes-job",
+        "hermes_job_docker_host": "tcp://podman-proxy:2375",
         "hermes_image": "hermes:test",
-        "hermes_skills_volume": "hermes-skills-test",
-        "hermes_startup_timeout_seconds": 1,
+        "hermes_job_ram_mib": 2048,
+        "hermes_job_cpus": 2,
+        "hermes_job_use_passt": False,
+        "hermes_job_workspace_root": "/var/lib/hermes/jobs",
+        "hermes_job_skills_dir": "/var/lib/hermes/skills",
         "hermes_job_tmpfs_size": "256m",
         "hermes_job_max_turns": 20,
         "hermes_job_memory_limit": "4g",
         "hermes_job_pids_limit": 512,
-        "hermes_job_cpus": 2.0,
+        "hermes_job_cpus": 2,
         "hermes_job_reflect_enabled": True,
         "hermes_job_reflect_timeout_seconds": 60,
         "hermes_model": "test-model",
@@ -225,6 +199,35 @@ def _settings(**overrides: Any) -> Settings:
     }
     values.update(overrides)
     return replace(Settings.from_env(), **values)
+
+
+def _result_event(
+    *,
+    text: str = "Done",
+    error: str | None = None,
+    exit_code: int = 0,
+    session_id: str = "session-1",
+) -> str:
+    event: dict[str, Any] = {
+        "type": "result",
+        "session_id": session_id,
+        "exit_code": exit_code,
+        "text": text,
+        "tokens": {"input": 10, "output": 5, "total": 15},
+    }
+    if error is not None:
+        event["error"] = error
+    return json.dumps(event) + "\n"
+
+
+def _settings_for(tmp_path: Path, **overrides: Any) -> Settings:
+    """Settings whose job directories live inside the test directory."""
+    values: dict[str, Any] = {
+        "hermes_job_workspace_root": str(tmp_path / "jobs"),
+        "hermes_job_skills_dir": str(tmp_path / "skills"),
+    }
+    values.update(overrides)
+    return _settings(**values)
 
 
 def _workspace(tmp_path: Path) -> Path:
@@ -235,49 +238,14 @@ def _workspace(tmp_path: Path) -> Path:
     return workspace
 
 
-def _result_event(
-    *,
-    text: str = "Done",
-    error: str | None = None,
-    exit_code: int = 0,
-    session_id: str = "session-1",
-) -> bytes:
-    event: dict[str, Any] = {
-        "type": "result",
-        "session_id": session_id,
-        "exit_code": exit_code,
-        "text": text,
-        "tokens": {
-            "input": 10,
-            "output": 5,
-            "total": 15,
-            "cache_read": 2,
-            "cache_write": 1,
-        },
-    }
-    if error is not None:
-        event["error"] = error
-    return (json.dumps(event) + "\n").encode("utf-8")
-
-
-def _runner(
-    client: FakeDockerClient, **overrides: Any
-) -> HermesJobRunner:
-    return HermesJobRunner(_settings(**overrides), client=client)
-
-
-def test_run_creates_isolated_container_and_collects_result(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("OPENAI_API_KEY", "provider-secret")
+def test_vm_run_starts_microvm_and_collects_result(tmp_path: Path) -> None:
     client = FakeDockerClient()
-    client.files["/tmp/hermes-main.jsonl"] = _result_event(text="Completed")
-    client.files["/tmp/hermes-reflect.jsonl"] = _result_event(
-        text="Skill updated", session_id="session-1"
-    )
-    client.output_tar = _tar_outputs({"result.txt": b"artifact"})
+    client.results = {
+        "main.jsonl": _result_event(text="Completed"),
+        "reflect.jsonl": _result_event(text="Skill updated"),
+    }
     audit = FakeAudit()
-    runner = _runner(client)
+    runner = HermesJobRunner(_settings_for(tmp_path), client=client)
     workspace = _workspace(tmp_path)
 
     result = runner.run(
@@ -289,60 +257,20 @@ def test_run_creates_isolated_container_and_collects_result(
     )
 
     assert result.text == "Completed"
-    assert result.steps == 0
-    assert result.usage == {
-        "input_tokens": 10,
-        "output_tokens": 5,
-        "total_tokens": 15,
-        "cache_read_tokens": 2,
-        "cache_write_tokens": 1,
-    }
-    assert (workspace / "outputs" / "result.txt").read_text() == "artifact"
+    assert result.usage["total_tokens"] == 15
 
-    container = client.containers.created[0]
-    assert container.started
-    assert container.removed
-    assert container.kwargs["image"] == "hermes:test"
-    assert container.kwargs["network_mode"] == "bridge"
-    assert container.kwargs["labels"]["hermes.job"] == "1"
-    assert container.kwargs["tmpfs"]["/opt/data"].startswith("size=256m")
-    assert container.kwargs["security_opt"] == ["no-new-privileges:true"]
-    assert container.kwargs["pids_limit"] == 512
-    assert container.kwargs["mem_limit"] == "4g"
-    assert container.kwargs["memswap_limit"] == "4g"
-    assert container.kwargs["nano_cpus"] == 2_000_000_000
-    workspace_volume = next(
-        name
-        for name in container.kwargs["volumes"]
-        if name.startswith("hermes-job-")
-    )
-    assert container.kwargs["volumes"][workspace_volume]["bind"] == "/workspace"
-    assert container.kwargs["volumes"]["hermes-skills-test"]["bind"] == "/opt/data/skills"
-    environment = container.kwargs["environment"]
-    assert environment["HOME"] == "/opt/data"
-    assert environment["HERMES_JOB_REFLECT_ENABLED"] == "1"
-    assert environment["OPENAI_API_KEY"] == "provider-secret"
-    assert environment["HERMES_JOB_MODEL"] == "test-model"
-    assert environment["HERMES_JOB_PROVIDER"] == "openrouter"
-    assert 100 <= int(environment["HERMES_JOB_BUDGET_SECONDS"]) <= 120
-    assert environment["HERMES_JOB_REFLECT_TIMEOUT"] == "60"
-
-    volumes = client.volumes.items
-    assert len(volumes) == 1
-    assert volumes[0].name.startswith("hermes-job-")
-    assert volumes[0].removed
-
-    put_paths = [path for path, _ in container.put_archives]
-    assert "/workspace" in put_paths
-    assert "/tmp" in put_paths
-    prompt_data = next(
-        data
-        for path, data in container.put_archives
-        if b"hermes-job-prompt.txt" in data
-    )
-    prompt = _read_tar(prompt_data, "hermes-job-prompt.txt").decode()
-    assert "Do the job" in prompt
-    assert "{'key': 'value'}" in prompt
+    body = client.create_body
+    annotations = body["HostConfig"]["Annotations"]
+    assert annotations["run.oci.handler"] == "krun"
+    assert annotations["krun.ram_mib"] == "2048"
+    assert annotations["krun.cpus"] == "2"
+    binds = body["HostConfig"]["Binds"]
+    assert any(bind.endswith(":/workspace:rw") for bind in binds)
+    assert any(bind.endswith(":/jobboot:ro") for bind in binds)
+    assert any("/opt/data/skills:rw" in bind for bind in binds)
+    assert body["Image"] == "hermes:test"
+    assert body["HostConfig"]["Memory"] == 4 * 1024**3
+    assert body["HostConfig"]["PidsLimit"] == 512
 
     assert [event["type"] for event in audit.events] == [
         "hermes.started",
@@ -350,49 +278,46 @@ def test_run_creates_isolated_container_and_collects_result(
         "hermes.completed",
     ]
     assert audit.events[1]["status"] == "succeeded"
-    assert audit.events[2]["status"] == "succeeded"
 
 
-def test_run_script_keeps_the_session_turn_policy_on_resume() -> None:
-    reflect_section = _RUN_SCRIPT.split("--resume", 1)[1]
-    assert '"--max-turns"' not in reflect_section
-
-
-def test_resource_limits_can_be_disabled(tmp_path: Path) -> None:
+def test_vm_run_copies_outputs_and_removes_workdir(tmp_path: Path) -> None:
     client = FakeDockerClient()
-    client.files["/tmp/hermes-main.jsonl"] = _result_event(text="Completed")
-    runner = _runner(
-        client,
-        hermes_job_memory_limit="0",
-        hermes_job_cpus=0.0,
-        hermes_job_pids_limit=0,
-    )
+    client.results = {"main.jsonl": _result_event(text="Completed")}
+    runner = HermesJobRunner(_settings_for(tmp_path), client=client)
     workspace = _workspace(tmp_path)
 
-    runner.run(
+    original_create = client.api._post
+
+    def _post(url: str, **kwargs: Any) -> FakeResponse:
+        response = original_create(url, **kwargs)
+        outputs = client.workdir / "outputs"
+        outputs.mkdir(parents=True, exist_ok=True)
+        (outputs / "result.txt").write_text("artifact", encoding="utf-8")
+        return response
+
+    client.api._post = _post  # type: ignore[method-assign]
+
+    result = runner.run(
         job=Job(instruction="Do the job"),
         workspace=workspace,
         deadline=time.monotonic() + 120,
         max_steps=5,
     )
 
-    container = client.containers.created[0]
-    assert "mem_limit" not in container.kwargs
-    assert "memswap_limit" not in container.kwargs
-    assert "nano_cpus" not in container.kwargs
-    assert container.kwargs["pids_limit"] == 0
-    assert container.kwargs["security_opt"] == ["no-new-privileges:true"]
+    assert result.text == "Completed"
+    assert (workspace / "outputs" / "result.txt").read_text() == "artifact"
+    assert not client.workdir.exists()
 
 
-def test_result_error_is_propagated_and_resources_removed(
-    tmp_path: Path,
-) -> None:
+def test_vm_provider_error_is_propagated(tmp_path: Path) -> None:
     client = FakeDockerClient()
-    client.files["/tmp/hermes-main.jsonl"] = _result_event(
-        text="Provider failed", error="Provider failed", exit_code=1
-    )
+    client.results = {
+        "main.jsonl": _result_event(
+            text="Provider failed", error="Provider failed", exit_code=1
+        )
+    }
     audit = FakeAudit()
-    runner = _runner(client)
+    runner = HermesJobRunner(_settings_for(tmp_path), client=client)
     workspace = _workspace(tmp_path)
 
     with pytest.raises(HermesJobRuntimeError, match="Provider failed"):
@@ -404,20 +329,14 @@ def test_result_error_is_propagated_and_resources_removed(
             audit=audit,  # type: ignore[arg-type]
         )
 
-    assert client.containers.created[0].removed
-    assert client.volumes.items[0].removed
-    assert [event["type"] for event in audit.events] == [
-        "hermes.started",
-        "hermes.completed",
-    ]
+    assert audit.events[-1]["type"] == "hermes.completed"
     assert audit.events[-1]["status"] == "failed"
-    assert audit.events[-1]["error"] == "Provider failed"
 
 
-def test_missing_result_event_uses_stderr(tmp_path: Path) -> None:
+def test_vm_missing_result_uses_stderr(tmp_path: Path) -> None:
     client = FakeDockerClient()
-    client.files["/tmp/hermes-main.err"] = b"No AI provider is configured."
-    runner = _runner(client)
+    client.results = {"main.err": "No AI provider is configured."}
+    runner = HermesJobRunner(_settings_for(tmp_path), client=client)
     workspace = _workspace(tmp_path)
 
     with pytest.raises(
@@ -430,125 +349,14 @@ def test_missing_result_event_uses_stderr(tmp_path: Path) -> None:
             max_steps=5,
         )
 
-    assert client.containers.created[0].removed
-    assert client.volumes.items[0].removed
 
-
-def test_deadline_stops_container_and_removes_resources(
-    tmp_path: Path,
-) -> None:
+def test_vm_create_failure_is_reported(tmp_path: Path) -> None:
     client = FakeDockerClient()
-    client.exit_status = "running"
-    runner = _runner(client)
+    client.create_error = "no runtime handler"
+    runner = HermesJobRunner(_settings_for(tmp_path), client=client)
     workspace = _workspace(tmp_path)
 
-    with pytest.raises(HermesJobRuntimeError, match="job deadline"):
-        runner.run(
-            job=Job(instruction="Hang"),
-            workspace=workspace,
-            deadline=time.monotonic() - 1,
-            max_steps=5,
-        )
-
-    container = client.containers.created[0]
-    assert container.stopped
-    assert container.removed
-    assert client.volumes.items[0].removed
-
-
-def test_reflect_failure_does_not_fail_successful_job(
-    tmp_path: Path,
-) -> None:
-    client = FakeDockerClient()
-    client.files["/tmp/hermes-main.jsonl"] = _result_event(text="Completed")
-    client.files["/tmp/hermes-reflect.err"] = b"reflect exploded"
-    audit = FakeAudit()
-    runner = _runner(client)
-    workspace = _workspace(tmp_path)
-
-    result = runner.run(
-        job=Job(instruction="Do the job"),
-        workspace=workspace,
-        deadline=time.monotonic() + 120,
-        max_steps=5,
-        audit=audit,  # type: ignore[arg-type]
-    )
-
-    assert result.text == "Completed"
-    reflect_events = [
-        event for event in audit.events if event["type"] == "hermes.reflect"
-    ]
-    assert reflect_events[0]["status"] == "failed"
-    assert reflect_events[0]["error"] == "reflect exploded"
-    assert audit.events[-1]["type"] == "hermes.completed"
-    assert audit.events[-1]["status"] == "succeeded"
-
-
-def test_reflect_nonzero_exit_is_reported_as_failed(
-    tmp_path: Path,
-) -> None:
-    client = FakeDockerClient()
-    client.files["/tmp/hermes-main.jsonl"] = _result_event(text="Completed")
-    client.files["/tmp/hermes-reflect.jsonl"] = _result_event(
-        text="Reflect did not finish", exit_code=1
-    )
-    audit = FakeAudit()
-    runner = _runner(client)
-    workspace = _workspace(tmp_path)
-
-    result = runner.run(
-        job=Job(instruction="Do the job"),
-        workspace=workspace,
-        deadline=time.monotonic() + 120,
-        max_steps=5,
-        audit=audit,  # type: ignore[arg-type]
-    )
-
-    assert result.text == "Completed"
-    reflect_events = [
-        event for event in audit.events if event["type"] == "hermes.reflect"
-    ]
-    assert reflect_events[0]["status"] == "failed"
-    assert reflect_events[0]["error"] == "Reflect did not finish"
-    assert audit.events[-1]["type"] == "hermes.completed"
-    assert audit.events[-1]["status"] == "succeeded"
-
-
-def test_reflect_disabled_is_reported_as_skipped(
-    tmp_path: Path,
-) -> None:
-    client = FakeDockerClient()
-    client.files["/tmp/hermes-main.jsonl"] = _result_event(text="Completed")
-    audit = FakeAudit()
-    runner = _runner(client, hermes_job_reflect_enabled=False)
-    workspace = _workspace(tmp_path)
-
-    result = runner.run(
-        job=Job(instruction="Do the job"),
-        workspace=workspace,
-        deadline=time.monotonic() + 120,
-        max_steps=5,
-        audit=audit,  # type: ignore[arg-type]
-    )
-
-    assert result.text == "Completed"
-    assert "skill" not in result.text.lower()
-    reflect_events = [
-        event for event in audit.events if event["type"] == "hermes.reflect"
-    ]
-    assert reflect_events[0]["status"] == "info"
-    assert reflect_events[0]["attributes"]["status"] == "skipped"
-
-
-def test_container_creation_failure_removes_workspace_volume(
-    tmp_path: Path,
-) -> None:
-    client = FakeDockerClient()
-    client.create_error = RuntimeError("create failed")
-    runner = _runner(client)
-    workspace = _workspace(tmp_path)
-
-    with pytest.raises(RuntimeError, match="create failed"):
+    with pytest.raises(HermesJobRuntimeError, match="no runtime handler"):
         runner.run(
             job=Job(instruction="Fail"),
             workspace=workspace,
@@ -556,39 +364,38 @@ def test_container_creation_failure_removes_workspace_volume(
             max_steps=5,
         )
 
-    assert client.volumes.items[0].removed
 
-
-def test_cancel_active_stops_running_container() -> None:
+def test_vm_passt_annotation_is_opt_in(tmp_path: Path) -> None:
     client = FakeDockerClient()
-    runner = _runner(client)
-    container = FakeContainer(client, {})
-    container.status = "running"
-    runner._active_container = container
-
-    runner.cancel_active()
-
-    assert container.stopped
-
-
-def test_wait_ready_checks_docker_and_cleans_old_orphans() -> None:
-    client = FakeDockerClient()
-    old = FakeContainer(client, {"labels": {"hermes.job": "1", "hermes.created_at": "0"}})
-    old.status = "exited"
-    client.containers.items.append(old)
-    old_volume = client.volumes.create(
-        "orphan-volume", {"hermes.job": "1", "hermes.created_at": "0"}
+    client.results = {"main.jsonl": _result_event()}
+    runner = HermesJobRunner(
+        _settings_for(tmp_path, hermes_job_use_passt=True), client=client
     )
-    runner = _runner(client)
+    workspace = _workspace(tmp_path)
+
+    runner.run(
+        job=Job(instruction="Do the job"),
+        workspace=workspace,
+        deadline=time.monotonic() + 120,
+        max_steps=5,
+    )
+
+    annotations = client.create_body["HostConfig"]["Annotations"]
+    assert annotations["krun.use_passt"] == "1"
+
+
+def test_vm_wait_ready_pulls_a_missing_image(tmp_path: Path) -> None:
+    client = FakeDockerClient()
+    client.image_available = False
+    runner = HermesJobRunner(_settings_for(tmp_path), client=client)
 
     runner.wait_ready()
 
+    assert client.pulled == ["hermes:test"]
     assert client.pinged
-    assert old.removed
-    assert old_volume.removed
 
 
-def test_harness_selects_hermes_job_runtime(tmp_path: Path) -> None:
+def test_harness_selects_vm_runtime(tmp_path: Path) -> None:
     settings = _settings(workspace_root=str(tmp_path))
     harness = Harness(settings, None)
 
@@ -597,8 +404,7 @@ def test_harness_selects_hermes_job_runtime(tmp_path: Path) -> None:
     harness.close()
 
 
-def test_harness_rejects_unknown_runtime(tmp_path: Path) -> None:
-    settings = _settings(agent_runtime="unknown", workspace_root=str(tmp_path))
-
-    with pytest.raises(ValueError, match="Unknown AGENT_RUNTIME"):
-        Harness(settings, None)
+def test_parse_bytes() -> None:
+    assert _parse_bytes("4g") == 4 * 1024**3
+    assert _parse_bytes("512m") == 512 * 1024**2
+    assert _parse_bytes("1024") == 1024

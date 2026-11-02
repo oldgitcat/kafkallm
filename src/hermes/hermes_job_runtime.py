@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import io
 import json
 import logging
 import os
-import tarfile
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -19,16 +18,19 @@ from hermes.telemetry import get_tracer, set_content, set_error
 
 logger = logging.getLogger(__name__)
 
-_JOB_LABEL = "hermes.job"
+_JOB_LABEL = "hermes.vm"
 _JOB_ID_LABEL = "hermes.job_id"
 _RUN_ID_LABEL = "hermes.run_id"
 _CREATED_AT_LABEL = "hermes.created_at"
-_VOLUME_LABEL = "hermes.workspace_volume"
+_WORKDIR_LABEL = "hermes.workdir"
 
-_MAIN_JSONL = "/tmp/hermes-main.jsonl"
-_MAIN_STDERR = "/tmp/hermes-main.err"
-_REFLECT_JSONL = "/tmp/hermes-reflect.jsonl"
-_REFLECT_STDERR = "/tmp/hermes-reflect.err"
+_RESULT_DIR = "/workspace/.hermes"
+_MAIN_JSONL = f"{_RESULT_DIR}/main.jsonl"
+_MAIN_STDERR = f"{_RESULT_DIR}/main.err"
+_REFLECT_JSONL = f"{_RESULT_DIR}/reflect.jsonl"
+_REFLECT_STDERR = f"{_RESULT_DIR}/reflect.err"
+
+_BUNDLE_DIR = "/jobboot"
 
 _REFLECT_MIN_REMAINING_SECONDS = 60
 _SCHEDULE_RESERVE_SECONDS = 25
@@ -50,8 +52,21 @@ _PROVIDER_ENV_KEYS = (
     "NOUS_API_KEY",
 )
 
-_RUN_SCRIPT = r"""#!/bin/sh
+# The job bundle is bind mounted into the microVM, so the script reads its
+# inputs from /jobboot and writes its results into the shared workspace. That
+# keeps every artifact on the host, where the worker can collect it.
+_VM_RUN_SCRIPT = r"""#!/bin/sh
 set -u
+
+RESULT_DIR=/workspace/.hermes
+if ! mkdir -p "$RESULT_DIR" 2>/dev/null; then
+  echo "Cannot create $RESULT_DIR in the shared workspace." >&2
+  exit 3
+fi
+if [ ! -w "$RESULT_DIR" ]; then
+  echo "$RESULT_DIR is not writable. The job uid must own the workspace." >&2
+  exit 3
+fi
 
 # Ephemeral jobs keep skills, but deliberately disable the small per-agent
 # memory stores and the automatic post-turn review. Learning happens in the
@@ -60,19 +75,13 @@ hermes config set memory.memory_enabled false >/dev/null 2>&1 || true
 hermes config set memory.user_profile_enabled false >/dev/null 2>&1 || true
 hermes config set auxiliary.background_review.enabled false --force >/dev/null 2>&1 || true
 
-# The skills volume is shared between jobs. Keep it owned by the runtime user
-# so the next job and the gateway runtime can write to it.
-trap 'chown -R 10001:10001 /opt/data/skills 2>/dev/null || true' EXIT
-
-mkdir -p /workspace/outputs 2>/dev/null || true
-
 START=$(date +%s)
 BUDGET="${HERMES_JOB_BUDGET_SECONDS:-0}"
 RESERVE=25
 
 hermes config set agent.run_budget_seconds "${HERMES_JOB_MAIN_RUN_BUDGET:-300}" >/dev/null 2>&1 || true
 
-set -- --oneshot --query-file /tmp/hermes-job-prompt.txt --format stream-json --source tool --yolo --in /workspace
+set -- --oneshot --query-file /jobboot/hermes-job-prompt.txt --format stream-json --source tool --yolo --in /workspace
 if [ -n "${HERMES_JOB_MODEL:-}" ]; then
   set -- "$@" --model "$HERMES_JOB_MODEL"
   if [ -n "${HERMES_JOB_PROVIDER:-}" ]; then
@@ -84,7 +93,7 @@ if [ -n "${HERMES_JOB_MAX_TURNS:-}" ]; then
 fi
 
 /usr/bin/timeout -s TERM -k 10 "${HERMES_JOB_MAIN_TIMEOUT:-330}" hermes chat "$@" \
-  > /tmp/hermes-main.jsonl 2> /tmp/hermes-main.err
+  > "$RESULT_DIR/main.jsonl" 2> "$RESULT_DIR/main.err"
 MAIN_RC=$?
 
 if [ "$MAIN_RC" -ne 0 ]; then
@@ -95,7 +104,7 @@ if [ "${HERMES_JOB_REFLECT_ENABLED:-0}" != "1" ]; then
   exit 0
 fi
 
-SESSION_ID=$(/opt/hermes/.venv/bin/python /tmp/hermes-session-id.py /tmp/hermes-main.jsonl 2>/dev/null || true)
+SESSION_ID=$(/opt/hermes/.venv/bin/python /jobboot/hermes-session-id.py "$RESULT_DIR/main.jsonl" 2>/dev/null || true)
 if [ -z "$SESSION_ID" ]; then
   exit 0
 fi
@@ -119,7 +128,7 @@ if [ "$REFLECT_BUDGET" -lt 10 ]; then
 fi
 
 hermes config set agent.run_budget_seconds "$REFLECT_BUDGET" >/dev/null 2>&1 || true
-set -- --oneshot --resume "$SESSION_ID" --query-file /tmp/hermes-reflect-prompt.txt --format stream-json --source tool --yolo --in /workspace
+set -- --oneshot --resume "$SESSION_ID" --query-file /jobboot/hermes-reflect-prompt.txt --format stream-json --source tool --yolo --in /workspace
 if [ -n "${HERMES_JOB_MODEL:-}" ]; then
   set -- "$@" --model "$HERMES_JOB_MODEL"
   if [ -n "${HERMES_JOB_PROVIDER:-}" ]; then
@@ -132,9 +141,10 @@ fi
 # bounded by its run budget and the hard timeout instead.
 
 /usr/bin/timeout -s TERM -k 10 "$REFLECT_TIMEOUT" hermes chat "$@" \
-  > /tmp/hermes-reflect.jsonl 2> /tmp/hermes-reflect.err
+  > "$RESULT_DIR/reflect.jsonl" 2> "$RESULT_DIR/reflect.err"
 exit 0
 """
+
 _SESSION_ID_SCRIPT = r"""import json
 import sys
 
@@ -170,7 +180,14 @@ class HermesJobRuntimeError(RuntimeError):
 
 
 class HermesJobRunner:
-    """Run each job in its own disposable Hermes container."""
+    """Run each job in its own KVM microVM through Podman's krun runtime.
+
+    Podman exposes a Docker compatible API, so the container lifecycle uses the
+    same calls as the plain container runtime. Two details differ: the runtime
+    is selected through OCI annotations, and the job bundle is a bind mount
+    instead of an archive, because the guest filesystem lives inside the
+    microVM.
+    """
 
     def __init__(
         self,
@@ -188,11 +205,16 @@ class HermesJobRunner:
         if self._client is None:
             import docker
 
-            self._client = docker.from_env()
+            self._client = docker.DockerClient(
+                base_url=self.settings.hermes_job_docker_host,
+                timeout=120,
+            )
         return self._client
 
     def wait_ready(self) -> None:
-        deadline = time.monotonic() + self.settings.hermes_startup_timeout_seconds
+        deadline = (
+            time.monotonic() + self.settings.hermes_startup_timeout_seconds
+        )
         delay = 1.0
         last_error: Exception | None = None
         while time.monotonic() < deadline:
@@ -201,23 +223,24 @@ class HermesJobRunner:
                 self._ensure_image()
                 self._cleanup_orphans()
                 logger.info(
-                    "Hermes job runtime is ready (image=%s, skills_volume=%s)",
+                    "Hermes microVM runtime is ready (image=%s, docker_host=%s)",
                     self.settings.hermes_image,
-                    self.settings.hermes_skills_volume,
+                    self.settings.hermes_job_docker_host,
                 )
                 return
             except Exception as exc:
                 last_error = exc
                 remaining = max(0.0, deadline - time.monotonic())
                 logger.warning(
-                    "Hermes job runtime not ready yet (%s); retrying in %.1fs",
+                    "Hermes microVM runtime not ready yet (%s); retrying in %.1fs",
                     exc,
                     min(delay, remaining),
                 )
                 time.sleep(min(delay, remaining))
                 delay = min(delay * 2, 10.0)
         raise HermesJobRuntimeError(
-            "Hermes job runtime did not become ready within the startup timeout."
+            "Hermes microVM runtime did not become ready within the startup "
+            "timeout."
         ) from last_error
 
     def close(self) -> None:
@@ -233,12 +256,12 @@ class HermesJobRunner:
             container = self._active_container
         if container is None:
             return
-        logger.info("Stopping active Hermes job container %s", container.id[:12])
+        logger.info("Stopping active Hermes microVM container %s", container.id[:12])
         try:
             container.stop(timeout=10)
         except Exception:
             logger.warning(
-                "Could not stop Hermes job container %s", container.id[:12]
+                "Could not stop Hermes microVM container %s", container.id[:12]
             )
 
     def run(
@@ -263,11 +286,13 @@ class HermesJobRunner:
             reflect_reserve=reflect_reserve,
         )
         created_at = int(time.time())
+        workdir = self._workdir(job)
         labels = {
             _JOB_LABEL: "1",
             _JOB_ID_LABEL: job.job_id,
             _RUN_ID_LABEL: job.run_id,
             _CREATED_AT_LABEL: str(created_at),
+            _WORKDIR_LABEL: str(workdir),
         }
         attributes = {
             "openinference.span.kind": "AGENT",
@@ -281,35 +306,30 @@ class HermesJobRunner:
             "job.run_id": job.run_id,
         }
         container: Any | None = None
-        volume: Any | None = None
-        audit_completed = False
         run_started = time.perf_counter()
 
         with get_tracer().start_as_current_span(
-            "hermes.job.run", attributes=attributes
+            "hermes.job.vm.run", attributes=attributes
         ) as span:
             set_content(span, "input.value", prompt)
             try:
-                volume = self._create_workspace_volume(job, created_at)
-                labels[_VOLUME_LABEL] = volume.name
+                self._prepare_workdir(workdir, workspace, prompt)
                 container = self._create_container(
                     environment=environment,
                     labels=labels,
-                    volume_name=volume.name,
+                    workdir=workdir,
                 )
                 with self._active_lock:
                     self._active_container = container
                 container.start()
                 span.set_attribute("hermes.container_id", container.id)
-                self._prepare_workspace(container, workspace)
-                self._put_job_files(container, prompt)
                 if audit:
                     audit.emit(
                         "hermes.started",
                         attributes={
                             "container_id": container.id,
-                            "workspace": str(workspace),
-                            "skills_volume": self.settings.hermes_skills_volume,
+                            "workspace": str(workdir),
+                            "skills_dir": self.settings.hermes_job_skills_dir,
                             "model": self.settings.hermes_model or None,
                             "provider": self.settings.hermes_provider or None,
                             "reflect_enabled": bool(reflect_reserve),
@@ -317,8 +337,8 @@ class HermesJobRunner:
                     )
 
                 exit_code, timed_out = self._wait(container, deadline)
-                main_event = self._read_result(container, _MAIN_JSONL)
-                main_error = self._read_text(container, _MAIN_STDERR)
+                main_event = self._read_result(workdir, "main.jsonl")
+                main_error = self._read_text(workdir, "main.err")
                 if main_event is None:
                     if timed_out:
                         raise HermesJobRuntimeError(
@@ -327,7 +347,7 @@ class HermesJobRunner:
                         )
                     detail = main_error.strip() or self._log_tail(container)
                     raise HermesJobRuntimeError(
-                        "Hermes job container produced no result event "
+                        "Hermes microVM produced no result event "
                         f"(exit code {exit_code}). {detail[:4000]}"
                     )
 
@@ -362,8 +382,8 @@ class HermesJobRunner:
                 session_id = str(main_event.get("session_id") or "") or None
                 span.set_attribute("hermes.session_id", session_id)
                 span.set_attribute("hermes.exit_code", int(exit_code or 0))
-                self._collect_outputs(container, workspace)
-                self._audit_reflect(container, audit, reflect_reserve)
+                self._collect_outputs(workdir, workspace)
+                self._audit_reflect(workdir, audit, reflect_reserve)
                 if audit:
                     audit.emit(
                         "hermes.completed",
@@ -378,12 +398,11 @@ class HermesJobRunner:
                             "reflect_enabled": bool(reflect_reserve),
                         },
                     )
-                    audit_completed = True
                 set_content(span, "output.value", output)
                 return AgentResult(text=output, steps=0, usage=usage)
             except Exception as exc:
                 set_error(span, exc)
-                if audit and not audit_completed:
+                if audit:
                     audit.emit(
                         "hermes.completed",
                         "failed",
@@ -399,16 +418,30 @@ class HermesJobRunner:
                     if self._active_container is container:
                         self._active_container = None
                 self._remove_container(container)
-                self._remove_volume(volume)
+                self._remove_workdir(workdir)
 
     def _ensure_image(self) -> None:
         try:
             self.client.images.get(self.settings.hermes_image)
+            return
+        except Exception:
+            pass
+        logger.info(
+            "Pulling %s into the Podman storage", self.settings.hermes_image
+        )
+        try:
+            self.client.images.pull(self.settings.hermes_image)
         except Exception as exc:
             raise HermesJobRuntimeError(
-                f"Hermes image {self.settings.hermes_image} is not available. "
-                "Start the stack with `docker compose up` or pull it with "
-                "`docker compose pull hermes-agent`."
+                f"Hermes image {self.settings.hermes_image} is not available "
+                f"in the Podman storage and could not be pulled: {exc}"
+            ) from exc
+        try:
+            self.client.images.get(self.settings.hermes_image)
+        except Exception as exc:
+            raise HermesJobRuntimeError(
+                f"Hermes image {self.settings.hermes_image} is not available "
+                "in the Podman storage."
             ) from exc
 
     def _cleanup_orphans(self) -> None:
@@ -419,7 +452,7 @@ class HermesJobRunner:
                 all=True, filters={"label": f"{_JOB_LABEL}=1"}
             )
         except Exception:
-            logger.warning("Could not list orphaned Hermes job containers")
+            logger.warning("Could not list orphaned Hermes microVM containers")
             containers = []
         for container in containers:
             labels = getattr(container, "labels", None) or {}
@@ -428,7 +461,8 @@ class HermesJobRunner:
             if status == "running" and created is not None and created < max_age:
                 continue
             logger.warning(
-                "Removing orphaned Hermes job container %s", container.id[:12]
+                "Removing orphaned Hermes microVM container %s",
+                container.id[:12],
             )
             try:
                 if status == "running":
@@ -436,28 +470,28 @@ class HermesJobRunner:
                 container.remove(force=True)
             except Exception:
                 logger.warning(
-                    "Could not remove orphaned Hermes job container %s",
+                    "Could not remove orphaned Hermes microVM container %s",
                     container.id[:12],
                 )
-        try:
-            volumes = self.client.volumes.list(
-                filters={"label": f"{_JOB_LABEL}=1"}
-            )
-        except Exception:
-            logger.warning("Could not list orphaned Hermes job volumes")
-            return
-        for volume in volumes:
-            labels = getattr(volume, "attrs", {}).get("Labels", {}) or {}
-            created = self._label_age(labels, now)
-            if created is not None and created < max_age:
+        for workdir in self._orphan_workdirs():
+            logger.warning("Removing orphaned Hermes job directory %s", workdir)
+            shutil.rmtree(workdir, ignore_errors=True)
+
+    def _orphan_workdirs(self) -> list[Path]:
+        root = Path(self.settings.hermes_job_workspace_root)
+        if not root.is_dir():
+            return []
+        orphans: list[Path] = []
+        for entry in root.iterdir():
+            if not entry.is_dir() or not entry.name.startswith("hermes-vm-"):
                 continue
-            logger.warning("Removing orphaned Hermes job volume %s", volume.name)
             try:
-                volume.remove(force=True)
-            except Exception:
-                logger.warning(
-                    "Could not remove orphaned Hermes job volume %s", volume.name
-                )
+                age = time.time() - entry.stat().st_mtime
+            except OSError:
+                continue
+            if age > self.settings.max_job_timeout_seconds + 300:
+                orphans.append(entry)
+        return orphans
 
     @staticmethod
     def _label_age(labels: dict[str, str], now: float) -> float | None:
@@ -469,112 +503,98 @@ class HermesJobRunner:
         except ValueError:
             return None
 
-    def _create_workspace_volume(self, job: Job, created_at: int) -> Any:
-        name = f"hermes-job-{job.run_id}"
-        try:
-            existing = self.client.volumes.get(name)
-        except Exception as exc:
-            if not self._is_not_found(exc):
-                logger.debug("Checking for existing volume %s failed: %s", name, exc)
-        else:
-            existing.remove(force=True)
-        return self.client.volumes.create(
-            name=name,
-            labels={
-                _JOB_LABEL: "1",
-                _JOB_ID_LABEL: job.job_id,
-                _RUN_ID_LABEL: job.run_id,
-                _CREATED_AT_LABEL: str(created_at),
-            },
+    def _workdir(self, job: Job) -> Path:
+        return (
+            Path(self.settings.hermes_job_workspace_root)
+            / f"hermes-vm-{job.run_id}"
         )
+
+    def _prepare_workdir(self, workdir: Path, workspace: Path, prompt: str) -> None:
+        shutil.rmtree(workdir, ignore_errors=True)
+        (workdir / "inputs").mkdir(parents=True, exist_ok=True)
+        (workdir / "outputs").mkdir(parents=True, exist_ok=True)
+        (workdir / "bundle").mkdir(parents=True, exist_ok=True)
+        # The guest writes its results here. Creating it on the host means the
+        # job only needs write access, not the right to create directories.
+        (workdir / ".hermes").mkdir(parents=True, exist_ok=True)
+        inputs = workspace / "inputs"
+        if inputs.is_dir():
+            for entry in inputs.rglob("*"):
+                target = workdir / "inputs" / entry.relative_to(inputs)
+                if entry.is_dir():
+                    target.mkdir(parents=True, exist_ok=True)
+                elif entry.is_file():
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(entry, target)
+        bundle = workdir / "bundle"
+        (bundle / "hermes-job.sh").write_text(_VM_RUN_SCRIPT, encoding="utf-8")
+        (bundle / "hermes-session-id.py").write_text(
+            _SESSION_ID_SCRIPT, encoding="utf-8"
+        )
+        (bundle / "hermes-job-prompt.txt").write_text(prompt, encoding="utf-8")
+        (bundle / "hermes-reflect-prompt.txt").write_text(
+            _REFLECT_PROMPT, encoding="utf-8"
+        )
+        os.chmod(bundle / "hermes-job.sh", 0o755)
 
     def _create_container(
         self,
         environment: dict[str, str],
         labels: dict[str, str],
-        volume_name: str,
+        workdir: Path,
     ) -> Any:
-        limits: dict[str, Any] = {
-            # The agent process drops to uid 10001, but setuid binaries in the
-            # image could still raise it again. no-new-privileges closes that.
-            "security_opt": ["no-new-privileges:true"],
-            "pids_limit": self.settings.hermes_job_pids_limit,
+        annotations = {
+            "run.oci.handler": "krun",
+            "krun.cpus": str(self.settings.hermes_job_cpus),
+            "krun.ram_mib": str(self.settings.hermes_job_ram_mib),
         }
-        memory_limit = self.settings.hermes_job_memory_limit.strip()
-        if memory_limit and memory_limit != "0":
-            limits["mem_limit"] = memory_limit
-            # Equal values disable swap so a job cannot exhaust host memory.
-            limits["memswap_limit"] = memory_limit
-        if self.settings.hermes_job_cpus > 0:
-            limits["nano_cpus"] = int(
-                self.settings.hermes_job_cpus * 1_000_000_000
-            )
-        return self.client.containers.create(
-            image=self.settings.hermes_image,
-            command=[
-                "sh",
-                "-c",
-                (
-                    "i=0; while [ ! -f /tmp/hermes-go ]; do "
-                    'i=$((i+1)); [ "$i" -gt 900 ] && exit 1; '
-                    "sleep 0.2; done; exec sh /tmp/hermes-job.sh"
-                ),
-            ],
-            environment=environment,
-            labels=labels,
-            network_mode="bridge",
-            tmpfs={
-                "/opt/data": (
-                    f"size={self.settings.hermes_job_tmpfs_size},mode=0700"
-                ),
-            },
-            volumes={
-                volume_name: {"bind": "/workspace", "mode": "rw"},
-                self.settings.hermes_skills_volume: {
-                    "bind": "/opt/data/skills",
-                    "mode": "rw",
+        if self.settings.hermes_job_use_passt:
+            annotations["krun.use_passt"] = "1"
+        body = {
+            "Image": self.settings.hermes_image,
+            "Cmd": ["/bin/sh", "/jobboot/hermes-job.sh"],
+            "Env": [f"{key}={value}" for key, value in environment.items()],
+            "Labels": labels,
+            "WorkingDir": "/workspace",
+            "HostConfig": {
+                "Binds": [
+                    f"{workdir}:/workspace:rw",
+                    f"{workdir}/bundle:/jobboot:ro",
+                    f"{self.settings.hermes_job_skills_dir}:/opt/data/skills:rw",
+                ],
+                "Tmpfs": {
+                    "/opt/data": (
+                        f"size={self.settings.hermes_job_tmpfs_size},mode=0700"
+                    )
                 },
+                "Annotations": annotations,
+                "NetworkMode": "bridge",
+                "Memory": self._memory_bytes(),
+                "MemorySwap": self._memory_bytes(),
+                "PidsLimit": self.settings.hermes_job_pids_limit,
+                "NanoCpus": self.settings.hermes_job_cpus * 1_000_000_000,
+                "SecurityOpt": ["no-new-privileges:true"],
             },
-            detach=True,
-            auto_remove=False,
-            **limits,
-        )
-
-    def _prepare_workspace(self, container: Any, workspace: Path) -> None:
-        result = container.exec_run(
-            [
-                "sh",
-                "-c",
-                (
-                    "mkdir -p /workspace/inputs /workspace/outputs && "
-                    "chown -R 10001:10001 /workspace"
-                ),
-            ],
-            user="root",
-        )
-        if getattr(result, "exit_code", 1) != 0:
-            output = getattr(result, "output", b"")
-            if isinstance(output, bytes):
-                output = output.decode("utf-8", errors="replace")
-            raise HermesJobRuntimeError(
-                f"Could not prepare the Hermes job workspace: {output[:1000]}"
-            )
-        inputs = workspace / "inputs"
-        if inputs.is_dir():
-            data = self._tar_directory(inputs, "inputs")
-            container.put_archive("/workspace", data)
-
-    def _put_job_files(self, container: Any, prompt: str) -> None:
-        files = {
-            "hermes-job.sh": _RUN_SCRIPT.encode("utf-8"),
-            "hermes-session-id.py": _SESSION_ID_SCRIPT.encode("utf-8"),
-            "hermes-job-prompt.txt": prompt.encode("utf-8"),
-            "hermes-reflect-prompt.txt": _REFLECT_PROMPT.encode("utf-8"),
         }
-        container.put_archive("/tmp", self._tar_files(files))
-        container.put_archive(
-            "/tmp", self._tar_files({"hermes-go": b"1"})
+        api = self.client.api
+        response = api._post(  # noqa: SLF001
+            api._url("/containers/create"),  # noqa: SLF001
+            data=json.dumps(body),
+            headers={"Content-Type": "application/json"},
         )
+        if response.status_code >= 300:
+            raise HermesJobRuntimeError(
+                "Could not create the Hermes microVM container: "
+                f"{response.status_code} {response.text[:1000]}"
+            )
+        container_id = response.json()["Id"]
+        return self.client.containers.get(container_id)
+
+    def _memory_bytes(self) -> int:
+        limit = self.settings.hermes_job_memory_limit.strip()
+        if not limit or limit == "0":
+            return 0
+        return _parse_bytes(limit)
 
     def _wait(self, container: Any, deadline: float) -> tuple[int | None, bool]:
         while time.monotonic() < deadline:
@@ -584,57 +604,37 @@ class HermesJobRunner:
                 return int(wait_result.get("StatusCode", 1)), False
             time.sleep(_CONTAINER_POLL_SECONDS)
         logger.warning(
-            "Hermes job container %s exceeded the job deadline; stopping it",
+            "Hermes microVM container %s exceeded the job deadline; stopping it",
             container.id[:12],
         )
         try:
             container.stop(timeout=10)
         except Exception:
             logger.warning(
-                "Could not stop timed-out Hermes job container %s",
+                "Could not stop timed-out Hermes microVM container %s",
                 container.id[:12],
             )
         return None, True
 
-    def _collect_outputs(self, container: Any, workspace: Path) -> None:
+    def _collect_outputs(self, workdir: Path, workspace: Path) -> None:
+        source = workdir / "outputs"
         target = workspace / "outputs"
         target.mkdir(parents=True, exist_ok=True)
-        try:
-            stream, _ = container.get_archive("/workspace/outputs")
-        except Exception as exc:
-            if self._is_not_found(exc):
-                return
-            raise HermesJobRuntimeError(
-                f"Could not collect Hermes job outputs: {exc}"
-            ) from exc
-        data = b"".join(stream)
-        if not data:
+        if not source.is_dir():
             return
-        with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as archive:
-            self._extract_output_members(archive, target)
+        for entry in source.rglob("*"):
+            if not entry.is_file():
+                continue
+            destination = target / entry.relative_to(source)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(entry, destination)
 
-    @staticmethod
-    def _extract_output_members(archive: tarfile.TarFile, target: Path) -> None:
-        for member in archive.getmembers():
-            name = member.name
-            if name.startswith("./"):
-                name = name[2:]
-            if name.rstrip("/") == "outputs":
-                continue
-            if not name.startswith("outputs/"):
-                continue
-            relative = name[len("outputs/") :]
-            if not relative:
-                continue
-            member.name = relative
-            archive.extract(member, path=target, filter="data")
-
-    def _read_result(self, container: Any, path: str) -> dict[str, Any] | None:
-        raw = self._read_bytes(container, path)
+    def _read_result(self, workdir: Path, name: str) -> dict[str, Any] | None:
+        raw = self._read_text(workdir, name)
         if not raw:
             return None
         result: dict[str, Any] | None = None
-        for line in raw.decode("utf-8", errors="replace").splitlines():
+        for line in raw.splitlines():
             line = line.strip()
             if not line.startswith("{"):
                 continue
@@ -646,29 +646,11 @@ class HermesJobRunner:
                 result = event
         return result
 
-    def _read_text(self, container: Any, path: str) -> str:
-        raw = self._read_bytes(container, path)
-        return raw.decode("utf-8", errors="replace") if raw else ""
-
-    def _read_bytes(self, container: Any, path: str) -> bytes:
-        try:
-            stream, _ = container.get_archive(path)
-        except Exception as exc:
-            if self._is_not_found(exc):
-                return b""
-            logger.warning("Could not read %s from Hermes job container: %s", path, exc)
-            return b""
-        data = b"".join(stream)
-        if not data:
-            return b""
-        with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as archive:
-            for member in archive.getmembers():
-                if not member.isfile():
-                    continue
-                extracted = archive.extractfile(member)
-                if extracted is not None:
-                    return extracted.read()
-        return b""
+    def _read_text(self, workdir: Path, name: str) -> str:
+        path = workdir / ".hermes" / name
+        if not path.is_file():
+            return ""
+        return path.read_text(encoding="utf-8", errors="replace")
 
     def _log_tail(self, container: Any, lines: int = 200) -> str:
         try:
@@ -681,7 +663,7 @@ class HermesJobRunner:
 
     def _audit_reflect(
         self,
-        container: Any,
+        workdir: Path,
         audit: JobAudit | None,
         reflect_reserve: int,
     ) -> None:
@@ -693,9 +675,9 @@ class HermesJobRunner:
                 attributes={"status": "skipped", "reason": "no time budget"},
             )
             return
-        event = self._read_result(container, _REFLECT_JSONL)
+        event = self._read_result(workdir, "reflect.jsonl")
         if event is None:
-            stderr = self._read_text(container, _REFLECT_STDERR).strip()
+            stderr = self._read_text(workdir, "reflect.err").strip()
             if stderr:
                 audit.emit(
                     "hermes.reflect",
@@ -741,11 +723,6 @@ class HermesJobRunner:
         )
 
     def _reflect_reserve(self, remaining: float) -> int:
-        """Time reserved for the reflect pass when the main run uses its budget.
-
-        The container computes the actual reflect timeout from the time the
-        main run left unused, so this only bounds the main run.
-        """
         if not self.settings.hermes_job_reflect_enabled:
             return 0
         if remaining < _REFLECT_MIN_REMAINING_SECONDS:
@@ -791,7 +768,7 @@ class HermesJobRunner:
 
     def _build_prompt(self, job: Job) -> str:
         return (
-            "Execute this job inside an isolated Hermes job container.\n"
+            "Execute this job inside an isolated Hermes job microVM.\n"
             "Workspace root: /workspace\n"
             "Input files: /workspace/inputs\n"
             "Write all generated result files to: /workspace/outputs\n"
@@ -838,50 +815,13 @@ class HermesJobRunner:
         except Exception as exc:
             if not self._is_not_found(exc):
                 logger.warning(
-                    "Could not remove Hermes job container %s: %s",
+                    "Could not remove Hermes microVM container %s: %s",
                     container.id[:12],
                     exc,
                 )
 
-    def _remove_volume(self, volume: Any | None) -> None:
-        if volume is None:
-            return
-        try:
-            volume.remove(force=True)
-        except Exception as exc:
-            if not self._is_not_found(exc):
-                logger.warning(
-                    "Could not remove Hermes job volume %s: %s", volume.name, exc
-                )
-
-    @staticmethod
-    def _tar_files(files: dict[str, bytes]) -> bytes:
-        buffer = io.BytesIO()
-        with tarfile.open(fileobj=buffer, mode="w") as archive:
-            for name, content in files.items():
-                info = tarfile.TarInfo(name=name)
-                info.size = len(content)
-                info.mode = 0o600
-                info.uid = 10001
-                info.gid = 10001
-                archive.addfile(info, io.BytesIO(content))
-        return buffer.getvalue()
-
-    @staticmethod
-    def _tar_directory(path: Path, prefix: str) -> bytes:
-        buffer = io.BytesIO()
-        with tarfile.open(fileobj=buffer, mode="w") as archive:
-            for entry in sorted(path.rglob("*")):
-                name = f"{prefix}/{entry.relative_to(path).as_posix()}"
-                info = archive.gettarinfo(str(entry), arcname=name)
-                info.uid = 10001
-                info.gid = 10001
-                if entry.is_file():
-                    with entry.open("rb") as stream:
-                        archive.addfile(info, stream)
-                else:
-                    archive.addfile(info)
-        return buffer.getvalue()
+    def _remove_workdir(self, workdir: Path) -> None:
+        shutil.rmtree(workdir, ignore_errors=True)
 
     @staticmethod
     def _is_not_found(exc: Exception) -> bool:
@@ -889,3 +829,29 @@ class HermesJobRunner:
             getattr(exc, "status_code", None) == 404
             or exc.__class__.__name__ in {"NotFound", "ImageNotFound"}
         )
+
+
+def _parse_bytes(value: str) -> int:
+    """Parse a Docker style size string such as 4g into bytes."""
+    text = value.strip().lower()
+    units = {
+        "b": 1,
+        "k": 1024,
+        "kb": 1024,
+        "m": 1024**2,
+        "mb": 1024**2,
+        "g": 1024**3,
+        "gb": 1024**3,
+        "t": 1024**4,
+        "tb": 1024**4,
+    }
+    digits = ""
+    index = 0
+    while index < len(text) and (text[index].isdigit() or text[index] == "."):
+        digits += text[index]
+        index += 1
+    unit = text[index:].strip()
+    if not digits:
+        raise ValueError(f"Invalid size value: {value}")
+    multiplier = units.get(unit, 1) if unit else 1
+    return int(float(digits) * multiplier)
