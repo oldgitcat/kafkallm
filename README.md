@@ -221,19 +221,50 @@ also removes job containers and volumes labeled `hermes.job=1` that are older th
 container; the volume name is derived from `run_id`, and an existing volume with that name is
 replaced first.
 
-### Security boundary
+### Isolation model
 
-The Docker socket proxy is root-equivalent access to the host Docker daemon. Use it only for
-trusted local development, never expose port `2375`, and do not give untrusted producers access
-to `jobs.in`.
+Each job runs in its own container. What that boundary covers:
 
-A job container is process isolation, not a hardened security sandbox. Hermes runs with broad
-tool access inside its own container, can reach the internet, and writes to the shared skills
-volume. A malicious or manipulated job can poison skills used by later jobs. Run only trusted
-instructions and inputs.
+| Property | Value |
+|---|---|
+| Namespaces | Separate PID, mount, network, IPC, and user namespaces |
+| Privileges | The agent process runs as uid 10001 with no effective capabilities |
+| Privilege escalation | `no-new-privileges:true` blocks the setuid binaries in the image |
+| Syscalls | Docker's default seccomp profile |
+| Resources | `HERMES_JOB_MEMORY_LIMIT` (default `4g`), `HERMES_JOB_PIDS_LIMIT` (default `512`), `HERMES_JOB_CPUS` (default `2`) |
+| Filesystem | Disposable workspace volume, tmpfs `/opt/data`, no host paths |
+| Network | Default bridge: internet for the model provider, but no route to `redpanda`, `hermes-agent`, `phoenix`, or `docker-proxy` |
+| Lifetime | The container and its workspace volume are removed after the job |
 
-On SELinux hosts, the proxy uses `security_opt: ["label=disable"]` so it can reach the Docker
-socket without relabeling the host socket.
+What the boundary does **not** cover:
+
+- **Shared kernel.** The container shares the host kernel, so a kernel or driver bug becomes a
+  host compromise. A container is a process boundary, not a hardware boundary.
+- **Root-equivalent Docker API.** The worker creates containers through the socket proxy, which
+  is equivalent to root on the host. The proxy sits on the internal `control` network that only
+  the worker joins, and port `2375` is never published, but a compromised worker still means a
+  compromised host.
+- **Shared skills volume.** `hermes-skills` is writable by every job and by the gateway. A job can
+  poison the skills that later jobs load. Use one skills volume per trust domain.
+- **Internet egress.** Jobs can reach the internet and can therefore exfiltrate whatever they
+  can read. Put an egress proxy in front of the provider if that matters.
+- **Provider credentials.** The provider keys are passed into every job container.
+
+### Stronger isolation
+
+Containers are enough for jobs you trust. For untrusted input, raise the boundary:
+
+| Option | Isolation | Cost | Notes |
+|---|---|---|---|
+| Containers (default) | Namespaces, seccomp, capabilities | Low | What this setup does today |
+| gVisor (`runsc`) | User-space kernel between the app and the host kernel | Low to medium | Drop-in Docker runtime, small overhead, a few syscalls unsupported |
+| Kata Containers | Real VM per container on hardware virtualization | Medium | ~1-2 s startup, ~150 MB per VM, virtiofs for mounts |
+| Firecracker | Micro-VM per job | Medium to high | Fastest cold start (~125 ms), but needs a custom runtime instead of the plain Docker API |
+| Separate Docker daemon | Real VM or rootless daemon for job containers | Medium | Keeps the container API, but a job escape stays inside that daemon |
+
+The most effective step for untrusted jobs is the last row: point `DOCKER_HOST` at a second
+Docker daemon that runs in a VM or as a rootless user daemon. Job containers then cannot touch
+the host daemon at all, and a container escape remains contained in that daemon.
 
 ## How jobs are executed
 
@@ -432,12 +463,12 @@ Workers share the `agent-workers` consumer group. Each worker processes one job 
 - Audit delivery is asynchronous and best effort and does not change job status.
 - Topics have seven days of retention by default (`KAFKA_TOPIC_RETENTION_MS`).
 - The Compose configuration is for local development. Redpanda has no SASL/TLS here.
-- The Docker socket proxy grants root-equivalent Docker access. Keep it on the internal Compose
-  network and never publish port `2375`.
+- The Docker socket proxy grants root-equivalent Docker access. It is attached to the internal
+  `control` network that only the worker joins, and port `2375` is never published.
 - In `hermes` mode, the Hermes API server has full access to Hermes tools, including terminal
   commands inside its container. Keep `HERMES_API_KEY` secret and do not expose port `8642`.
 - In `hermes-job` mode, each job has its own container but still shares the skills volume. Run
-  only trusted jobs and inputs. See [Security boundary](#security-boundary).
+  only trusted jobs and inputs. See [Isolation model](#isolation-model).
 
 Stop without deleting volumes:
 

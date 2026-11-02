@@ -215,6 +215,9 @@ def _settings(**overrides: Any) -> Settings:
         "hermes_startup_timeout_seconds": 1,
         "hermes_job_tmpfs_size": "256m",
         "hermes_job_max_turns": 20,
+        "hermes_job_memory_limit": "4g",
+        "hermes_job_pids_limit": 512,
+        "hermes_job_cpus": 2.0,
         "hermes_job_reflect_enabled": True,
         "hermes_job_reflect_timeout_seconds": 60,
         "hermes_model": "test-model",
@@ -303,6 +306,11 @@ def test_run_creates_isolated_container_and_collects_result(
     assert container.kwargs["network_mode"] == "bridge"
     assert container.kwargs["labels"]["hermes.job"] == "1"
     assert container.kwargs["tmpfs"]["/opt/data"].startswith("size=256m")
+    assert container.kwargs["security_opt"] == ["no-new-privileges:true"]
+    assert container.kwargs["pids_limit"] == 512
+    assert container.kwargs["mem_limit"] == "4g"
+    assert container.kwargs["memswap_limit"] == "4g"
+    assert container.kwargs["nano_cpus"] == 2_000_000_000
     workspace_volume = next(
         name
         for name in container.kwargs["volumes"]
@@ -348,6 +356,32 @@ def test_run_creates_isolated_container_and_collects_result(
 def test_run_script_keeps_the_session_turn_policy_on_resume() -> None:
     reflect_section = _RUN_SCRIPT.split("--resume", 1)[1]
     assert '"--max-turns"' not in reflect_section
+
+
+def test_resource_limits_can_be_disabled(tmp_path: Path) -> None:
+    client = FakeDockerClient()
+    client.files["/tmp/hermes-main.jsonl"] = _result_event(text="Completed")
+    runner = _runner(
+        client,
+        hermes_job_memory_limit="0",
+        hermes_job_cpus=0.0,
+        hermes_job_pids_limit=0,
+    )
+    workspace = _workspace(tmp_path)
+
+    runner.run(
+        job=Job(instruction="Do the job"),
+        workspace=workspace,
+        deadline=time.monotonic() + 120,
+        max_steps=5,
+    )
+
+    container = client.containers.created[0]
+    assert "mem_limit" not in container.kwargs
+    assert "memswap_limit" not in container.kwargs
+    assert "nano_cpus" not in container.kwargs
+    assert container.kwargs["pids_limit"] == 0
+    assert container.kwargs["security_opt"] == ["no-new-privileges:true"]
 
 
 def test_result_error_is_propagated_and_resources_removed(

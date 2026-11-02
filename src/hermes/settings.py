@@ -17,6 +17,16 @@ def _bool_env(name: str, default: bool) -> bool:
     return value.lower() in {"1", "true", "yes", "on"}
 
 
+def _float_env(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if not value:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     kafka_bootstrap_servers: str
@@ -45,6 +55,9 @@ class Settings:
     hermes_skills_volume: str
     hermes_job_tmpfs_size: str
     hermes_job_max_turns: int
+    hermes_job_memory_limit: str
+    hermes_job_pids_limit: int
+    hermes_job_cpus: float
     hermes_job_reflect_enabled: bool
     hermes_job_reflect_timeout_seconds: int
     s3_endpoint_url: str
@@ -103,6 +116,9 @@ class Settings:
             ),
             hermes_job_tmpfs_size=os.getenv("HERMES_JOB_TMPFS_SIZE", "1g"),
             hermes_job_max_turns=_int_env("HERMES_JOB_MAX_TURNS", 100),
+            hermes_job_memory_limit=os.getenv("HERMES_JOB_MEMORY_LIMIT", "4g"),
+            hermes_job_pids_limit=_int_env("HERMES_JOB_PIDS_LIMIT", 512),
+            hermes_job_cpus=_float_env("HERMES_JOB_CPUS", 2.0),
             hermes_job_reflect_enabled=_bool_env(
                 "HERMES_JOB_REFLECT_ENABLED", True
             ),

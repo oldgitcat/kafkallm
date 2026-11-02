@@ -21,6 +21,9 @@ x-app-environment: &app-environment
   HERMES_SKILLS_VOLUME: ${HERMES_SKILLS_VOLUME:-hermes-skills}
   HERMES_JOB_TMPFS_SIZE: ${HERMES_JOB_TMPFS_SIZE:-1g}
   HERMES_JOB_MAX_TURNS: ${HERMES_JOB_MAX_TURNS:-100}
+  HERMES_JOB_MEMORY_LIMIT: ${HERMES_JOB_MEMORY_LIMIT:-4g}
+  HERMES_JOB_PIDS_LIMIT: ${HERMES_JOB_PIDS_LIMIT:-512}
+  HERMES_JOB_CPUS: ${HERMES_JOB_CPUS:-2}
   HERMES_JOB_REFLECT_ENABLED: ${HERMES_JOB_REFLECT_ENABLED:-true}
   HERMES_JOB_REFLECT_TIMEOUT_SECONDS: ${HERMES_JOB_REFLECT_TIMEOUT_SECONDS:-300}
   DOCKER_HOST: ${DOCKER_HOST:-tcp://docker-proxy:2375}
@@ -66,7 +69,7 @@ services:
       - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
       - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:19092
     ports:
-      - "19092:19092"
+      - "127.0.0.1:19092:19092"
     volumes:
       - redpanda-data:/var/lib/redpanda/data
     healthcheck:
@@ -87,7 +90,7 @@ services:
         kafka:
           brokers: ["redpanda:9092"]
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     depends_on:
       redpanda:
         condition: service_healthy
@@ -145,6 +148,10 @@ services:
     # without relabeling the host socket.
     security_opt:
       - label=disable
+    # The control network has no route to the outside and is shared with the
+    # worker only, so no other service can reach this root-equivalent API.
+    networks:
+      - control
     restart: unless-stopped
 
   hermes-skills-init:
@@ -225,6 +232,9 @@ services:
         condition: service_completed_successfully
       hermes-agent:
         condition: service_started
+    networks:
+      - default
+      - control
     restart: unless-stopped
     read_only: true
     tmpfs:
@@ -256,8 +266,8 @@ services:
       RUSTFS_CONSOLE_ENABLE: "true"
       RUSTFS_REGION: ${S3_REGION:-local}
     ports:
-      - "${RUSTFS_API_PORT:-9000}:9000"
-      - "${RUSTFS_CONSOLE_PORT:-9001}:9001"
+      - "127.0.0.1:${RUSTFS_API_PORT:-9000}:9000"
+      - "127.0.0.1:${RUSTFS_CONSOLE_PORT:-9001}:9001"
     volumes:
       - rustfs-data:/data
     healthcheck:
@@ -276,3 +286,10 @@ volumes:
   hermes-data:
   hermes-skills:
     name: ${HERMES_SKILLS_VOLUME:-hermes-skills}
+
+networks:
+  default:
+  # Internal network for the Docker socket proxy. It has no route to the
+  # outside, and only the worker joins it.
+  control:
+    internal: true

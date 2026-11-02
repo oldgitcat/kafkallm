@@ -494,6 +494,21 @@ class HermesJobRunner:
         labels: dict[str, str],
         volume_name: str,
     ) -> Any:
+        limits: dict[str, Any] = {
+            # The agent process drops to uid 10001, but setuid binaries in the
+            # image could still raise it again. no-new-privileges closes that.
+            "security_opt": ["no-new-privileges:true"],
+            "pids_limit": self.settings.hermes_job_pids_limit,
+        }
+        memory_limit = self.settings.hermes_job_memory_limit.strip()
+        if memory_limit and memory_limit != "0":
+            limits["mem_limit"] = memory_limit
+            # Equal values disable swap so a job cannot exhaust host memory.
+            limits["memswap_limit"] = memory_limit
+        if self.settings.hermes_job_cpus > 0:
+            limits["nano_cpus"] = int(
+                self.settings.hermes_job_cpus * 1_000_000_000
+            )
         return self.client.containers.create(
             image=self.settings.hermes_image,
             command=[
@@ -522,6 +537,7 @@ class HermesJobRunner:
             },
             detach=True,
             auto_remove=False,
+            **limits,
         )
 
     def _prepare_workspace(self, container: Any, workspace: Path) -> None:
