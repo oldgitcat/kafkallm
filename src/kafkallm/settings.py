@@ -50,16 +50,17 @@ class Settings:
     goose_job_reflect_enabled: bool
     goose_job_reflect_timeout_seconds: int
     llm_gateway_url: str
-    llm_gateway_secret: str = field(repr=False)
-    llm_gateway_token_ttl_seconds: int
-    llm_gateway_host: str
+    llm_gateway_virtual_key: str = field(repr=False)
+    llm_gateway_ready_url: str
     llm_gateway_port: int
-    llm_gateway_upstream_url: str
-    llm_gateway_upstream_api_key: str = field(repr=False)
-    llm_gateway_upstream_auth_header: str
-    llm_gateway_upstream_auth_scheme: str
-    llm_gateway_upstream_timeout_seconds: int
-    llm_gateway_max_request_bytes: int
+    goose_job_network: str
+    goose_job_network_subnet: str
+    goose_job_network_interface: str
+    goose_job_network_dir: str
+    goose_job_network_autocreate: bool
+    goose_job_proxy_network: str
+    goose_job_proxy_upstream_host: str
+    goose_job_proxy_upstream_port: int
     gui_host: str
     gui_port: int
     s3_endpoint_url: str
@@ -74,7 +75,7 @@ class Settings:
     phoenix_capture_content: bool
 
     @classmethod
-    def from_env(cls) -> "Settings":
+    def from_env(cls) -> Settings:
         return cls(
             kafka_bootstrap_servers=os.getenv(
                 "KAFKA_BOOTSTRAP_SERVERS", "localhost:19092"
@@ -92,9 +93,7 @@ class Settings:
                 "KAFKA_STARTUP_TIMEOUT_SECONDS", 300
             ),
             worker_id=os.getenv("WORKER_ID", socket.gethostname()),
-            workspace_root=os.getenv(
-                "WORKSPACE_ROOT", "/var/lib/kafkallm/staging"
-            ),
+            workspace_root=os.getenv("WORKSPACE_ROOT", "/var/lib/kafkallm/staging"),
             max_job_timeout_seconds=_int_env("MAX_JOB_TIMEOUT_SECONDS", 1800),
             max_agent_steps=_int_env("MAX_AGENT_STEPS", 8),
             goose_model=os.getenv("GOOSE_MODEL", ""),
@@ -105,12 +104,8 @@ class Settings:
             goose_image=os.getenv("GOOSE_IMAGE", "kafkallm-goose-job:latest"),
             goose_job_tmpfs_size=os.getenv("GOOSE_JOB_TMPFS_SIZE", "1g"),
             goose_job_max_turns=_int_env("GOOSE_JOB_MAX_TURNS", 60),
-            goose_job_subagent_max_turns=_int_env(
-                "GOOSE_JOB_SUBAGENT_MAX_TURNS", 40
-            ),
-            goose_job_memory_limit=os.getenv(
-                "GOOSE_JOB_MEMORY_LIMIT", "4g"
-            ),
+            goose_job_subagent_max_turns=_int_env("GOOSE_JOB_SUBAGENT_MAX_TURNS", 40),
+            goose_job_memory_limit=os.getenv("GOOSE_JOB_MEMORY_LIMIT", "4g"),
             goose_job_pids_limit=_int_env("GOOSE_JOB_PIDS_LIMIT", 512),
             goose_job_cpus=_int_env("GOOSE_JOB_CPUS", 2),
             goose_job_ram_mib=_int_env("GOOSE_JOB_RAM_MIB", 2048),
@@ -124,41 +119,34 @@ class Settings:
             goose_job_skills_dir=os.getenv(
                 "GOOSE_JOB_SKILLS_DIR", "/var/lib/kafkallm/skills"
             ),
-            goose_job_reflect_enabled=_bool_env(
-                "GOOSE_JOB_REFLECT_ENABLED", True
-            ),
+            goose_job_reflect_enabled=_bool_env("GOOSE_JOB_REFLECT_ENABLED", True),
             goose_job_reflect_timeout_seconds=_int_env(
                 "GOOSE_JOB_REFLECT_TIMEOUT_SECONDS", 300
             ),
             llm_gateway_url=os.getenv(
                 "LLM_GATEWAY_URL", "http://host.containers.internal:8091"
             ),
-            llm_gateway_secret=os.getenv("LLM_GATEWAY_SECRET", ""),
-            llm_gateway_token_ttl_seconds=_int_env(
-                "LLM_GATEWAY_TOKEN_TTL_SECONDS", 0
+            llm_gateway_virtual_key=os.getenv("LLM_GATEWAY_VIRTUAL_KEY", ""),
+            llm_gateway_ready_url=os.getenv(
+                "LLM_GATEWAY_READY_URL",
+                "http://llm-gateway:15021/healthz/ready",
             ),
-            llm_gateway_host=os.getenv("LLM_GATEWAY_HOST", "0.0.0.0"),
             llm_gateway_port=_int_env("LLM_GATEWAY_PORT", 8091),
-            llm_gateway_upstream_url=os.getenv(
-                "LLM_GATEWAY_UPSTREAM_URL", "https://openrouter.ai/api/v1"
+            goose_job_network=os.getenv("GOOSE_JOB_NETWORK", "kafkallm-jobs"),
+            goose_job_network_subnet=os.getenv(
+                "GOOSE_JOB_NETWORK_SUBNET", "fd00:6b61:666b:616c::/64"
             ),
-            llm_gateway_upstream_api_key=(
-                os.getenv("LLM_GATEWAY_UPSTREAM_API_KEY")
-                or os.getenv("OPENROUTER_API_KEY")
-                or os.getenv("OPENAI_API_KEY")
-                or ""
+            goose_job_network_interface=os.getenv("GOOSE_JOB_NETWORK_INTERFACE", ""),
+            goose_job_network_dir=os.getenv("GOOSE_JOB_NETWORK_DIR", ""),
+            goose_job_network_autocreate=_bool_env(
+                "GOOSE_JOB_NETWORK_AUTOCREATE", False
             ),
-            llm_gateway_upstream_auth_header=os.getenv(
-                "LLM_GATEWAY_UPSTREAM_AUTH_HEADER", "Authorization"
+            goose_job_proxy_network=os.getenv("GOOSE_JOB_PROXY_NETWORK", "podman"),
+            goose_job_proxy_upstream_host=os.getenv(
+                "GOOSE_JOB_PROXY_UPSTREAM_HOST", "host.containers.internal"
             ),
-            llm_gateway_upstream_auth_scheme=os.getenv(
-                "LLM_GATEWAY_UPSTREAM_AUTH_SCHEME", "Bearer"
-            ),
-            llm_gateway_upstream_timeout_seconds=_int_env(
-                "LLM_GATEWAY_UPSTREAM_TIMEOUT_SECONDS", 600
-            ),
-            llm_gateway_max_request_bytes=_int_env(
-                "LLM_GATEWAY_MAX_REQUEST_BYTES", 20 * 1024 * 1024
+            goose_job_proxy_upstream_port=_int_env(
+                "GOOSE_JOB_PROXY_UPSTREAM_PORT", 8091
             ),
             gui_host=os.getenv("GUI_HOST", "0.0.0.0"),
             gui_port=_int_env("GUI_PORT", 8090),
@@ -182,4 +170,4 @@ class Settings:
 
     @property
     def gateway_configured(self) -> bool:
-        return bool(self.llm_gateway_url and self.llm_gateway_secret)
+        return bool(self.llm_gateway_url and self.llm_gateway_virtual_key)

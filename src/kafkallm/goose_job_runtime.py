@@ -6,15 +6,16 @@ import os
 import shutil
 import threading
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 
 from kafkallm.audit import JobAudit
-from kafkallm.llm_gateway import issue_token
+from kafkallm.job_network import ensure_job_network
 from kafkallm.models import AgentResult, Job
 from kafkallm.settings import Settings
 from kafkallm.telemetry import get_tracer, set_content, set_error
-
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,10 @@ _JOB_ID_LABEL = "kafkallm.job_id"
 _RUN_ID_LABEL = "kafkallm.run_id"
 _CREATED_AT_LABEL = "kafkallm.created_at"
 _WORKDIR_LABEL = "kafkallm.workdir"
+
+_PROXY_NAME = "kafkallm-gateway-proxy"
+_PROXY_LABEL = "kafkallm.gateway_proxy"
+_PROXY_SCRIPT = "/opt/kafkallm/gateway_proxy.py"
 
 _REFLECT_MIN_REMAINING_SECONDS = 60
 _SCHEDULE_RESERVE_SECONDS = 25
@@ -174,9 +179,7 @@ def _message_content(messages: Any) -> tuple[str, str | None]:
                 if isinstance(message_text, str):
                     errors.append(message_text)
         if texts or errors:
-            return "\n\n".join(texts).strip(), (
-                "\n".join(errors).strip() or None
-            )
+            return "\n\n".join(texts).strip(), ("\n".join(errors).strip() or None)
     return "", None
 
 
@@ -217,6 +220,8 @@ class GooseJobRunner:
         self._owns_client = client is None
         self._active_container: Any | None = None
         self._active_lock = threading.Lock()
+        self._proxy_ipv6: str | None = None
+        self._proxy_lock = threading.Lock()
 
     @property
     def client(self) -> Any:
@@ -233,22 +238,25 @@ class GooseJobRunner:
         if not self.settings.gateway_configured:
             raise GooseJobRuntimeError(
                 "The LLM gateway is not configured. Set LLM_GATEWAY_URL and "
-                "LLM_GATEWAY_SECRET for the worker."
+                "LLM_GATEWAY_VIRTUAL_KEY for the worker."
             )
-        deadline = (
-            time.monotonic() + self.settings.goose_startup_timeout_seconds
-        )
+        deadline = time.monotonic() + self.settings.goose_startup_timeout_seconds
+        self._wait_for_gateway(deadline)
         delay = 1.0
         last_error: Exception | None = None
         while time.monotonic() < deadline:
             try:
                 self.client.ping()
                 self._ensure_image()
+                self._ensure_job_network()
+                self._ensure_proxy()
                 self._cleanup_orphans()
                 logger.info(
-                    "goose microVM runtime is ready (image=%s, docker_host=%s)",
+                    "goose microVM runtime is ready (image=%s, docker_host=%s, "
+                    "network=%s)",
                     self.settings.goose_image,
                     self.settings.goose_job_docker_host,
+                    self.settings.goose_job_network,
                 )
                 return
             except Exception as exc:
@@ -262,8 +270,37 @@ class GooseJobRunner:
                 time.sleep(min(delay, remaining))
                 delay = min(delay * 2, 10.0)
         raise GooseJobRuntimeError(
-            "goose microVM runtime did not become ready within the startup "
-            "timeout."
+            "goose microVM runtime did not become ready within the startup timeout."
+        ) from last_error
+
+    def _wait_for_gateway(self, deadline: float) -> None:
+        ready_url = self.settings.llm_gateway_ready_url.strip()
+        if not ready_url:
+            return
+        last_error: Exception | None = None
+        delay = 1.0
+        while time.monotonic() < deadline:
+            try:
+                with urllib.request.urlopen(ready_url, timeout=3) as response:
+                    if 200 <= response.status < 300:
+                        logger.info("LLM gateway is ready at %s", ready_url)
+                        return
+                    last_error = GooseJobRuntimeError(
+                        f"LLM gateway readiness returned HTTP {response.status}"
+                    )
+            except (OSError, urllib.error.URLError) as exc:
+                last_error = exc
+            remaining = max(0.0, deadline - time.monotonic())
+            logger.warning(
+                "LLM gateway not ready yet (%s); retrying in %.1fs",
+                last_error,
+                min(delay, remaining),
+            )
+            time.sleep(min(delay, remaining))
+            delay = min(delay * 2, 10.0)
+        raise GooseJobRuntimeError(
+            f"LLM gateway at {ready_url} did not become ready within the "
+            "startup timeout."
         ) from last_error
 
     def close(self) -> None:
@@ -324,9 +361,7 @@ class GooseJobRunner:
             "goose.image": self.settings.goose_image,
             "goose.model": self.settings.goose_model or "configured-default",
             "goose.provider": "openai",
-            "goose.upstream_provider": (
-                self.settings.goose_provider or "gateway"
-            ),
+            "goose.upstream_provider": (self.settings.goose_provider or "gateway"),
             "llm.gateway": self.settings.llm_gateway_url,
             "job.id": job.job_id,
             "job.run_id": job.run_id,
@@ -340,10 +375,12 @@ class GooseJobRunner:
             set_content(span, "input.value", prompt)
             try:
                 self._prepare_workdir(workdir, workspace, prompt)
+                proxy_ipv6 = self._ensure_proxy()
                 container = self._create_container(
                     environment=environment,
                     labels=labels,
                     workdir=workdir,
+                    proxy_ipv6=proxy_ipv6,
                 )
                 with self._active_lock:
                     self._active_container = container
@@ -390,9 +427,7 @@ class GooseJobRunner:
                         f"{(main_error.strip() or output)[:4000]}"
                     )
                 if not output.strip():
-                    raise GooseJobRuntimeError(
-                        "goose returned an empty response."
-                    )
+                    raise GooseJobRuntimeError("goose returned an empty response.")
                 if len(output.encode("utf-8")) > _MAX_RESULT_BYTES:
                     raise GooseJobRuntimeError(
                         "goose response is too large for jobs.out."
@@ -432,7 +467,9 @@ class GooseJobRunner:
                         duration_ms=round(
                             (time.perf_counter() - run_started) * 1000, 3
                         ),
-                        attributes={"container_id": container.id if container else None},
+                        attributes={
+                            "container_id": container.id if container else None
+                        },
                         error=str(exc),
                     )
                 raise
@@ -464,6 +501,142 @@ class GooseJobRunner:
                 f"goose image {self.settings.goose_image} is not available "
                 "in the Podman storage."
             ) from exc
+
+    def _ensure_job_network(self) -> None:
+        try:
+            self.client.networks.get(self.settings.goose_job_network)
+            return
+        except Exception as exc:
+            if not self._is_not_found(exc):
+                raise
+        if not self.settings.goose_job_network_autocreate:
+            raise GooseJobRuntimeError(
+                f"Podman network {self.settings.goose_job_network!r} does not "
+                "exist. Run scripts/init-job-network.sh on the host before "
+                "starting the worker."
+            )
+        directory = (
+            Path(self.settings.goose_job_network_dir)
+            if self.settings.goose_job_network_dir.strip()
+            else None
+        )
+        path = ensure_job_network(
+            name=self.settings.goose_job_network,
+            subnet=self.settings.goose_job_network_subnet,
+            interface=self.settings.goose_job_network_interface,
+            directory=directory,
+        )
+        logger.debug("Job network definition: %s", path)
+
+    def _ensure_proxy(self) -> str:
+        """Return the proxy IPv6 address on the isolated job network.
+
+        The proxy is the only peer on the job network. It is attached to the
+        ordinary Podman network first so its default route is IPv4, then to the
+        internal IPv6 job network. Jobs resolve ``host.containers.internal`` to
+        this address and can reach nothing else.
+        """
+        with self._proxy_lock:
+            if self._proxy_ipv6:
+                return self._proxy_ipv6
+            self._ensure_job_network()
+            container: Any | None = None
+            try:
+                container = self.client.containers.get(_PROXY_NAME)
+            except Exception as exc:
+                if not self._is_not_found(exc):
+                    raise
+            if container is None:
+                container = self._create_proxy()
+            container.reload()
+            if not self._container_has_network(container):
+                self._connect_proxy(container)
+                container.reload()
+            if container.status != "running":
+                container.start()
+                time.sleep(1.0)
+            ipv6 = self._wait_proxy_ipv6(container)
+            self._proxy_ipv6 = ipv6
+            logger.info(
+                "Job gateway proxy is ready on [%s]:%s",
+                ipv6,
+                self.settings.llm_gateway_port,
+            )
+            return ipv6
+
+    def _create_proxy(self) -> Any:
+        body = {
+            "Image": self.settings.goose_image,
+            "Cmd": ["/usr/bin/python3", _PROXY_SCRIPT],
+            "Env": [
+                f"LISTEN_PORT={self.settings.llm_gateway_port}",
+                f"UPSTREAM_HOST={self.settings.goose_job_proxy_upstream_host}",
+                f"UPSTREAM_PORT={self.settings.goose_job_proxy_upstream_port}",
+                "PYTHONDONTWRITEBYTECODE=1",
+            ],
+            "Labels": {_PROXY_LABEL: "1"},
+            "WorkingDir": "/",
+            "HostConfig": {
+                # Create on the normal Podman network first so the default
+                # route is IPv4. The internal network is connected afterwards.
+                "NetworkMode": self.settings.goose_job_proxy_network,
+                "Tmpfs": {"/tmp": "size=16m,mode=1777"},
+                "ReadonlyRootfs": True,
+                "SecurityOpt": ["no-new-privileges:true", "label=disable"],
+                "CapDrop": ["ALL"],
+            },
+        }
+        api = self.client.api
+        response = api._post(
+            api._url("/containers/create"),
+            data=json.dumps(body),
+            headers={"Content-Type": "application/json"},
+            params={"name": _PROXY_NAME},
+        )
+        if response.status_code >= 300:
+            raise GooseJobRuntimeError(
+                "Could not create the job gateway proxy: "
+                f"{response.status_code} {response.text[:1000]}"
+            )
+        return self.client.containers.get(response.json()["Id"])
+
+    def _connect_proxy(self, container: Any) -> None:
+        network = self.client.networks.get(self.settings.goose_job_network)
+        try:
+            network.connect(container)
+        except Exception as exc:
+            if "already exists" not in str(exc).lower():
+                raise
+        container.reload()
+
+    def _container_networks(self, container: Any) -> dict[str, Any]:
+        attrs = getattr(container, "attrs", None) or {}
+        networks = (attrs.get("NetworkSettings") or {}).get("Networks") or {}
+        return networks if isinstance(networks, dict) else {}
+
+    def _container_has_network(self, container: Any) -> bool:
+        return self.settings.goose_job_network in self._container_networks(container)
+
+    def _container_ipv6(self, container: Any) -> str:
+        endpoint = (
+            self._container_networks(container).get(self.settings.goose_job_network)
+            or {}
+        )
+        value = endpoint.get("GlobalIPv6Address")
+        return value if isinstance(value, str) else ""
+
+    def _wait_proxy_ipv6(self, container: Any) -> str:
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            container.reload()
+            ipv6 = self._container_ipv6(container)
+            if ipv6:
+                return ipv6
+            time.sleep(0.2)
+        raise GooseJobRuntimeError(
+            "The job gateway proxy did not get an IPv6 address on "
+            f"{self.settings.goose_job_network}."
+        )
 
     def _cleanup_orphans(self) -> None:
         max_age = self.settings.max_job_timeout_seconds + 300
@@ -525,10 +698,7 @@ class GooseJobRunner:
             return None
 
     def _workdir(self, job: Job) -> Path:
-        return (
-            Path(self.settings.goose_job_workspace_root)
-            / f"goose-vm-{job.run_id}"
-        )
+        return Path(self.settings.goose_job_workspace_root) / f"goose-vm-{job.run_id}"
 
     def _prepare_workdir(self, workdir: Path, workspace: Path, prompt: str) -> None:
         shutil.rmtree(workdir, ignore_errors=True)
@@ -549,9 +719,7 @@ class GooseJobRunner:
         bundle = workdir / "bundle"
         (bundle / "run-job.sh").write_text(_VM_RUN_SCRIPT, encoding="utf-8")
         (bundle / "main-prompt.txt").write_text(prompt, encoding="utf-8")
-        (bundle / "reflect-prompt.txt").write_text(
-            _REFLECT_PROMPT, encoding="utf-8"
-        )
+        (bundle / "reflect-prompt.txt").write_text(_REFLECT_PROMPT, encoding="utf-8")
         os.chmod(bundle / "run-job.sh", 0o755)
         skills_dir = Path(self.settings.goose_job_skills_dir)
         try:
@@ -576,6 +744,7 @@ class GooseJobRunner:
         environment: dict[str, str],
         labels: dict[str, str],
         workdir: Path,
+        proxy_ipv6: str,
     ) -> Any:
         annotations = {
             "run.oci.handler": "krun",
@@ -604,7 +773,8 @@ class GooseJobRunner:
                     "/tmp": "size=256m,mode=1777",
                 },
                 "Annotations": annotations,
-                "NetworkMode": "bridge",
+                "NetworkMode": self.settings.goose_job_network,
+                "ExtraHosts": [f"host.containers.internal:{proxy_ipv6}"],
                 "Memory": self._memory_bytes(),
                 "MemorySwap": self._memory_bytes(),
                 "PidsLimit": self.settings.goose_job_pids_limit,
@@ -613,8 +783,8 @@ class GooseJobRunner:
             },
         }
         api = self.client.api
-        response = api._post(  # noqa: SLF001
-            api._url("/containers/create"),  # noqa: SLF001
+        response = api._post(
+            api._url("/containers/create"),
             data=json.dumps(body),
             headers={"Content-Type": "application/json"},
         )
@@ -724,9 +894,7 @@ class GooseJobRunner:
                 "goose.reflect",
                 "failed",
                 attributes={"status": "failed", "usage": usage, "steps": steps},
-                error=(error or text or f"Reflect exited with code {exit_raw}.")[
-                    :4000
-                ],
+                error=(error or text or f"Reflect exited with code {exit_raw}.")[:4000],
             )
             return
         audit.emit(
@@ -758,21 +926,10 @@ class GooseJobRunner:
         if not self.settings.gateway_configured:
             raise GooseJobRuntimeError(
                 "The LLM gateway is not configured. Set LLM_GATEWAY_URL and "
-                "LLM_GATEWAY_SECRET for the worker."
+                "LLM_GATEWAY_VIRTUAL_KEY for the worker."
             )
         gateway_url = self.settings.llm_gateway_url.rstrip("/")
-        if gateway_url.endswith("/v1"):
-            gateway_url = gateway_url[:-3]
-        token_ttl = max(
-            300,
-            int(budget) + 300,
-            self.settings.llm_gateway_token_ttl_seconds,
-        )
-        token = issue_token(
-            self.settings.llm_gateway_secret,
-            job_id,
-            token_ttl,
-        )
+        gateway_url = gateway_url.removesuffix("/v1")
         environment = {
             "HOME": "/opt/data",
             "GOOSE_PATH_ROOT": "/opt/data/goose",
@@ -783,11 +940,10 @@ class GooseJobRunner:
             "GOOSE_AUTO_COMPACT_THRESHOLD": "0.9",
             "GOOSE_PROVIDER": "openai",
             "OPENAI_HOST": gateway_url,
-            "OPENAI_API_KEY": token,
+            # The gateway replaces this virtual key with the provider key.
+            "OPENAI_API_KEY": self.settings.llm_gateway_virtual_key,
             "GOOSE_MAX_TURNS": str(self.settings.goose_job_max_turns),
-            "GOOSE_SUBAGENT_MAX_TURNS": str(
-                self.settings.goose_job_subagent_max_turns
-            ),
+            "GOOSE_SUBAGENT_MAX_TURNS": str(self.settings.goose_job_subagent_max_turns),
             "GOOSE_MAX_CONCURRENT_SUBAGENTS": "5",
             "GOOSE_REFLECT_MAX_TURNS": "20",
             "KAFKALLM_JOB_BUDGET_SECONDS": str(max(0, budget)),
@@ -849,10 +1005,10 @@ class GooseJobRunner:
 
     @staticmethod
     def _is_not_found(exc: Exception) -> bool:
-        return (
-            getattr(exc, "status_code", None) == 404
-            or exc.__class__.__name__ in {"NotFound", "ImageNotFound"}
-        )
+        return getattr(exc, "status_code", None) == 404 or exc.__class__.__name__ in {
+            "NotFound",
+            "ImageNotFound",
+        }
 
 
 def _parse_bytes(value: str) -> int:

@@ -1,0 +1,18 @@
+# yaml-language-server: $schema=https://agentgateway.dev/schema/config
+#
+# agentgateway holds the real OpenRouter key. Clients authenticate with a
+# virtual key and never see the provider credential. The virtual key comes from
+# .env, so this file is safe to commit.
+llm:
+  policies:
+    apiKey:
+      mode: strict
+      keys:
+        - key: "$LLM_GATEWAY_VIRTUAL_KEY"
+          metadata:
+            name: kafkallm-worker
+  models:
+    - name: "*"
+      provider: openrouter
+      params:
+        apiKey: "$OPENROUTER_API_KEY"

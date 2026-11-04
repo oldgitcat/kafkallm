@@ -27,6 +27,14 @@ x-app-environment: &app-environment
   GOOSE_JOB_USE_PASST: ${GOOSE_JOB_USE_PASST:-false}
   GOOSE_JOB_WORKSPACE_ROOT: ${GOOSE_JOB_WORKSPACE_ROOT:-/var/lib/kafkallm/jobs}
   GOOSE_JOB_SKILLS_DIR: ${GOOSE_JOB_SKILLS_DIR:-/var/lib/kafkallm/skills}
+  GOOSE_JOB_NETWORK: ${GOOSE_JOB_NETWORK:-kafkallm-jobs}
+  GOOSE_JOB_NETWORK_SUBNET: ${GOOSE_JOB_NETWORK_SUBNET:-fd00:6b61:666b:616c::/64}
+  # The network definition lives in the host's rootless Podman storage and is
+  # created by scripts/init-job-network.sh. The worker only verifies it.
+  GOOSE_JOB_NETWORK_AUTOCREATE: "false"
+  GOOSE_JOB_PROXY_NETWORK: ${GOOSE_JOB_PROXY_NETWORK:-podman}
+  GOOSE_JOB_PROXY_UPSTREAM_HOST: ${GOOSE_JOB_PROXY_UPSTREAM_HOST:-host.containers.internal}
+  GOOSE_JOB_PROXY_UPSTREAM_PORT: ${GOOSE_JOB_PROXY_UPSTREAM_PORT:-8091}
   WORKSPACE_ROOT: ${WORKSPACE_ROOT:-/var/lib/kafkallm/staging}
   MAX_JOB_TIMEOUT_SECONDS: ${MAX_JOB_TIMEOUT_SECONDS:-1800}
   MAX_AGENT_STEPS: ${MAX_AGENT_STEPS:-8}
@@ -45,11 +53,15 @@ x-app-environment: &app-environment
 
 x-worker-environment: &worker-environment
   <<: *app-environment
-  # The job-facing gateway URL is resolved inside the microVM. Do not point
-  # this at a Compose service name: the microVM cannot reach the Docker network.
+  # The job-facing URL is resolved inside the microVM to the IPv6 address of
+  # the allowlisting proxy. Do not point this at a Compose service name: the
+  # microVM cannot reach the Docker network.
   LLM_GATEWAY_URL: ${LLM_GATEWAY_URL:-http://host.containers.internal:8091}
-  LLM_GATEWAY_SECRET: ${LLM_GATEWAY_SECRET:-kafkallm-local-gateway-secret-change-me}
-  LLM_GATEWAY_TOKEN_TTL_SECONDS: ${LLM_GATEWAY_TOKEN_TTL_SECONDS:-0}
+  LLM_GATEWAY_VIRTUAL_KEY: ${LLM_GATEWAY_VIRTUAL_KEY:-}
+  # The worker polls the agentgateway readiness listener over the Compose
+  # network. agentgateway has no shell, so Compose cannot healthcheck it.
+  LLM_GATEWAY_READY_URL: ${LLM_GATEWAY_READY_URL:-http://llm-gateway:15021/healthz/ready}
+  LLM_GATEWAY_PORT: ${LLM_GATEWAY_PORT:-8091}
 
 services:
   redpanda:
@@ -128,6 +140,7 @@ services:
       CONTAINERS: "1"
       EXEC: "1"
       IMAGES: "1"
+      NETWORKS: "1"
       VOLUMES: "1"
       VERSION: "1"
       PING: "1"
@@ -146,36 +159,21 @@ services:
     restart: unless-stopped
 
   llm-gateway:
-    build: .
-    command: ["kafkallm", "gateway"]
+    image: cr.agentgateway.dev/agentgateway:v1.7.0
+    command: ["-f", "/config/config.yaml"]
     environment:
-      LLM_GATEWAY_HOST: 0.0.0.0
-      LLM_GATEWAY_PORT: ${LLM_GATEWAY_PORT:-8091}
-      LLM_GATEWAY_SECRET: ${LLM_GATEWAY_SECRET:-kafkallm-local-gateway-secret-change-me}
-      LLM_GATEWAY_UPSTREAM_URL: ${LLM_GATEWAY_UPSTREAM_URL:-https://openrouter.ai/api/v1}
       # The provider key lives only in this service. The worker and the job
-      # microVM never receive it.
-      LLM_GATEWAY_UPSTREAM_API_KEY: ${LLM_GATEWAY_UPSTREAM_API_KEY:-}
+      # microVM receive the virtual key, which the gateway validates and
+      # replaces with the provider key before forwarding upstream.
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      LLM_GATEWAY_UPSTREAM_AUTH_HEADER: ${LLM_GATEWAY_UPSTREAM_AUTH_HEADER:-Authorization}
-      LLM_GATEWAY_UPSTREAM_AUTH_SCHEME: ${LLM_GATEWAY_UPSTREAM_AUTH_SCHEME:-Bearer}
-      LLM_GATEWAY_UPSTREAM_TIMEOUT_SECONDS: ${LLM_GATEWAY_UPSTREAM_TIMEOUT_SECONDS:-600}
-      LLM_GATEWAY_MAX_REQUEST_BYTES: ${LLM_GATEWAY_MAX_REQUEST_BYTES:-20971520}
+      LLM_GATEWAY_VIRTUAL_KEY: ${LLM_GATEWAY_VIRTUAL_KEY:-}
+    volumes:
+      - ./agentgateway/config.yaml:/config/config.yaml:ro,z
     ports:
-      # Rootless libkrun guest traffic reaches host services through the TSI
-      # host address, so the gateway must not listen on loopback only.
-      - "${LLM_GATEWAY_BIND:-0.0.0.0}:${LLM_GATEWAY_PORT:-8091}:${LLM_GATEWAY_PORT:-8091}"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - python -c "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('LLM_GATEWAY_PORT', '8091') + '/healthz', timeout=2)"
-      interval: 5s
-      timeout: 5s
-      retries: 20
-      start_period: 5s
+      # Rootless Podman cannot reach a host service bound only to loopback:
+      # host.containers.internal is mapped to the host-side pasta address.
+      # The virtual key still gates every request.
+      - "${LLM_GATEWAY_BIND:-0.0.0.0}:${LLM_GATEWAY_PORT:-8091}:4000"
     restart: unless-stopped
     read_only: true
     tmpfs:
@@ -196,7 +194,7 @@ services:
       kafkallm-job-init:
         condition: service_completed_successfully
       llm-gateway:
-        condition: service_healthy
+        condition: service_started
     restart: unless-stopped
     read_only: true
     tmpfs:

@@ -5,13 +5,14 @@ import json
 import logging
 import time
 import uuid
+from pathlib import Path
 
 from confluent_kafka import Consumer, KafkaError, KafkaException
 
 from kafkallm.kafka import KafkaProducer, ensure_topics
 from kafkallm.models import FileRef, Job
-from kafkallm.state import StatePublisher
 from kafkallm.settings import Settings
+from kafkallm.state import StatePublisher
 from kafkallm.telemetry import (
     configure_telemetry,
     current_trace_id,
@@ -51,7 +52,8 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("worker", help="Start the agent worker")
     subparsers.add_parser("gui", help="Start the job GUI")
     subparsers.add_parser(
-        "gateway", help="Start the OpenAI-compatible LLM gateway"
+        "init-job-network",
+        help="Create the isolated IPv6-only Podman network for jobs",
     )
 
     submit = subparsers.add_parser("submit", help="Send a job to jobs.in")
@@ -181,10 +183,21 @@ def main() -> None:
             from kafkallm.gui import run_gui
 
             run_gui(settings)
-        elif args.command == "gateway":
-            from kafkallm.llm_gateway import run_gateway
+        elif args.command == "init-job-network":
+            from kafkallm.job_network import ensure_job_network
 
-            run_gateway(settings)
+            directory = (
+                Path(settings.goose_job_network_dir)
+                if settings.goose_job_network_dir.strip()
+                else None
+            )
+            path = ensure_job_network(
+                name=settings.goose_job_network,
+                subnet=settings.goose_job_network_subnet,
+                interface=settings.goose_job_network_interface,
+                directory=directory,
+            )
+            print(path)
     except (KafkaException, RuntimeError, ValueError, json.JSONDecodeError) as exc:
         parser.exit(1, f"Error: {exc}\n")
     finally:

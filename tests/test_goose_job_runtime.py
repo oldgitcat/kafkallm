@@ -16,7 +16,6 @@ from kafkallm.goose_job_runtime import (
     parse_goose_output,
 )
 from kafkallm.harness import Harness
-from kafkallm.llm_gateway import verify_token
 from kafkallm.models import Job
 from kafkallm.settings import Settings
 
@@ -36,17 +35,67 @@ class FakeResponse:
         return self._payload
 
 
+class NotFound(Exception):
+    pass
+
+
+class FakeNetwork:
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.connected: list[FakeContainer] = []
+
+    def connect(self, container: FakeContainer, **kwargs: Any) -> None:
+        del kwargs
+        wrapper = {
+            "GlobalIPv6Address": "fd00:6b61:666b:616c::2",
+            "GlobalIPv6PrefixLen": 64,
+        }
+        container.attrs.setdefault("NetworkSettings", {}).setdefault("Networks", {})[
+            self.name
+        ] = wrapper
+        self.connected.append(container)
+
+
+class FakeNetworks:
+    def __init__(self) -> None:
+        self.items = {
+            "kafkallm-jobs": FakeNetwork("kafkallm-jobs"),
+            "podman": FakeNetwork("podman"),
+        }
+
+    def get(self, name: str) -> FakeNetwork:
+        try:
+            return self.items[name]
+        except KeyError as exc:
+            raise NotFound(name) from exc
+
+
 class FakeContainer:
-    def __init__(self, client: "FakeDockerClient", container_id: str) -> None:
+    def __init__(
+        self,
+        client: FakeDockerClient,
+        container_id: str,
+        name: str = "",
+        body: dict[str, Any] | None = None,
+    ) -> None:
         self.client = client
         self.id = container_id
-        self.labels = client.create_body.get("Labels", {})
+        self.name = name
+        self.body = body or client.create_body
+        self.labels = self.body.get("Labels", {})
+        self.is_job = self.labels.get("kafkallm.vm") == "1"
         self.status = "created"
         self.exit_code = 0
         self.stopped = False
         self.removed = False
+        self.attrs: dict[str, Any] = {
+            "NetworkSettings": {"Networks": {}},
+        }
 
     def start(self) -> None:
+        if not self.is_job:
+            self.status = "running"
+            return
         self.status = self.client.exit_status
         self.exit_code = self.client.exit_code
         self.client.write_results()
@@ -73,7 +122,7 @@ class FakeContainer:
 
 
 class FakeApi:
-    def __init__(self, client: "FakeDockerClient") -> None:
+    def __init__(self, client: FakeDockerClient) -> None:
         self.client = client
 
     def _url(self, path: str) -> str:
@@ -86,29 +135,35 @@ class FakeApi:
         headers: dict[str, str] | None = None,
         **kwargs: Any,
     ) -> FakeResponse:
-        del headers, kwargs
+        del headers
         body = json.loads(data or "{}")
-        self.client.create_body = body
-        if self.client.create_error is not None:
+        name = str((kwargs.get("params") or {}).get("name", ""))
+        if self.client.create_error is not None and not name:
             return FakeResponse(
                 status_code=500,
                 text=str(self.client.create_error),
             )
-        return FakeResponse(201, {"Id": "vm-container-id"})
+        container_id = "proxy-container-id" if name else "vm-container-id"
+        container = FakeContainer(self.client, container_id, name=name, body=body)
+        self.client.containers.items.append(container)
+        if not name:
+            self.client.create_body = body
+            self.client.job_body = body
+        else:
+            self.client.proxy_body = body
+        return FakeResponse(201, {"Id": container_id})
 
 
 class FakeContainers:
-    def __init__(self, client: "FakeDockerClient") -> None:
+    def __init__(self, client: FakeDockerClient) -> None:
         self.client = client
         self.items: list[FakeContainer] = []
 
     def get(self, container_id: str) -> FakeContainer:
         for container in self.client.containers.items:
-            if container.id == container_id:
+            if container.id == container_id or container.name == container_id:
                 return container
-        container = FakeContainer(self.client, container_id)
-        self.client.containers.items.append(container)
-        return container
+        raise NotFound(container_id)
 
     def create(self, **kwargs: Any) -> FakeContainer:
         del kwargs
@@ -124,7 +179,7 @@ class FakeContainers:
 
 
 class FakeImages:
-    def __init__(self, client: "FakeDockerClient") -> None:
+    def __init__(self, client: FakeDockerClient) -> None:
         self.client = client
 
     def get(self, name: str) -> Any:
@@ -143,8 +198,11 @@ class FakeDockerClient:
     def __init__(self) -> None:
         self.containers = FakeContainers(self)
         self.images = FakeImages(self)
+        self.networks = FakeNetworks()
         self.api = FakeApi(self)
         self.create_body: dict[str, Any] = {}
+        self.job_body: dict[str, Any] = {}
+        self.proxy_body: dict[str, Any] = {}
         self.create_error: str | None = None
         self.image_available = True
         self.exit_status = "exited"
@@ -201,8 +259,17 @@ def _settings(**overrides: Any) -> Settings:
         "goose_model": "test-model",
         "goose_provider": "openrouter",
         "llm_gateway_url": "http://gateway:8091",
-        "llm_gateway_secret": "test-gateway-secret-0123456789",
-        "llm_gateway_token_ttl_seconds": 0,
+        "llm_gateway_virtual_key": "test-virtual-key",
+        "llm_gateway_ready_url": "",
+        "llm_gateway_port": 8091,
+        "goose_job_network": "kafkallm-jobs",
+        "goose_job_network_subnet": "fd00:6b61:666b:616c::/64",
+        "goose_job_network_interface": "",
+        "goose_job_network_dir": "",
+        "goose_job_network_autocreate": False,
+        "goose_job_proxy_network": "podman",
+        "goose_job_proxy_upstream_host": "host.containers.internal",
+        "goose_job_proxy_upstream_port": 8091,
     }
     values.update(overrides)
     return replace(Settings.from_env(), **values)
@@ -292,14 +359,13 @@ def test_vm_run_starts_microvm_and_collects_result(tmp_path: Path) -> None:
     assert "OPENAI_HOST=http://gateway:8091" in environment
     assert "GOOSE_MAX_TURNS=20" in environment
     assert "GOOSE_SUBAGENT_MAX_TURNS=10" in environment
-    token_line = next(
-        item for item in environment if item.startswith("OPENAI_API_KEY=")
-    )
-    claims = verify_token(
-        "test-gateway-secret-0123456789", token_line.split("=", 1)[1]
-    )
-    assert claims is not None
-    assert claims.job_id == job.job_id
+    assert "OPENAI_API_KEY=test-virtual-key" in environment
+    assert body["HostConfig"]["NetworkMode"] == "kafkallm-jobs"
+    assert body["HostConfig"]["ExtraHosts"] == [
+        "host.containers.internal:fd00:6b61:666b:616c::2"
+    ]
+    assert "LISTEN_PORT=8091" in client.proxy_body["Env"]
+    assert "UPSTREAM_HOST=host.containers.internal" in client.proxy_body["Env"]
 
     assert [event["type"] for event in audit.events] == [
         "goose.started",
@@ -319,6 +385,8 @@ def test_vm_run_copies_outputs_and_removes_workdir(tmp_path: Path) -> None:
 
     def _post(url: str, **kwargs: Any) -> FakeResponse:
         response = original_create(url, **kwargs)
+        if (kwargs.get("params") or {}).get("name"):
+            return response
         outputs = client.workdir / "outputs"
         outputs.mkdir(parents=True, exist_ok=True)
         (outputs / "result.txt").write_text("artifact", encoding="utf-8")
@@ -342,9 +410,7 @@ def test_vm_provider_error_is_propagated(tmp_path: Path) -> None:
     client = FakeDockerClient()
     client.exit_code = 1
     client.results = {
-        "main.json": _goose_result(
-            error="Provider failed", status="error"
-        )
+        "main.json": _goose_result(error="Provider failed", status="error")
     }
     audit = FakeAudit()
     runner = GooseJobRunner(_settings_for(tmp_path), client=client)
@@ -370,9 +436,7 @@ def test_vm_missing_result_uses_stderr(tmp_path: Path) -> None:
     runner = GooseJobRunner(_settings_for(tmp_path), client=client)
     workspace = _workspace(tmp_path)
 
-    with pytest.raises(
-        GooseJobRuntimeError, match="No AI provider is configured"
-    ):
+    with pytest.raises(GooseJobRuntimeError, match="No AI provider is configured"):
         runner.run(
             job=Job(instruction="Fail without provider"),
             workspace=workspace,
@@ -451,7 +515,7 @@ def test_vm_does_not_pass_provider_credentials(
 def test_wait_ready_requires_gateway(tmp_path: Path) -> None:
     client = FakeDockerClient()
     runner = GooseJobRunner(
-        _settings_for(tmp_path, llm_gateway_secret=""), client=client
+        _settings_for(tmp_path, llm_gateway_virtual_key=""), client=client
     )
 
     with pytest.raises(GooseJobRuntimeError, match="LLM gateway"):

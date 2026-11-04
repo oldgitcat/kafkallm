@@ -39,6 +39,7 @@ COPY --from=goose-download /usr/local/goose/bin/goose /usr/local/goose/bin/goose
 COPY goose_job/template /opt/goosetown/template
 COPY goose_job/skills /opt/goosetown/skills
 COPY goose_job/LICENSE-goosetown /opt/goosetown/LICENSE
+COPY goose_job/gateway_proxy.py /opt/kafkallm/gateway_proxy.py
 
 ENV GOOSE_BIN=/usr/local/goose/bin/goose \
     PATH=/usr/local/goose/bin:$PATH \
