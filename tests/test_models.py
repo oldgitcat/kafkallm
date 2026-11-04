@@ -3,7 +3,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from hermes.models import Job, to_json_bytes
+from kafkallm.models import Job, JobState, to_json_bytes
 
 
 def test_job_defaults_and_serialization() -> None:
@@ -28,3 +28,14 @@ def test_job_rejects_unsafe_run_ids(run_id: str) -> None:
 def test_job_rejects_overlong_trace_id() -> None:
     with pytest.raises(ValidationError):
         Job.model_validate({"instruction": "Hello", "trace_id": "x" * 129})
+
+
+def test_job_state_is_the_gui_projection() -> None:
+    job = Job(instruction="Hello", trace_id="trace-1")
+    state = JobState.queued(job, worker_id="worker-1")
+
+    assert state.job_id == job.job_id
+    assert state.status == "queued"
+    assert state.worker_id == "worker-1"
+    assert state.submitted_at is not None
+    assert state.started_at is None

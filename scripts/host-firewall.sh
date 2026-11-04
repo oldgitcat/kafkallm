@@ -1,9 +1,9 @@
 #!/bin/sh
-# Strict host-side isolation for the job microVMs.
+# Strict host-side isolation for the goose microVMs.
 #
 # The job microVMs run as your user through rootless Podman (TSI/passt), so
 # their outbound connections leave the host as your UID. The Docker Compose
-# services (Redpanda, RustFS, Phoenix, the worker) live on the Docker bridge
+# services (Redpanda, RustFS, Phoenix, the worker, the GUI) live on the Docker bridge
 # networks in 172.16.0.0/12. Blocking your UID from that range removes the
 # microVM's path to them while leaving the public internet (the model
 # provider) reachable. The worker itself runs as root in its own network

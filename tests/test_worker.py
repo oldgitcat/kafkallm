@@ -1,7 +1,7 @@
 from dataclasses import replace
 
-from hermes.settings import Settings
-from hermes.worker import Worker
+from kafkallm.settings import Settings
+from kafkallm.worker import Worker
 
 
 def test_invalid_job_result_preserves_payload_trace_id() -> None:

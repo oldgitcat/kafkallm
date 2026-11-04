@@ -1,35 +1,44 @@
-name: hermes
+name: kafkallm
 
 x-app-environment: &app-environment
   KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
   JOBS_TOPIC: ${JOBS_TOPIC:-jobs.in}
   RESULTS_TOPIC: ${RESULTS_TOPIC:-jobs.out}
+  STATE_TOPIC: ${STATE_TOPIC:-jobs.state}
   EVENTS_TOPIC: ${EVENTS_TOPIC:-agent.events}
   KAFKA_GROUP_ID: ${KAFKA_GROUP_ID:-agent-workers}
   KAFKA_TOPIC_PARTITIONS: ${KAFKA_TOPIC_PARTITIONS:-3}
   KAFKA_TOPIC_RETENTION_MS: ${KAFKA_TOPIC_RETENTION_MS:-604800000}
   KAFKA_STARTUP_TIMEOUT_SECONDS: ${KAFKA_STARTUP_TIMEOUT_SECONDS:-300}
-  HERMES_MODEL: ${HERMES_MODEL:-}
-  HERMES_PROVIDER: ${HERMES_PROVIDER:-}
-  HERMES_STARTUP_TIMEOUT_SECONDS: ${HERMES_STARTUP_TIMEOUT_SECONDS:-300}
-  HERMES_IMAGE: ${HERMES_IMAGE:-nousresearch/hermes-agent@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d}
-  HERMES_JOB_DOCKER_HOST: ${HERMES_JOB_DOCKER_HOST:-tcp://127.0.0.1:2375}
-  HERMES_JOB_RAM_MIB: ${HERMES_JOB_RAM_MIB:-2048}
-  HERMES_JOB_CPUS: ${HERMES_JOB_CPUS:-2}
-  HERMES_JOB_MEMORY_LIMIT: ${HERMES_JOB_MEMORY_LIMIT:-4g}
-  HERMES_JOB_PIDS_LIMIT: ${HERMES_JOB_PIDS_LIMIT:-512}
-  HERMES_JOB_TMPFS_SIZE: ${HERMES_JOB_TMPFS_SIZE:-1g}
-  HERMES_JOB_MAX_TURNS: ${HERMES_JOB_MAX_TURNS:-100}
-  HERMES_JOB_REFLECT_ENABLED: ${HERMES_JOB_REFLECT_ENABLED:-true}
-  HERMES_JOB_REFLECT_TIMEOUT_SECONDS: ${HERMES_JOB_REFLECT_TIMEOUT_SECONDS:-300}
-  HERMES_JOB_USE_PASST: ${HERMES_JOB_USE_PASST:-false}
-  HERMES_JOB_WORKSPACE_ROOT: ${HERMES_JOB_WORKSPACE_ROOT:-/var/lib/hermes/jobs}
-  HERMES_JOB_SKILLS_DIR: ${HERMES_JOB_SKILLS_DIR:-/var/lib/hermes/skills}
-  WORKSPACE_ROOT: ${WORKSPACE_ROOT:-/var/lib/hermes/staging}
-  MAX_JOB_TIMEOUT_SECONDS: ${MAX_JOB_TIMEOUT_SECONDS:-900}
+  GOOSE_MODEL: ${GOOSE_MODEL:-}
+  GOOSE_PROVIDER: ${GOOSE_PROVIDER:-}
+  GOOSE_STARTUP_TIMEOUT_SECONDS: ${GOOSE_STARTUP_TIMEOUT_SECONDS:-300}
+  GOOSE_IMAGE: ${GOOSE_IMAGE:-kafkallm-goose-job:latest}
+  GOOSE_JOB_DOCKER_HOST: ${GOOSE_JOB_DOCKER_HOST:-tcp://127.0.0.1:2375}
+  GOOSE_JOB_RAM_MIB: ${GOOSE_JOB_RAM_MIB:-2048}
+  GOOSE_JOB_CPUS: ${GOOSE_JOB_CPUS:-2}
+  GOOSE_JOB_MEMORY_LIMIT: ${GOOSE_JOB_MEMORY_LIMIT:-4g}
+  GOOSE_JOB_PIDS_LIMIT: ${GOOSE_JOB_PIDS_LIMIT:-512}
+  GOOSE_JOB_TMPFS_SIZE: ${GOOSE_JOB_TMPFS_SIZE:-1g}
+  GOOSE_JOB_MAX_TURNS: ${GOOSE_JOB_MAX_TURNS:-60}
+  GOOSE_JOB_SUBAGENT_MAX_TURNS: ${GOOSE_JOB_SUBAGENT_MAX_TURNS:-40}
+  GOOSE_JOB_REFLECT_ENABLED: ${GOOSE_JOB_REFLECT_ENABLED:-true}
+  GOOSE_JOB_REFLECT_TIMEOUT_SECONDS: ${GOOSE_JOB_REFLECT_TIMEOUT_SECONDS:-300}
+  GOOSE_JOB_USE_PASST: ${GOOSE_JOB_USE_PASST:-false}
+  GOOSE_JOB_WORKSPACE_ROOT: ${GOOSE_JOB_WORKSPACE_ROOT:-/var/lib/kafkallm/jobs}
+  GOOSE_JOB_SKILLS_DIR: ${GOOSE_JOB_SKILLS_DIR:-/var/lib/kafkallm/skills}
+  WORKSPACE_ROOT: ${WORKSPACE_ROOT:-/var/lib/kafkallm/staging}
+  MAX_JOB_TIMEOUT_SECONDS: ${MAX_JOB_TIMEOUT_SECONDS:-1800}
   MAX_AGENT_STEPS: ${MAX_AGENT_STEPS:-8}
+  GUI_HOST: ${GUI_HOST:-0.0.0.0}
+  GUI_PORT: ${GUI_PORT:-8090}
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  OPENAI_HOST: ${OPENAI_HOST:-}
+  OPENAI_BASE_PATH: ${OPENAI_BASE_PATH:-}
   OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+  OPENROUTER_HOST: ${OPENROUTER_HOST:-}
+  ANTHROPIC_HOST: ${ANTHROPIC_HOST:-}
+  OLLAMA_HOST: ${OLLAMA_HOST:-}
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
   GEMINI_API_KEY: ${GEMINI_API_KEY:-}
@@ -44,11 +53,11 @@ x-app-environment: &app-environment
   S3_REGION: ${S3_REGION:-local}
   S3_BUCKET: ${S3_BUCKET:-jobs}
   S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-rustfs}
-  S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-hermes-secret}
+  S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-kafkallm-secret}
   AGENT_NAME: ${AGENT_NAME:-agent-worker}
   PHOENIX_ENABLED: ${PHOENIX_ENABLED:-true}
   PHOENIX_COLLECTOR_ENDPOINT: ${PHOENIX_COLLECTOR_ENDPOINT:-http://phoenix:6006}
-  PHOENIX_PROJECT_NAME: ${PHOENIX_PROJECT_NAME:-hermes}
+  PHOENIX_PROJECT_NAME: ${PHOENIX_PROJECT_NAME:-kafkallm}
   PHOENIX_CAPTURE_CONTENT: ${PHOENIX_CAPTURE_CONTENT:-false}
 
 services:
@@ -103,18 +112,17 @@ services:
       - phoenix-data:/mnt/data
     restart: unless-stopped
 
-  hermes-job-init:
+  kafkallm-job-init:
     image: busybox:1.37
     command:
       - sh
       - -c
       - |
         set -eu
-        mkdir -p /var/lib/hermes/jobs /var/lib/hermes/staging /var/lib/hermes/skills
-        chown -R 10001:10001 /var/lib/hermes
-        chmod -R 777 /var/lib/hermes
+        mkdir -p /var/lib/kafkallm/jobs /var/lib/kafkallm/staging /var/lib/kafkallm/skills
+        chmod -R 777 /var/lib/kafkallm
     volumes:
-      - ${HERMES_JOB_ROOT:-/var/lib/hermes}:/var/lib/hermes:z
+      - ${KAFKALLM_JOB_ROOT:-/var/lib/kafkallm}:/var/lib/kafkallm:z
     restart: "no"
 
   podman-proxy:
@@ -150,11 +158,11 @@ services:
     build: .
     environment: *app-environment
     volumes:
-      - ${HERMES_JOB_ROOT:-/var/lib/hermes}:/var/lib/hermes:z
+      - ${KAFKALLM_JOB_ROOT:-/var/lib/kafkallm}:/var/lib/kafkallm:z
     depends_on:
       redpanda:
         condition: service_healthy
-      hermes-job-init:
+      kafkallm-job-init:
         condition: service_completed_successfully
     restart: unless-stopped
     read_only: true
@@ -166,10 +174,28 @@ services:
       - ALL
     stop_grace_period: 30s
 
+  gui:
+    build: .
+    command: ["kafkallm", "gui"]
+    environment: *app-environment
+    ports:
+      - "127.0.0.1:${GUI_PORT:-8090}:${GUI_PORT:-8090}"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
   jobctl:
     build: .
     profiles: ["cli"]
-    entrypoint: ["hermes"]
+    entrypoint: ["kafkallm"]
     command: ["--help"]
     environment: *app-environment
     depends_on:
@@ -181,7 +207,7 @@ services:
     profiles: ["storage"]
     environment:
       RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY_ID:-rustfs}
-      RUSTFS_SECRET_KEY: ${S3_SECRET_ACCESS_KEY:-hermes-secret}
+      RUSTFS_SECRET_KEY: ${S3_SECRET_ACCESS_KEY:-kafkallm-secret}
       RUSTFS_CONSOLE_ENABLE: "true"
       RUSTFS_REGION: ${S3_REGION:-local}
     ports:

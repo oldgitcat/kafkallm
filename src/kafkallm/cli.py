@@ -8,10 +8,11 @@ import uuid
 
 from confluent_kafka import Consumer, KafkaError, KafkaException
 
-from hermes.kafka import KafkaProducer, ensure_topics
-from hermes.models import FileRef, Job
-from hermes.settings import Settings
-from hermes.telemetry import (
+from kafkallm.kafka import KafkaProducer, ensure_topics
+from kafkallm.models import FileRef, Job
+from kafkallm.state import StatePublisher
+from kafkallm.settings import Settings
+from kafkallm.telemetry import (
     configure_telemetry,
     current_trace_id,
     get_tracer,
@@ -20,7 +21,7 @@ from hermes.telemetry import (
     set_content,
     shutdown_telemetry,
 )
-from hermes.worker import Worker
+from kafkallm.worker import Worker
 
 
 def _file_ref(value: str) -> FileRef:
@@ -43,11 +44,12 @@ def _add_consumer_arguments(parser: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="hermes", description="Process LLM jobs through Redpanda"
+        prog="kafkallm", description="Run goose jobs through Redpanda"
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("worker", help="Start the agent worker")
+    subparsers.add_parser("gui", help="Start the job GUI")
 
     submit = subparsers.add_parser("submit", help="Send a job to jobs.in")
     submit.add_argument("instruction", help="Task for the agent")
@@ -68,6 +70,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_consumer_arguments(results)
     events = subparsers.add_parser("events", help="Read audit events from agent.events")
     _add_consumer_arguments(events)
+    states = subparsers.add_parser("states", help="Read job state from jobs.state")
+    _add_consumer_arguments(states)
     return parser
 
 
@@ -77,6 +81,7 @@ def submit(settings: Settings, args: argparse.Namespace) -> None:
         raise ValueError("--input must be a JSON object.")
     ensure_topics(settings)
     producer = KafkaProducer(settings)
+    state = StatePublisher(settings, producer)
     try:
         with get_tracer().start_as_current_span(
             "job.submit",
@@ -104,6 +109,7 @@ def submit(settings: Settings, args: argparse.Namespace) -> None:
                 job,
                 headers=inject_trace_headers(),
             )
+            state.queued(job, worker_id=settings.worker_id)
     finally:
         producer.close()
     print(job.model_dump_json(indent=2))
@@ -114,7 +120,7 @@ def consume(settings: Settings, args: argparse.Namespace, topic: str) -> None:
     consumer = Consumer(
         {
             "bootstrap.servers": settings.kafka_bootstrap_servers,
-            "group.id": f"hermes-topic-viewer-{uuid.uuid4()}",
+            "group.id": f"kafkallm-topic-viewer-{uuid.uuid4()}",
             "auto.offset.reset": "earliest" if args.from_beginning else "latest",
             "enable.auto.commit": False,
         }
@@ -166,6 +172,12 @@ def main() -> None:
             consume(settings, args, settings.results_topic)
         elif args.command == "events":
             consume(settings, args, settings.events_topic)
+        elif args.command == "states":
+            consume(settings, args, settings.state_topic)
+        elif args.command == "gui":
+            from kafkallm.gui import run_gui
+
+            run_gui(settings)
     except (KafkaException, RuntimeError, ValueError, json.JSONDecodeError) as exc:
         parser.exit(1, f"Error: {exc}\n")
     finally:

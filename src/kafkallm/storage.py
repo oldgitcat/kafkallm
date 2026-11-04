@@ -8,8 +8,8 @@ import boto3
 from botocore.client import Config
 from botocore.exceptions import ClientError
 
-from hermes.models import FileRef
-from hermes.settings import Settings
+from kafkallm.models import FileRef
+from kafkallm.settings import Settings
 
 
 logger = logging.getLogger(__name__)

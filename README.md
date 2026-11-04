@@ -1,318 +1,352 @@
-# Hermes
+# Kafkallm
 
-Hermes is a small Kafka/Redpanda job queue where every job is executed by an isolated
-[Hermes Agent](https://github.com/NousResearch/hermes-agent) runtime. Redpanda carries jobs,
-results, and audit events. There is no PostgreSQL and no scheduler.
+Kafkallm is a small Kafka/Redpanda job queue where every job is executed by a
+disposable [goose](https://github.com/aaif-goose/goose) microVM running the
+[goosetown](https://github.com/aaif-goose/goosetown) multi-agent workflow.
+Kafka is the queue, the materialized state store, the scheduler, and the audit
+log. There is no PostgreSQL and no separate scheduler service.
 
 ```text
-Producer/CLI ──→ Redpanda jobs.in ──→ Hermes job worker
-                                         │
-                                         │ Podman API via socket proxy
-                                         ▼
-                               disposable Hermes microVM (KVM)
-                               ├─ agent loop and tools
-                               ├─ tmpfs /opt/data (memory off)
-                               ├─ per-job /workspace bind mount
-                               └─ shared skills directory
+Browser / CLI ──→ jobs.in ──→ worker ──→ rootless Podman (krun)
+                                  │            │
+                                  │            ▼
+                                  │      goose microVM
+                                  │      ├─ goosetown orchestrator
+                                  │      ├─ parallel goose subagents
+                                  │      ├─ gtwall coordination
+                                  │      └─ /workspace bind mount
+                                  │
+                                  ├─→ jobs.out      (results)
+                                  ├─→ jobs.state    (compacted GUI state)
+                                  ├─→ agent.events  (audit)
+                                  ├─→ Phoenix       (OpenTelemetry)
+                                  └─→ RustFS        (optional artifacts)
 
-Hermes job worker ──→ Redpanda jobs.out
-                  ├─→ Redpanda agent.events
-                  ├─→ OpenTelemetry → Phoenix
-                  └─→ optional RustFS for result files
+GUI ──→ jobs.in, jobs.state, agent.events
 ```
-
-> **Rename note:** This branch renames the application from `kafkallm` to Hermes. Kafka topic
-> names remain unchanged. The Compose project, Python package, CLI command, and default Phoenix
-> project are now Hermes, so Docker creates separate `hermes_*` volumes. Existing `kafkallm`
-> containers and volumes are left untouched.
 
 ## Included
 
-- A disposable Hermes Agent **microVM** per job, with a shared, persistent skills directory
-- Redpanda topics `jobs.in`, `jobs.out`, and `agent.events`
-- Kafka worker with manual offset commits and a bounded startup wait
-- Correlated traces for submission, worker, agent, and the Hermes run
-- Structured Kafka audit events
-- Arize Phoenix UI with a persistent SQLite volume
-- Optional S3-compatible RustFS container for input files and result artifacts
-- Redpanda Console and a CLI for submitting jobs and reading results
+- A disposable **goose** microVM per job with the **goosetown** orchestrator,
+  worker, writer, reviewer, and local-researcher skills
+- A browser GUI for submitting jobs and watching state, results, and audit
+  events
+- A compacted `jobs.state` topic that acts as the GUI database; the GUI rebuilds
+  its view from Kafka after a restart
+- Redpanda topics `jobs.in`, `jobs.out`, `jobs.state`, and `agent.events`
+- A Kafka worker with manual offset commits and a bounded startup wait
+- A persistent skills directory that goose and goosetown improve across jobs
+- Correlated traces for submission, worker, and the goose run
+- Optional S3-compatible RustFS for input files and result artifacts
+- Redpanda Console and a CLI for scripting
 
 ## Requirements
 
-- Docker and Docker Compose
-- KVM (`/dev/kvm`) plus Podman with the `krun` runtime (`crun-krun`)
-- A rootless Podman API socket: `systemctl --user enable --now podman.socket`
-- A model provider configured through `HERMES_PROVIDER` / `HERMES_MODEL` plus the matching key
+- Docker and Docker Compose for the control plane
+- KVM (`/dev/kvm`) and Podman with the `krun` runtime (`crun-krun`) for the job
+  microVMs
+- A rootless Podman API socket:
+  `systemctl --user enable --now podman.socket`
+- A model provider key for goose (`OPENROUTER_API_KEY`,
+  `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, ...)
+- Network access while building the goose job image (it downloads the pinned
+  goose release)
 
-The official Hermes Agent image is large because it includes the complete Hermes runtime.
+goosetown relies on goose subagents and tool calling. Use a model with
+reliable tool calling; small free models may ignore the delegation workflow and
+answer directly.
 
 ## Quick start
 
+1. Copy the environment template and set a provider:
+
+   ```bash
+   cp .env.example .env
+   ```
+
+   ```dotenv
+   GOOSE_PROVIDER=openrouter
+   GOOSE_MODEL=nvidia/nemotron-3.5-lightning:free
+   OPENROUTER_API_KEY=your-openrouter-key
+   ```
+
+2. Install the microVM runtime and start the rootless Podman API:
+
+   ```bash
+   dnf install crun-krun
+   systemctl --user enable --now podman.socket
+   ```
+
+   Rootful Podman breaks libkrun's TSI networking on this setup. Use the rootless
+   socket.
+
+3. Build the goose job image into the **Podman** storage. This is separate from
+   the Docker build of the worker and GUI:
+
+   ```bash
+   ./scripts/build-goose-image.sh
+   ```
+
+4. Start the stack:
+
+   ```bash
+   docker compose --profile storage up -d --build
+   ```
+
+5. Open the GUI:
+
+   <http://localhost:8090>
+
+The GUI is published on `127.0.0.1` only. It submits to `jobs.in` and reads the
+state and audit topics. It has no local database.
+
+### Command line
+
 ```bash
-cp .env.example .env
-```
-
-On Fedora, install the microVM runtime and start the rootless Podman API:
-
-```bash
-dnf install crun-krun
-systemctl --user enable --now podman.socket
-```
-
-Rootful Podman breaks libkrun's TSI networking on this setup, so the job
-microVMs get no outbound network there. The rootless socket is the supported
-path. The worker and the microVMs share `/var/lib/hermes`, which is made
-world-writable because rootless Podman maps the job's uid into a subuid range.
-
-Configure a Hermes provider:
-
-```dotenv
-HERMES_PROVIDER=openrouter
-HERMES_MODEL=nvidia/nemotron-3.5-lightning:free
-OPENROUTER_API_KEY=your-openrouter-key
-```
-
-Each job runs in a fresh microVM, so it always starts with an empty profile: set
-`HERMES_PROVIDER`, `HERMES_MODEL`, and the matching key. Learned skills persist in the shared
-skills directory; memory is disabled.
-
-Then start the stack:
-
-```bash
-docker compose --profile storage up -d --build
-```
-
-Submit a job:
-
-```bash
+# Submit a job
 docker compose run --rm jobctl submit "Say hello"
-```
 
-Read results:
-
-```bash
+# Read results
 docker compose run --rm jobctl results --from-beginning --idle-timeout 5
-```
 
-Read audit events:
+# Read materialized state
+docker compose run --rm jobctl states --from-beginning --idle-timeout 5
 
-```bash
+# Read audit events
 docker compose run --rm jobctl events --from-beginning --idle-timeout 5
 ```
 
-Worker logs:
+Worker and GUI logs:
 
 ```bash
 docker compose logs -f agent-worker
+docker compose logs -f gui
 ```
 
-Redpanda Console is available at <http://localhost:8080>. The Phoenix UI runs at
+Redpanda Console runs at <http://localhost:8080>. Phoenix runs at
 <http://localhost:6006>.
 
-## How jobs run
+## How a job runs
 
-There is a single execution path. The worker consumes a job from Kafka, writes the inputs and the
-prompt into `/var/lib/hermes/jobs/<run_id>`, starts a disposable Hermes microVM (rootless Podman,
-libkrun), reads the result from that directory, and publishes it to `jobs.out`. The microVM never
-talks to Kafka; the worker is the only Kafka participant.
+1. The GUI or CLI writes a JSON job to `jobs.in` and a `queued` state to
+   `jobs.state`.
+2. The worker consumes `jobs.in`, publishes `running`, and prepares a unique
+   directory under `GOOSE_JOB_WORKSPACE_ROOT`.
+3. Referenced input files are downloaded from RustFS into `inputs/`.
+4. The worker starts a goose microVM through the rootless Podman API. The job
+   directory is bind mounted at `/workspace`, the prompt at `/jobboot`, and the
+   persistent skills at `/workspace/.claude/skills`.
+5. Inside the microVM, the entrypoint seeds the workspace with goosetown
+   (`AGENTS.md`, the `goose` wrapper, `gtwall`, and the role skills) and runs:
 
-Hermes has its own tool registry and agent loop. The worker does not reimplement the LLM loop.
+   ```bash
+   ./goose run --no-session -q --output-format json \
+     --with-builtin developer --max-turns "$GOOSE_MAX_TURNS" \
+     -i /jobboot/main-prompt.txt
+   ```
 
-### Why Docker and Podman
+6. The goosetown orchestrator decomposes the job, dispatches parallel subagents
+   through goose's `delegate`/`load` tools, coordinates them over `gtwall`, and
+   writes result files to `outputs/`.
+7. The worker parses the structured goose output, copies `outputs/` back,
+   optionally runs a short skill-improvement pass, publishes `jobs.out` and the
+   final `jobs.state`, uploads artifacts, and commits the Kafka offset.
+8. Audit events go to `agent.events`; traces go to Phoenix when enabled.
 
-The stack runs under Docker Compose, but the job microVMs run under Podman. The split is
-deliberate:
+The microVM never talks to Kafka. The worker is the only Kafka participant.
 
-- **Podman runs the microVMs.** Only Podman's `crun` krun runtime can start a libkrun microVM,
-  and it is selected through the `run.oci.handler=krun` annotation. Docker's runc has no krun
-  handler.
-- **Docker runs the control plane.** The worker, Redpanda, RustFS, Phoenix, and the socket proxy
-  are ordinary containers. Keeping them on Docker leaves the worker image and the Compose file
-  unchanged.
-- **Rootless Podman is required.** Rootful Podman breaks libkrun's TSI networking here, so the
-  microVMs would have no outbound network and every job would stall on the LLM provider.
+## Kafka topics
 
-The whole stack was also tried under `podman-compose`, but this host's Wi-Fi interface advertises
-a `/0` netmask (typical for a mobile hotspot), so netavark refuses to create any bridge subnet.
-Docker's bridges already exist, so the stack stays on Docker while the job microVMs use Podman.
+| Topic | Cleanup | Purpose |
+|---|---|---|
+| `jobs.in` | delete, 7 days | Jobs submitted by the GUI or CLI |
+| `jobs.out` | delete, 7 days | Final `JobResult` records |
+| `jobs.state` | **compact** | Latest materialized `JobState` per `job_id`; the GUI's database |
+| `agent.events` | delete, 7 days | Audit events for each job |
 
-The worker is a Docker container that reaches the rootless Podman API through the internal
-`podman-proxy`, which shares the worker's network namespace and listens on loopback only. The
-engines do not share storage: the job directory and skills live on the host under `/var/lib/hermes`,
-which both the worker and the microVMs see. Running the whole stack under Podman is possible, but
-nested rootless Podman inside a rootless Podman container is fragile, so the split is the simpler
-option.
+The GUI consumes `jobs.state` and `agent.events` from the beginning with a
+unique consumer group. Compaction keeps the latest state per job, so a restart
+rebuilds the view without a local store. State transitions are published by
+both the GUI/CLI (`queued`) and the worker (`running`, `succeeded`/`failed`).
 
-## MicroVM job containers
+## goosetown and skills
 
-Every job runs in its own KVM microVM through
-[libkrun](https://github.com/libkrun/libkrun). The worker creates the microVM through the
-rootless Podman API (fronted by the internal `podman-proxy`), waits for it, reads the
-result from the shared workspace directory, copies `outputs/` back, and removes the
-microVM and its job directory. Each job gets its own kernel, so a kernel exploit no longer
-reaches the host.
+The job image contains a small goosetown hub:
+
+- `AGENTS.md` — workspace and coordination contract for every job
+- `goose` — the upstream goosetown launcher (sets telepathy and wall files)
+- `gtwall` — the upstream Town Wall broadcast tool
+- `.claude/skills/goosetown-orchestrator/SKILL.md` — adapted orchestrator
+  guidance for an unattended, offline job
+- role skills for workers, writers, reviewers, and a local researcher
+
+The upstream role skills and `gtwall` are vendored from goosetown under
+Apache 2.0; see `goose_job/LICENSE-goosetown`. The orchestrator and `AGENTS.md`
+are adapted so they do not depend on the internet, `bd`, `uv`, or the goosetown
+dashboard. The browser-based goosetown dashboard is not used; Kafkallm has its
+own job GUI.
+
+Skills are stored on the host at `GOOSE_JOB_SKILLS_DIR`
+(`/var/lib/kafkallm/skills` by default) and bind mounted into every job at
+`/workspace/.claude/skills`. A skill improved by one job is available to the
+next. The directory is world-writable because rootless Podman maps the job's
+uid into a subuid range.
+
+### Learning pass
+
+After a successful main run, the worker can run a second, shorter goose session
+with a review prompt. It may update one reusable skill under
+`.claude/skills`. This is best-effort: a failed reflect run is reported as a
+`goose.reflect` audit event and does not fail the job.
+
+- `GOOSE_JOB_REFLECT_ENABLED=true` (default)
+- `GOOSE_JOB_REFLECT_TIMEOUT_SECONDS=300`
+- `GOOSE_JOB_MAX_TURNS=60` (main run)
+- `GOOSE_JOB_SUBAGENT_MAX_TURNS=40`
+
+## Job format
+
+```json
+{
+  "job_id": "optionally-set-by-producer",
+  "run_id": "optionally-set-by-producer",
+  "trace_id": "generated-automatically-via-opentelemetry",
+  "type": "llm_task",
+  "instruction": "Analyze the input data",
+  "input": {"arbitrary": "JSON data"},
+  "input_files": [],
+  "timeout_seconds": 300,
+  "max_steps": 6
+}
+```
+
+`job_id` and `run_id` are generated as UUIDs if omitted. Messages use `job_id`
+as the Kafka key. `max_steps` is advisory; goose is bounded by
+`GOOSE_JOB_MAX_TURNS` and the job timeout.
+
+A result includes:
+
+- `status`: `succeeded` or `failed`
+- `result` or `error`
+- `artifacts`: uploaded files
+- `artifact_error`: optional upload failure; does not change job status
+- `trace_id`, `worker_id`, timestamps, steps, and token usage
+
+## MicroVM job image
+
+The job image is built with `goose_job/Dockerfile`:
+
+- Debian bookworm slim, with bash, git, jq, Python 3, and ripgrep
+- Pinned goose `1.57.0` release, verified with SHA-256 at build time
+- No `curl`, `wget`, or other network clients in the final image
+- goosetown template and skills under `/opt/goosetown`
+
+Build it with `./scripts/build-goose-image.sh`. The worker expects it in the
+rootless Podman storage and verifies it at startup (it can pull a registry
+image if `GOOSE_IMAGE` points to one).
 
 Per-job layout:
 
 | Mount | Type | Purpose |
 |---|---|---|
-| `/workspace` | bind mount `hermes-job-<run_id>` | `inputs/`, `outputs/`, and the result files; removed after collection |
-| `/opt/data` | tmpfs (`HERMES_JOB_TMPFS_SIZE`, default `1g`) | sessions, config, cache; discarded with the microVM |
-| `/opt/data/skills` | bind mount `HERMES_JOB_SKILLS_DIR` | bundled and learned skills shared across jobs |
+| `/workspace` | bind mount `goose-vm-<run_id>` | `inputs/`, `outputs/`, `.scratch/`, and the goosetown workspace; removed after collection |
+| `/jobboot` | read-only bind mount | run script, main prompt, reflect prompt |
+| `/workspace/.claude/skills` | bind mount `GOOSE_JOB_SKILLS_DIR` | persistent goosetown skills |
+| `/opt/data` | tmpfs | goose config, sessions, and wall state; discarded with the microVM |
 
-The job bundle (script, prompt, reflect prompt) is bind mounted read-only, and the results are
-written back into the shared workspace directory. Nothing is read from the microVM's filesystem
-afterwards.
+The microVM costs more than a container: each job reserves `GOOSE_JOB_RAM_MIB`
+of memory and boots a guest kernel.
 
-The microVM costs more than a container: each job reserves `HERMES_JOB_RAM_MIB` of memory and
-boots a guest kernel, which takes about three seconds for the Hermes image.
+## Why Docker and Podman
 
-### Learning: skills and reflect
+The control plane runs under Docker Compose; the job microVMs run under Podman.
 
-The job disables the built-in memory stores, the automatic background review, and interactive
-approvals:
+- **Podman runs the microVMs.** Only Podman's `crun` krun runtime can start a
+  libkrun microVM, selected through the `run.oci.handler=krun` annotation.
+  Docker's runc has no krun handler.
+- **Docker runs the control plane.** The worker, GUI, Redpanda, RustFS, Phoenix,
+  and the socket proxy are ordinary containers.
+- **Rootless Podman is required.** Rootful Podman breaks libkrun's TSI
+  networking here, so the microVMs would have no outbound network and every job
+  would stall on the LLM provider.
 
-- `memory.memory_enabled=false`
-- `memory.user_profile_enabled=false`
-- `auxiliary.background_review.enabled=false`
-- `approvals.mode=off` (unattended jobs have no channel to answer a prompt)
+The whole stack was also tried under `podman-compose`, but this host's Wi-Fi
+interface advertises a `/0` netmask (typical for a mobile hotspot), so netavark
+refuses to create any bridge subnet. Docker's bridges already exist, so the
+stack stays on Docker while the job microVMs use Podman.
 
-The automatic review cannot be relied on in a one-shot process because the gateway exits with
-`os._exit`, which also stops Hermes' daemon review thread. Instead, after a successful main run,
-the worker submits a second HTTP run with a fixed review prompt and the main result as context.
-That reflect run can update or create reusable skills through `skill_manage`. It runs before the
-microVM is removed, so the shared skills directory sees the result.
+The worker reaches the rootless Podman API through the internal `podman-proxy`,
+which shares the worker's network namespace and listens on loopback only. The
+job directory and skills live on the host under `/var/lib/kafkallm`, which both
+the worker and the microVMs see.
 
-Reflect is best-effort. A reflect failure is reported as a `hermes.reflect` audit event with
-status `failed`, but the job remains `succeeded`. Set `HERMES_JOB_REFLECT_ENABLED=false` to skip
-it, or tune it with `HERMES_JOB_REFLECT_TIMEOUT_SECONDS` (default `300`). The main run is limited
-by `HERMES_JOB_MAX_TURNS` (default `100`). The reflect run is a fresh session (the HTTP API
-creates a new run per submission), so it is bounded by its timeout and the remaining job budget
-rather than a session resume.
+## Isolation model
 
-Provider errors are reported the same way. A rate-limited or quota-exhausted model (for example
-an OpenRouter free tier without credits) fails only the reflect pass; the job result stays
-`succeeded`.
-
-Each job starts with the full time budget from `timeout_seconds`, capped by
-`MAX_JOB_TIMEOUT_SECONDS`. The main run gets the budget minus a 25-second reserve and the reflect
-share; the reflect run uses the time the main run left unused, capped by
-`HERMES_JOB_REFLECT_TIMEOUT_SECONDS`. The job runner polls the run and stops waiting at its
-deadline.
-
-### Concurrency and cleanup
-
-Multiple workers and jobs can run at the same time. The skills directory is shared and has no
-locking, so concurrent reflect runs use last-writer-wins semantics. Use one worker or separate
-skills directories per trust domain when deterministic skill updates matter.
-
-The worker removes the microVM and its job directory in a `finally` block. At startup it also
-removes microVM containers and job directories labeled `hermes.vm=1` that are older than
-`MAX_JOB_TIMEOUT_SECONDS + 300` seconds. A job that is redelivered after a crash gets a new
-microVM; the job directory is derived from `run_id`, and an existing directory with that name is
-replaced first.
-
-### Isolation model
-
-Each job runs in its own KVM microVM. What that boundary covers:
+Each job runs in its own KVM microVM.
 
 | Property | Value |
 |---|---|
 | Kernel | Its own guest kernel, separate from the host |
-| Privileges | The agent process runs as uid 10001 with no effective capabilities |
-| Privilege escalation | `no-new-privileges:true` blocks the setuid binaries in the image |
-| Resources | `HERMES_JOB_RAM_MIB` (default `2048`), `HERMES_JOB_CPUS` (default `2`), `HERMES_JOB_PIDS_LIMIT` (default `512`) |
-| Filesystem | Disposable job directory, tmpfs `/opt/data`, no host paths beyond the two bind mounts |
-| Network | Reaches the model provider only. The Compose services and the Podman API are not reachable: the proxy listens on the worker's loopback, and `scripts/host-firewall.sh` blocks the Docker ranges |
-| Tools | The `web`, `browser`, `computer_use`, and `x_search` toolsets are disabled, and `curl`/`wget`/`nc`/`ssh`/`scp` are denied in the terminal |
+| Privilege escalation | `no-new-privileges:true` |
+| Resources | `GOOSE_JOB_RAM_MIB` (default `2048`), `GOOSE_JOB_CPUS` (default `2`), `GOOSE_JOB_PIDS_LIMIT` (default `512`) |
+| Filesystem | Disposable job directory, tmpfs `/opt/data`, no host paths beyond the bind mounts |
+| Network | Reaches the model provider. The Compose services and the Podman API are not reachable: the proxy listens on the worker's loopback, and `scripts/host-firewall.sh` blocks the Docker ranges |
+| Tools | No browser, no `curl`/`wget` in the image; the prompt forbids web and network use |
 | Lifetime | The microVM and its job directory are removed after the job |
 
 What the boundary does **not** cover:
 
-- **The hypervisor.** libkrun and KVM run on the host, so a VMM bug is still a host compromise.
-  A microVM raises the bar, but it is not a bulletproof boundary.
-- **Root-equivalent Podman API.** The worker creates microVMs through the socket proxy, which is
-  equivalent to root on the host. The proxy shares the worker's network namespace and listens on
-  loopback only, so the job microVMs cannot reach it, but a compromised worker still means a
-  compromised host.
-- **Shared skills directory.** `HERMES_JOB_SKILLS_DIR` is writable by every job. A job can poison
-  the skills that later jobs load. Use one skills directory per trust domain.
-- **General internet egress.** The browsing tools and the common network clients are blocked, but
-  the microVM can still reach the internet (it must reach the provider). A job that writes its own
-  HTTP client can exfiltrate data. Use `scripts/host-firewall.sh` and an egress allowlist if that
-  matters.
-- **Provider credentials.** The provider keys are passed into every job.
+- **The hypervisor.** libkrun and KVM run on the host, so a VMM bug is still a
+  host compromise. A microVM raises the bar, but it is not a bulletproof
+  boundary.
+- **Root-equivalent Podman API.** The socket proxy is equivalent to root on the
+  host. It listens on the worker's loopback only, so the job microVMs cannot
+  reach it, but a compromised worker still means a compromised host.
+- **Shared skills directory.** Every job can write `.claude/skills`. A job can
+  poison skills that later jobs load. Use one skills directory per trust domain,
+  or run separate stacks.
+- **General internet egress.** The image has no common network clients, but the
+  microVM must reach the provider, and a job can write its own HTTP client.
+  For stricter isolation, put an allowlist proxy in front of the provider and
+  block direct egress.
+- **Provider credentials.** Provider keys are passed into every job.
 
-For untrusted input, run `sudo scripts/host-firewall.sh` to block the Podman user from the Docker
-bridge ranges (Redpanda, RustFS, Phoenix, the worker). The microVMs then only reach the public
-internet. A stronger setup runs the Podman service on a separate host or VM, so a VMM bug stays
-contained there. `scripts/poc-krun.sh` boots the Hermes image in a microVM and reports the guest
-kernel, the start-up time, and the prerequisites.
+For untrusted input, run:
 
-## How jobs are executed
+```bash
+sudo scripts/host-firewall.sh
+```
 
-1. The producer writes a JSON job to `jobs.in`.
-2. The worker validates it and prepares a unique directory under its staging workspace.
-3. Referenced input files are downloaded from RustFS into `inputs/`.
-4. The worker executes the job:
-   - create a microVM and a job directory, bind-mount `inputs/` and the prompt, start the gateway
-     and submit the main run through its HTTP API, then submit the optional reflect run.
-5. Hermes executes the instruction with its own tools and writes result files under `outputs/`.
-6. The worker collects the final answer and outputs, optionally runs reflect, publishes the result
-   to `jobs.out`, uploads artifacts, and commits the Kafka offset.
-7. Audit events are written to `agent.events`.
-
-Hermes has its own broad tool registry and agent loop. The Kafka worker does not reimplement the
-LLM loop. Concurrency is bounded by the host memory, KVM, and the number of workers.
-
-The worker does not copy individual Hermes tool calls into `agent.events`; it publishes job-level
-and run-level events only. In `hermes-job` mode the session is discarded with the microVM, so use
-the `hermes.started` / `hermes.completed` / `hermes.reflect` events and the job result.
-
-Unattended jobs cannot answer interactive approval prompts. The job sets `approvals.mode=off`, and
-if a run still enters `waiting_for_approval`, the worker stops it and fails the job with an
-explicit error.
+This blocks the Podman user from the Docker bridge ranges (Redpanda, RustFS,
+Phoenix, the worker, the GUI) while leaving the public internet reachable. Use
+`sudo scripts/host-firewall.sh --remove` to undo it.
 
 ## Traceability and Phoenix
 
-Every job receives a `trace_id`. It is propagated through Kafka headers and connects job
-submission, worker processing, the agent span, and the Hermes API run.
-
-The worker writes these audit events to `agent.events`:
+Every job receives a `trace_id`, propagated through Kafka headers and connected
+to the worker and goose spans. Audit events include:
 
 - `job.received` and `job.completed`
 - `agent.completed`
-- `hermes.started` and `hermes.completed`
-- `hermes.reflect` in `hermes-job` mode
+- `goose.started` and `goose.completed`
+- `goose.reflect`
 - `artifact.stored` and `artifact.failed`
 
-Phoenix displays the distributed trace as a span tree. Prompts, LLM responses, and tool
-input/output are **not** captured by default. If this content may be stored locally in Phoenix,
-set:
+Phoenix displays the trace. Prompts, responses, and tool input/output are not
+captured by default. Set `PHOENIX_CAPTURE_CONTENT=true` if that content may be
+stored locally. Phoenix is optional; its ports are bound to `127.0.0.1`.
 
-```dotenv
-PHOENIX_CAPTURE_CONTENT=true
-```
+## Workspace and artifacts
 
-Phoenix is optional and does not affect job success. Its ports are bound to `127.0.0.1`.
-`PHOENIX_ENABLED=false` disables OTLP export.
+The worker runs as UID/GID `10001`. It stages each job under its staging
+directory and copies inputs into the job directory under
+`GOOSE_JOB_WORKSPACE_ROOT`, which is shared between the worker container and the
+microVMs. After the job, the worker copies `outputs/` back for upload and
+deletes the job directory.
 
-## Hermes workspace and artifacts
-
-The worker runs as UID/GID `10001`. It stages each job under its `/workspace` directory and
-copies the inputs into the job directory under `HERMES_JOB_WORKSPACE_ROOT`, which is a host
-directory shared between the worker container and the microVMs. The job bundle (script, prompt,
-reflect prompt) is bind mounted read-only, and the results are written back into the same
-directory. After the job, the worker copies `outputs/` back to its staging workspace for upload
-and deletes the job directory.
-
-The shared skills directory is `HERMES_JOB_SKILLS_DIR`. Both the worker and every microVM see the
-same host directory, so learned skills persist across jobs.
-
-Artifacts are uploaded only from `outputs/`. A missing or unreachable artifact store does not
-turn a successful agent run into a failed job. The job remains `succeeded`, with an
-`artifact_error` describing the failed upload. Uploads are attempted three times, and partially
-uploaded files are cleaned up after a final failure.
+Artifacts are uploaded only from `outputs/`. A missing or unreachable artifact
+store does not turn a successful run into a failed job; the job remains
+`succeeded` with an `artifact_error`. Uploads are retried three times.
 
 ## RustFS and input files
 
@@ -322,18 +356,16 @@ Start with the storage profile:
 docker compose --profile storage up -d --build
 ```
 
-The S3 endpoint must be configured in `.env`:
-
 ```dotenv
 S3_ENDPOINT_URL=http://rustfs:9000
 ```
 
 Local RustFS defaults:
 
-- S3 API: <http://localhost:9000>
+- S3 API: <http://localhost:9000> (or `RUSTFS_API_PORT`)
 - Console: <http://localhost:9001/rustfs/console/>
 - Account: `rustfs`
-- Secret: `hermes-secret`
+- Secret: `kafkallm-secret`
 
 These credentials are for local development only.
 
@@ -347,34 +379,15 @@ docker compose run --rm jobctl submit \
 
 The bucket must already contain the file.
 
-## Job format
+## Scheduling
 
-```json
-{
-  "job_id": "optionally-set-by-producer",
-  "run_id": "optionally-set-by-producer",
-  "trace_id": "generated-automatically-via-opentelemetry",
-  "type": "llm_task",
-  "instruction": "Analyze the input data",
-  "input": {" arbitrary": "JSON data" },
-  "input_files": [],
-  "timeout_seconds": 300,
-  "max_steps": 6
-}
-```
-
-`job_id` and `run_id` are generated as UUIDs if omitted. Messages use `job_id` as the Kafka key.
-`max_steps` is advisory; Hermes manages its agent turn limit with `HERMES_JOB_MAX_TURNS` (default
-`100`). The reflect run is a fresh session, so its time budget is controlled by
-`HERMES_JOB_REFLECT_TIMEOUT_SECONDS`.
-
-A result includes:
-
-- `status`: `succeeded` or `failed`
-- `result` or `error`
-- `artifacts`: uploaded files
-- `artifact_error`: optional upload failure; does not change job status
-- `trace_id`, `worker_id`, timestamps, steps, and token usage
+Kafka is the scheduler. A job becomes runnable when it is written to `jobs.in`;
+the `agent-workers` consumer group assigns each partition to one worker, and a
+worker takes the next message as soon as it is free. The number of partitions
+and workers sets the parallelism. There is no cron or separate scheduler
+process. To run a job at a wall-clock time, write it to `jobs.in` at that time
+(for example from a cron or systemd timer), or add a delayed producer in front
+of the topic.
 
 ## Multiple workers
 
@@ -382,24 +395,24 @@ A result includes:
 docker compose up -d --scale agent-worker=2
 ```
 
-Workers share the `agent-workers` consumer group. Each worker processes one job at a time.
+Workers share the `agent-workers` consumer group and process one job each at a
+time. The shared skills directory uses last-writer-wins semantics.
 
 ## Operations and guarantees
 
-- The worker waits for Redpanda and the Podman API with exponential backoff before consuming
-  jobs. It verifies the pinned Hermes image (pulling it into the Podman storage if missing) and
-  the skills directory.
-- Redpanda, Console, RustFS, the Podman proxy, Phoenix, and the worker have restart policies.
+- The worker waits for Redpanda and the Podman API with exponential backoff
+  before consuming jobs. It verifies the goose image and the skills directory.
+- Redpanda, Console, RustFS, the Podman proxy, Phoenix, the worker, and the GUI
+  have restart policies.
 - The Kafka offset is committed only after the result is written to `jobs.out`.
-- Processing is **at-least-once**. A redelivered job starts a new microVM, so side effects must be
-  idempotent.
+- Processing is **at-least-once**. A redelivered job starts a new microVM, so
+  side effects must be idempotent.
 - Audit delivery is asynchronous and best effort and does not change job status.
-- Topics have seven days of retention by default (`KAFKA_TOPIC_RETENTION_MS`).
-- The Compose configuration is for local development. Redpanda has no SASL/TLS here.
-- The Podman socket proxy shares the worker's network namespace and listens on loopback only, so
-  the job microVMs cannot reach the root-equivalent Podman API.
-- Each job has its own microVM but still shares the skills directory. Run only trusted jobs and
-  inputs. See [Isolation model](#isolation-model).
+- `jobs.state` is compacted; the other topics keep seven days by default
+  (`KAFKA_TOPIC_RETENTION_MS`).
+- The Compose configuration is for local development. Redpanda has no SASL/TLS
+  here.
+- The GUI has no authentication and is published on `127.0.0.1` only.
 
 Stop without deleting volumes:
 
@@ -415,5 +428,14 @@ python3 -m venv .venv
 .venv/bin/pytest
 ```
 
-The unit tests use mocked Hermes HTTP responses and a fake Podman client. They require neither a
-Podman daemon nor Redpanda.
+The unit tests use a fake Podman client, a fake Kafka producer, and the real GUI
+HTTP handler. They require neither a Podman daemon nor Redpanda.
+
+## Repository layout
+
+```text
+src/kafkallm/       worker, GUI, Kafka, state, goose runtime, models
+goose_job/          job image, goosetown template and skills
+scripts/            build-goose-image.sh, host-firewall.sh, poc-krun.sh
+tests/              unit tests
+```

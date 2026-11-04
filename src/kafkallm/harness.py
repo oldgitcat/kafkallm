@@ -7,12 +7,12 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from hermes.audit import AuditLogger, JobAudit
-from hermes.hermes_job_runtime import HermesJobRunner
-from hermes.models import AgentResult, FileRef, Job, JobResult, utc_now
-from hermes.settings import Settings
-from hermes.storage import S3Storage
-from hermes.telemetry import (
+from kafkallm.audit import AuditLogger, JobAudit
+from kafkallm.goose_job_runtime import GooseJobRunner
+from kafkallm.models import AgentResult, FileRef, Job, JobResult, utc_now
+from kafkallm.settings import Settings
+from kafkallm.storage import S3Storage
+from kafkallm.telemetry import (
     current_trace_id,
     get_tracer,
     new_trace_id,
@@ -42,17 +42,17 @@ class Harness:
     ) -> None:
         self.settings = settings
         self.audit = audit
-        self.hermes = HermesJobRunner(settings)
+        self.goose = GooseJobRunner(settings)
         self._storage: S3Storage | None = None
 
     def wait_ready(self) -> None:
-        self.hermes.wait_ready()
+        self.goose.wait_ready()
 
     def cancel(self) -> None:
-        self.hermes.cancel_active()
+        self.goose.cancel_active()
 
     def close(self) -> None:
-        self.hermes.close()
+        self.goose.close()
 
     def _get_storage(self) -> S3Storage:
         if self._storage is None:
@@ -78,10 +78,10 @@ class Harness:
             attributes={
                 "openinference.span.kind": "AGENT",
                 "agent.name": self.settings.agent_name,
-                "agent.runtime": "hermes-job",
+                "agent.runtime": "goose-job",
                 "job.id": job.job_id,
                 "job.run_id": job.run_id,
-                "hermes.trace_id": trace_id,
+                "kafkallm.trace_id": trace_id,
                 "worker.id": self.settings.worker_id,
             },
         ) as span:
@@ -108,7 +108,7 @@ class Harness:
                     max_steps = min(
                         job.max_steps, self.settings.max_agent_steps
                     )
-                    agent_result: AgentResult = self.hermes.run(
+                    agent_result: AgentResult = self.goose.run(
                         job=job,
                         workspace=root,
                         deadline=deadline,

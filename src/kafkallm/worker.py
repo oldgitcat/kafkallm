@@ -11,12 +11,13 @@ from confluent_kafka import Consumer, KafkaError, KafkaException, Message
 from opentelemetry.trace import Status, StatusCode
 from pydantic import ValidationError
 
-from hermes.audit import AuditLogger
-from hermes.harness import Harness
-from hermes.kafka import KafkaProducer, wait_for_kafka
-from hermes.models import ID_PATTERN, Job, JobResult
-from hermes.settings import Settings
-from hermes.telemetry import (
+from kafkallm.audit import AuditLogger
+from kafkallm.harness import Harness
+from kafkallm.kafka import KafkaProducer, wait_for_kafka
+from kafkallm.models import ID_PATTERN, Job, JobResult
+from kafkallm.settings import Settings
+from kafkallm.state import StatePublisher
+from kafkallm.telemetry import (
     current_trace_id,
     extract_trace_context,
     get_tracer,
@@ -41,6 +42,7 @@ class Worker:
         wait_for_kafka(settings)
         self.producer = KafkaProducer(settings)
         self.audit = AuditLogger(settings, self.producer)
+        self.state = StatePublisher(settings, self.producer)
         self.harness = Harness(settings, audit=self.audit)
         self.harness.wait_ready()
         self.consumer = Consumer(
@@ -105,9 +107,12 @@ class Worker:
                 job = job.model_copy(update={"trace_id": trace_id})
                 span.set_attribute("job.id", job.job_id)
                 span.set_attribute("job.run_id", job.run_id)
-                span.set_attribute("hermes.trace_id", trace_id)
+                span.set_attribute("kafkallm.trace_id", trace_id)
                 set_content(span, "input.value", job.instruction)
 
+                state = self.state.running(
+                    job, worker_id=self.settings.worker_id
+                )
                 job_audit = self.audit.for_job(job)
                 job_audit.emit(
                     "job.received",
@@ -119,6 +124,7 @@ class Worker:
                 )
                 logger.info("Starting job %s / run %s", job.job_id, job.run_id)
                 result = self.harness.process(job, job_audit=job_audit)
+                self.state.completed(state, result)
                 job_audit.emit(
                     "job.completed",
                     result.status,
@@ -139,6 +145,7 @@ class Worker:
             ) as exc:
                 logger.warning("Invalid job message: %s", exc)
                 result = self._invalid_job_result(raw, f"Invalid job: {exc}")
+                self.state.invalid(result)
 
             span.set_attribute("job.status", result.status)
             set_content(span, "output.value", result.result)

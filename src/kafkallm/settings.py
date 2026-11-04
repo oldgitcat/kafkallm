@@ -22,6 +22,7 @@ class Settings:
     kafka_bootstrap_servers: str
     jobs_topic: str
     results_topic: str
+    state_topic: str
     events_topic: str
     kafka_group_id: str
     kafka_topic_partitions: int
@@ -31,22 +32,25 @@ class Settings:
     workspace_root: str
     max_job_timeout_seconds: int
     max_agent_steps: int
-    hermes_model: str
-    hermes_provider: str
-    hermes_startup_timeout_seconds: int
-    hermes_image: str
-    hermes_job_tmpfs_size: str
-    hermes_job_max_turns: int
-    hermes_job_memory_limit: str
-    hermes_job_pids_limit: int
-    hermes_job_cpus: int
-    hermes_job_ram_mib: int
-    hermes_job_use_passt: bool
-    hermes_job_docker_host: str
-    hermes_job_workspace_root: str
-    hermes_job_skills_dir: str
-    hermes_job_reflect_enabled: bool
-    hermes_job_reflect_timeout_seconds: int
+    goose_model: str
+    goose_provider: str
+    goose_startup_timeout_seconds: int
+    goose_image: str
+    goose_job_tmpfs_size: str
+    goose_job_max_turns: int
+    goose_job_subagent_max_turns: int
+    goose_job_memory_limit: str
+    goose_job_pids_limit: int
+    goose_job_cpus: int
+    goose_job_ram_mib: int
+    goose_job_use_passt: bool
+    goose_job_docker_host: str
+    goose_job_workspace_root: str
+    goose_job_skills_dir: str
+    goose_job_reflect_enabled: bool
+    goose_job_reflect_timeout_seconds: int
+    gui_host: str
+    gui_port: int
     s3_endpoint_url: str
     s3_region: str
     s3_bucket: str
@@ -66,6 +70,7 @@ class Settings:
             ),
             jobs_topic=os.getenv("JOBS_TOPIC", "jobs.in"),
             results_topic=os.getenv("RESULTS_TOPIC", "jobs.out"),
+            state_topic=os.getenv("STATE_TOPIC", "jobs.state"),
             events_topic=os.getenv("EVENTS_TOPIC", "agent.events"),
             kafka_group_id=os.getenv("KAFKA_GROUP_ID", "agent-workers"),
             kafka_topic_partitions=_int_env("KAFKA_TOPIC_PARTITIONS", 3),
@@ -76,41 +81,46 @@ class Settings:
                 "KAFKA_STARTUP_TIMEOUT_SECONDS", 300
             ),
             worker_id=os.getenv("WORKER_ID", socket.gethostname()),
-            workspace_root=os.getenv("WORKSPACE_ROOT", "/tmp/hermes-workspace"),
-            max_job_timeout_seconds=_int_env("MAX_JOB_TIMEOUT_SECONDS", 900),
+            workspace_root=os.getenv(
+                "WORKSPACE_ROOT", "/var/lib/kafkallm/staging"
+            ),
+            max_job_timeout_seconds=_int_env("MAX_JOB_TIMEOUT_SECONDS", 1800),
             max_agent_steps=_int_env("MAX_AGENT_STEPS", 8),
-            hermes_model=os.getenv("HERMES_MODEL", ""),
-            hermes_provider=os.getenv("HERMES_PROVIDER", ""),
-            hermes_startup_timeout_seconds=_int_env(
-                "HERMES_STARTUP_TIMEOUT_SECONDS", 300
+            goose_model=os.getenv("GOOSE_MODEL", ""),
+            goose_provider=os.getenv("GOOSE_PROVIDER", ""),
+            goose_startup_timeout_seconds=_int_env(
+                "GOOSE_STARTUP_TIMEOUT_SECONDS", 300
             ),
-            hermes_image=os.getenv(
-                "HERMES_IMAGE",
-                "nousresearch/hermes-agent@sha256:"
-                "9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d",
+            goose_image=os.getenv("GOOSE_IMAGE", "kafkallm-goose-job:latest"),
+            goose_job_tmpfs_size=os.getenv("GOOSE_JOB_TMPFS_SIZE", "1g"),
+            goose_job_max_turns=_int_env("GOOSE_JOB_MAX_TURNS", 60),
+            goose_job_subagent_max_turns=_int_env(
+                "GOOSE_JOB_SUBAGENT_MAX_TURNS", 40
             ),
-            hermes_job_tmpfs_size=os.getenv("HERMES_JOB_TMPFS_SIZE", "1g"),
-            hermes_job_max_turns=_int_env("HERMES_JOB_MAX_TURNS", 100),
-            hermes_job_memory_limit=os.getenv("HERMES_JOB_MEMORY_LIMIT", "4g"),
-            hermes_job_pids_limit=_int_env("HERMES_JOB_PIDS_LIMIT", 512),
-            hermes_job_cpus=_int_env("HERMES_JOB_CPUS", 2),
-            hermes_job_ram_mib=_int_env("HERMES_JOB_RAM_MIB", 2048),
-            hermes_job_use_passt=_bool_env("HERMES_JOB_USE_PASST", False),
-            hermes_job_docker_host=os.getenv(
-                "HERMES_JOB_DOCKER_HOST", "tcp://podman-proxy:2375"
+            goose_job_memory_limit=os.getenv(
+                "GOOSE_JOB_MEMORY_LIMIT", "4g"
             ),
-            hermes_job_workspace_root=os.getenv(
-                "HERMES_JOB_WORKSPACE_ROOT", "/var/lib/hermes/jobs"
+            goose_job_pids_limit=_int_env("GOOSE_JOB_PIDS_LIMIT", 512),
+            goose_job_cpus=_int_env("GOOSE_JOB_CPUS", 2),
+            goose_job_ram_mib=_int_env("GOOSE_JOB_RAM_MIB", 2048),
+            goose_job_use_passt=_bool_env("GOOSE_JOB_USE_PASST", False),
+            goose_job_docker_host=os.getenv(
+                "GOOSE_JOB_DOCKER_HOST", "tcp://podman-proxy:2375"
             ),
-            hermes_job_skills_dir=os.getenv(
-                "HERMES_JOB_SKILLS_DIR", "/var/lib/hermes/skills"
+            goose_job_workspace_root=os.getenv(
+                "GOOSE_JOB_WORKSPACE_ROOT", "/var/lib/kafkallm/jobs"
             ),
-            hermes_job_reflect_enabled=_bool_env(
-                "HERMES_JOB_REFLECT_ENABLED", True
+            goose_job_skills_dir=os.getenv(
+                "GOOSE_JOB_SKILLS_DIR", "/var/lib/kafkallm/skills"
             ),
-            hermes_job_reflect_timeout_seconds=_int_env(
-                "HERMES_JOB_REFLECT_TIMEOUT_SECONDS", 300
+            goose_job_reflect_enabled=_bool_env(
+                "GOOSE_JOB_REFLECT_ENABLED", True
             ),
+            goose_job_reflect_timeout_seconds=_int_env(
+                "GOOSE_JOB_REFLECT_TIMEOUT_SECONDS", 300
+            ),
+            gui_host=os.getenv("GUI_HOST", "0.0.0.0"),
+            gui_port=_int_env("GUI_PORT", 8090),
             s3_endpoint_url=os.getenv("S3_ENDPOINT_URL", ""),
             s3_region=os.getenv("S3_REGION", "local"),
             s3_bucket=os.getenv("S3_BUCKET", "jobs"),
@@ -121,7 +131,7 @@ class Settings:
             phoenix_collector_endpoint=os.getenv(
                 "PHOENIX_COLLECTOR_ENDPOINT", "http://localhost:6006"
             ),
-            phoenix_project_name=os.getenv("PHOENIX_PROJECT_NAME", "hermes"),
+            phoenix_project_name=os.getenv("PHOENIX_PROJECT_NAME", "kafkallm"),
             phoenix_capture_content=_bool_env("PHOENIX_CAPTURE_CONTENT", False),
         )
 

@@ -3,9 +3,9 @@ requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "hermes"
+name = "kafkallm"
 version = "0.1.0"
-description = "Hermes: Kafka/Redpanda-based job processing with isolated LLM agent workers"
+description = "Kafkallm: Kafka-based goose/goosetown job processing in isolated microVMs"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -24,10 +24,13 @@ dev = [
 ]
 
 [project.scripts]
-hermes = "hermes.cli:main"
+kafkallm = "kafkallm.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+kafkallm = ["static/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

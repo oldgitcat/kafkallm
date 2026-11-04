@@ -78,6 +78,47 @@ class JobResult(BaseModel):
         )
 
 
+class JobState(BaseModel):
+    """Materialized job state published to the compacted state topic.
+
+    Kafka is the only store. The GUI rebuilds its view by replaying this topic
+    from the beginning, so the payload carries everything the UI needs.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: str = Field(pattern=ID_PATTERN)
+    run_id: str = Field(pattern=ID_PATTERN)
+    instruction: str
+    status: Literal["queued", "running", "succeeded", "failed", "invalid"]
+    trace_id: str | None = Field(default=None, min_length=1, max_length=128)
+    timeout_seconds: int = Field(default=300, ge=1, le=3600)
+    max_steps: int = Field(default=6, ge=1, le=50)
+    submitted_at: datetime = Field(default_factory=utc_now)
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    worker_id: str | None = None
+    result: str | None = None
+    error: str | None = None
+    artifacts: list[FileRef] = Field(default_factory=list)
+    artifact_error: str | None = None
+    steps: int = 0
+    usage: dict[str, int] = Field(default_factory=dict)
+
+    @classmethod
+    def queued(cls, job: Job, worker_id: str | None = None) -> "JobState":
+        return cls(
+            job_id=job.job_id,
+            run_id=job.run_id,
+            instruction=job.instruction,
+            status="queued",
+            trace_id=job.trace_id,
+            timeout_seconds=job.timeout_seconds,
+            max_steps=job.max_steps,
+            worker_id=worker_id,
+        )
+
+
 class AgentEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

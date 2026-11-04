@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kafkallm · goose jobs</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #12100e;
+      --panel: #1c1814;
+      --panel-2: #241f1a;
+      --border: #3a3128;
+      --text: #efe6d8;
+      --muted: #a89782;
+      --accent: #d99a4e;
+      --accent-2: #7fb069;
+      --danger: #d96c5f;
+      --running: #6fa8dc;
+      --queued: #b8a06a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(1200px 600px at 10% -10%, #2a2118 0%, transparent 60%),
+        var(--bg);
+      color: var(--text);
+      font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    header {
+      padding: 28px 32px 18px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: baseline;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    header h1 { margin: 0; font-size: 24px; letter-spacing: .3px; }
+    header .sub { color: var(--muted); font-size: 13px; }
+    main {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 24px 32px 64px;
+      display: grid;
+      grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
+      gap: 24px;
+      align-items: start;
+    }
+    @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+    section {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px;
+    }
+    h2 { margin: 0 0 14px; font-size: 15px; text-transform: uppercase; letter-spacing: 1.2px; color: var(--muted); }
+    label { display: block; margin: 12px 0 6px; font-size: 13px; color: var(--muted); }
+    input, textarea, select {
+      width: 100%;
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font: inherit;
+    }
+    textarea { min-height: 150px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    button {
+      margin-top: 16px;
+      width: 100%;
+      padding: 12px 16px;
+      border: 0;
+      border-radius: 8px;
+      background: linear-gradient(180deg, #e2a958, #c9863c);
+      color: #21160a;
+      font-weight: 700;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    button:disabled { opacity: .55; cursor: wait; }
+    .hint { color: var(--muted); font-size: 12px; margin-top: 10px; }
+    .message { margin-top: 12px; font-size: 13px; }
+    .message.error { color: var(--danger); }
+    .message.ok { color: var(--accent-2); }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .7px; }
+    tbody tr { cursor: pointer; }
+    tbody tr:hover, tbody tr.selected { background: #2a241d; }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      border: 1px solid currentColor;
+    }
+    .badge.queued { color: var(--queued); }
+    .badge.running { color: var(--running); }
+    .badge.succeeded { color: var(--accent-2); }
+    .badge.failed, .badge.invalid { color: var(--danger); }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+    .muted { color: var(--muted); }
+    .snippet { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .empty { color: var(--muted); padding: 18px 4px; }
+    #detail { margin-top: 24px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px 18px; margin-bottom: 16px; }
+    .field .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; }
+    .field .v { font-size: 13px; word-break: break-word; }
+    .block { margin-top: 14px; }
+    .block h3 { margin: 0 0 6px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .8px; }
+    pre {
+      margin: 0;
+      padding: 12px;
+      background: #0e0c0a;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: auto;
+      max-height: 360px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .events { display: flex; flex-direction: column; gap: 6px; }
+    .event { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: var(--panel-2); }
+    .event .line { display: flex; gap: 10px; flex-wrap: wrap; align-items: baseline; }
+    .event .type { font-weight: 700; }
+    .event .err { color: var(--danger); font-size: 12px; margin-top: 4px; white-space: pre-wrap; }
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Kafkallm</h1>
+    <span class="sub">goose + goosetown jobs · Kafka is the queue, state store, and audit log</span>
+  </header>
+
+  <main>
+    <section>
+      <h2>Submit a job</h2>
+      <form id="job-form">
+        <label for="instruction">Instruction</label>
+        <textarea id="instruction" required placeholder="Describe the result you want. Be specific about outputs and verification."></textarea>
+
+        <label for="input">Structured input (JSON)</label>
+        <textarea id="input" spellcheck="false">{}</textarea>
+
+        <div class="row">
+          <div>
+            <label for="timeout">Timeout (seconds)</label>
+            <input id="timeout" type="number" min="1" max="3600" value="600">
+          </div>
+          <div>
+            <label for="max_steps">Max steps</label>
+            <input id="max_steps" type="number" min="1" max="50" value="12">
+          </div>
+        </div>
+
+        <button id="submit" type="submit">Submit job</button>
+        <div id="message" class="message"></div>
+        <div class="hint">The worker runs the job in an isolated goose microVM. Files written to <span class="mono">outputs/</span> are uploaded as artifacts.</div>
+      </form>
+    </section>
+
+    <section>
+      <h2>Jobs</h2>
+      <div id="jobs" class="empty">Loading…</div>
+      <div id="detail"></div>
+    </section>
+  </main>
+
+  <script>
+    const state = { jobs: [], selected: null, timer: null };
+    const $ = (id) => document.getElementById(id);
+
+    function esc(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+      }[ch]));
+    }
+
+    function fmtTime(value) {
+      if (!value) return "—";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return String(value);
+      return date.toLocaleString();
+    }
+
+    function duration(job) {
+      if (!job.started_at) return "—";
+      const start = new Date(job.started_at).getTime();
+      const end = job.finished_at ? new Date(job.finished_at).getTime() : Date.now();
+      if (Number.isNaN(start) || Number.isNaN(end)) return "—";
+      const seconds = Math.max(0, Math.round((end - start) / 1000));
+      return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+    }
+
+    function badge(status) {
+      return `<span class="badge ${esc(status)}">${esc(status)}</span>`;
+    }
+
+    async function api(path, options) {
+      const response = await fetch(path, options);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      return data;
+    }
+
+    function renderJobs() {
+      if (!state.jobs.length) {
+        $("jobs").className = "empty";
+        $("jobs").textContent = "No jobs yet. Submit one.";
+        return;
+      }
+      $("jobs").className = "";
+      const rows = state.jobs.map((job) => `
+        <tr data-id="${esc(job.job_id)}" class="${job.job_id === state.selected ? "selected" : ""}">
+          <td>${badge(job.status)}</td>
+          <td class="mono">${esc(job.job_id)}</td>
+          <td><div class="snippet" title="${esc(job.instruction)}">${esc(job.instruction)}</div></td>
+          <td class="muted">${esc(fmtTime(job.submitted_at))}</td>
+          <td class="muted">${esc(duration(job))}</td>
+          <td class="muted">${esc(job.steps ?? 0)}</td>
+        </tr>`).join("");
+      $("jobs").innerHTML = `<table>
+        <thead><tr><th>Status</th><th>Job</th><th>Instruction</th><th>Submitted</th><th>Duration</th><th>Steps</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+      for (const row of $("jobs").querySelectorAll("tbody tr")) {
+        row.addEventListener("click", () => selectJob(row.dataset.id));
+      }
+    }
+
+    async function loadJobs() {
+      try {
+        const data = await api("/api/jobs");
+        state.jobs = data.jobs || [];
+        renderJobs();
+      } catch (error) {
+        $("jobs").className = "empty";
+        $("jobs").textContent = `Could not load jobs: ${error.message}`;
+      }
+    }
+
+    async function selectJob(jobId) {
+      state.selected = jobId;
+      renderJobs();
+      await loadDetail();
+    }
+
+    async function loadDetail() {
+      if (!state.selected) { $("detail").innerHTML = ""; return; }
+      try {
+        const job = await api(`/api/jobs/${encodeURIComponent(state.selected)}`);
+        $("detail").innerHTML = renderDetail(job);
+      } catch (error) {
+        $("detail").innerHTML = `<div class="message error">${esc(error.message)}</div>`;
+      }
+    }
+
+    function renderDetail(job) {
+      const usage = job.usage && Object.keys(job.usage).length
+        ? Object.entries(job.usage).map(([k, v]) => `${esc(k)}=${esc(v)}`).join(" · ")
+        : "—";
+      const artifacts = (job.artifacts || []).length
+        ? `<div class="events">${job.artifacts.map((a) => `<div class="mono">${esc(a.bucket)}/${esc(a.key)}</div>`).join("")}</div>`
+        : `<span class="muted">none</span>`;
+      const events = (job.events || []).length
+        ? `<div class="events">${job.events.map((event) => `
+            <div class="event">
+              <div class="line">
+                <span class="type">${esc(event.type)}</span>
+                <span class="muted">${esc(event.status)}</span>
+                <span class="muted mono">${esc(fmtTime(event.timestamp))}</span>
+                ${event.duration_ms ? `<span class="muted mono">${esc(Math.round(event.duration_ms))} ms</span>` : ""}
+              </div>
+              ${event.error ? `<div class="err">${esc(event.error)}</div>` : ""}
+            </div>`).join("")}</div>`
+        : `<span class="muted">No events yet.</span>`;
+      return `<section>
+        <h2>Job detail</h2>
+        <div class="grid">
+          <div class="field"><div class="k">Status</div><div class="v">${badge(job.status)}</div></div>
+          <div class="field"><div class="k">Job</div><div class="v mono">${esc(job.job_id)}</div></div>
+          <div class="field"><div class="k">Run</div><div class="v mono">${esc(job.run_id)}</div></div>
+          <div class="field"><div class="k">Worker</div><div class="v mono">${esc(job.worker_id || "—")}</div></div>
+          <div class="field"><div class="k">Submitted</div><div class="v">${esc(fmtTime(job.submitted_at))}</div></div>
+          <div class="field"><div class="k">Started</div><div class="v">${esc(fmtTime(job.started_at))}</div></div>
+          <div class="field"><div class="k">Finished</div><div class="v">${esc(fmtTime(job.finished_at))}</div></div>
+          <div class="field"><div class="k">Usage</div><div class="v mono">${usage}</div></div>
+        </div>
+        <div class="block"><h3>Instruction</h3><pre>${esc(job.instruction)}</pre></div>
+        ${job.result ? `<div class="block"><h3>Result</h3><pre>${esc(job.result)}</pre></div>` : ""}
+        ${job.error ? `<div class="block"><h3>Error</h3><pre>${esc(job.error)}</pre></div>` : ""}
+        ${job.artifact_error ? `<div class="block"><h3>Artifact error</h3><pre>${esc(job.artifact_error)}</pre></div>` : ""}
+        <div class="block"><h3>Artifacts</h3>${artifacts}</div>
+        <div class="block"><h3>Audit events</h3>${events}</div>
+      </section>`;
+    }
+
+    $("job-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = $("submit");
+      const message = $("message");
+      button.disabled = true;
+      message.className = "message";
+      message.textContent = "Submitting…";
+      try {
+        const input = JSON.parse($("input").value || "{}");
+        const payload = {
+          instruction: $("instruction").value.trim(),
+          input,
+          timeout_seconds: Number($("timeout").value),
+          max_steps: Number($("max_steps").value),
+        };
+        const job = await api("/api/jobs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        message.className = "message ok";
+        message.textContent = `Queued ${job.job_id}`;
+        $("instruction").value = "";
+        await loadJobs();
+        await selectJob(job.job_id);
+      } catch (error) {
+        message.className = "message error";
+        message.textContent = error.message;
+      } finally {
+        button.disabled = false;
+      }
+    });
+
+    loadJobs();
+    state.timer = setInterval(async () => {
+      await loadJobs();
+      await loadDetail();
+    }, 2000);
+  </script>
+</body>
+</html>

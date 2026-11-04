@@ -7,8 +7,8 @@ from confluent_kafka import KafkaError, KafkaException, Producer
 from confluent_kafka.admin import AdminClient, NewTopic
 from pydantic import BaseModel
 
-from hermes.models import to_json_bytes
-from hermes.settings import Settings
+from kafkallm.models import to_json_bytes
+from kafkallm.settings import Settings
 
 
 logger = logging.getLogger(__name__)
@@ -28,8 +28,22 @@ def ensure_topics(settings: Settings) -> None:
             replication_factor=1,
             config={"retention.ms": str(settings.kafka_retention_ms)},
         )
-        for name in {settings.jobs_topic, settings.results_topic, settings.events_topic}
+        for name in {
+            settings.jobs_topic,
+            settings.results_topic,
+            settings.events_topic,
+        }
     }
+    topics[settings.state_topic] = NewTopic(
+        settings.state_topic,
+        num_partitions=settings.kafka_topic_partitions,
+        replication_factor=1,
+        config={
+            "cleanup.policy": "compact",
+            "retention.ms": "-1",
+            "min.cleanable.dirty.ratio": "0.01",
+        },
+    )
     futures = admin.create_topics(list(topics.values()))
     for name, future in futures.items():
         try:
