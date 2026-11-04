@@ -64,6 +64,13 @@ if [ -d /opt/goosetown/skills ]; then
 fi
 chmod +x /workspace/goose /workspace/gtwall 2>/dev/null || true
 
+# Seed goose's user config from the host-mounted sandbox config. This is how
+# operators add MCP servers and other goose extensions without rebuilding.
+if [ -d /opt/kafkallm/config ]; then
+  mkdir -p "$GOOSE_PATH_ROOT/config"
+  cp -an /opt/kafkallm/config/. "$GOOSE_PATH_ROOT/config/" 2>/dev/null || true
+fi
+
 cd /workspace || exit 3
 export GOOSE_BIN="${GOOSE_BIN:-/usr/local/goose/bin/goose}"
 export GOOSE_MOIM_MESSAGE_FILE="/tmp/goose-telepathy.txt"
@@ -248,6 +255,7 @@ class GooseJobRunner:
             try:
                 self.client.ping()
                 self._ensure_image()
+                self._ensure_extension_dirs()
                 self._ensure_job_network()
                 self._ensure_proxy()
                 self._cleanup_orphans()
@@ -375,6 +383,7 @@ class GooseJobRunner:
             set_content(span, "input.value", prompt)
             try:
                 self._prepare_workdir(workdir, workspace, prompt)
+                self._ensure_extension_dirs()
                 proxy_ipv6 = self._ensure_proxy()
                 container = self._create_container(
                     environment=environment,
@@ -501,6 +510,19 @@ class GooseJobRunner:
                 f"goose image {self.settings.goose_image} is not available "
                 "in the Podman storage."
             ) from exc
+
+    def _ensure_extension_dirs(self) -> None:
+        for directory in (
+            Path(self.settings.goose_job_skills_dir),
+            Path(self.settings.goose_job_tools_dir) / "bin",
+            Path(self.settings.goose_job_config_dir),
+        ):
+            try:
+                directory.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                raise GooseJobRuntimeError(
+                    f"Could not create sandbox directory {directory}: {exc}"
+                ) from exc
 
     def _ensure_job_network(self) -> None:
         try:
@@ -763,8 +785,12 @@ class GooseJobRunner:
                 "Binds": [
                     f"{workdir}:/workspace:rw,z",
                     f"{workdir}/bundle:/jobboot:ro,z",
-                    f"{self.settings.goose_job_skills_dir}:"
-                    "/workspace/.claude/skills:rw,z",
+                    (
+                        f"{self.settings.goose_job_skills_dir}:"
+                        "/workspace/.claude/skills:rw,z"
+                    ),
+                    f"{self.settings.goose_job_tools_dir}:/opt/kafkallm/tools:ro,z",
+                    f"{self.settings.goose_job_config_dir}:/opt/kafkallm/config:ro,z",
                 ],
                 "Tmpfs": {
                     "/opt/data": (
@@ -932,6 +958,12 @@ class GooseJobRunner:
         gateway_url = gateway_url.removesuffix("/v1")
         environment = {
             "HOME": "/opt/data",
+            "PATH": (
+                "/opt/kafkallm/tools/bin:/usr/local/goose/bin:"
+                "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            ),
+            "KAFKALLM_TOOLS_DIR": "/opt/kafkallm/tools",
+            "KAFKALLM_CONFIG_DIR": "/opt/kafkallm/config",
             "GOOSE_PATH_ROOT": "/opt/data/goose",
             "GOOSE_MODE": "auto",
             "GOOSE_DISABLE_KEYRING": "1",

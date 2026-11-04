@@ -13,14 +13,13 @@ from opentelemetry.trace import Span, Status, StatusCode
 from kafkallm import __version__
 from kafkallm.settings import Settings
 
-
 _provider: TracerProvider | None = None
 _capture_content = False
 
 
 def configure_telemetry(settings: Settings) -> None:
     global _provider, _capture_content
-    _capture_content = settings.phoenix_capture_content
+    _capture_content = settings.telemetry_capture_content
     if _provider is not None:
         return
 
@@ -34,15 +33,30 @@ def configure_telemetry(settings: Settings) -> None:
     )
     provider = TracerProvider(resource=resource)
     if settings.phoenix_enabled:
-        endpoint = settings.phoenix_collector_endpoint.rstrip("/")
-        if not endpoint.endswith("/v1/traces"):
-            endpoint = f"{endpoint}/v1/traces"
+        endpoint = _traces_endpoint(settings.phoenix_collector_endpoint)
         exporter = OTLPSpanExporter(endpoint=endpoint, timeout=2)
+        provider.add_span_processor(
+            BatchSpanProcessor(exporter, schedule_delay_millis=500)
+        )
+    if settings.mlflow_enabled:
+        endpoint = _traces_endpoint(settings.mlflow_tracking_uri)
+        exporter = OTLPSpanExporter(
+            endpoint=endpoint,
+            headers={"x-mlflow-experiment-id": settings.mlflow_experiment_id},
+            timeout=2,
+        )
         provider.add_span_processor(
             BatchSpanProcessor(exporter, schedule_delay_millis=500)
         )
     trace.set_tracer_provider(provider)
     _provider = provider
+
+
+def _traces_endpoint(base: str) -> str:
+    endpoint = base.rstrip("/")
+    if not endpoint.endswith("/v1/traces"):
+        endpoint = f"{endpoint}/v1/traces"
+    return endpoint
 
 
 def shutdown_telemetry() -> None:

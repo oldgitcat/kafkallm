@@ -22,18 +22,30 @@ RUN curl -fsSL -o /tmp/goose.tar.gz \
 
 FROM debian:bookworm-slim
 
+# Add extra Debian packages here or at build time, for example:
+#   GOOSE_JOB_EXTRA_PACKAGES="openjdk-17-jre-headless" ./scripts/build-goose-image.sh
+ARG GOOSE_JOB_EXTRA_PACKAGES=""
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         bash \
+        binutils \
         ca-certificates \
         coreutils \
+        file \
         findutils \
         git \
         jq \
+        less \
+        procps \
         python3 \
         ripgrep \
+        unzip \
+        xxd \
+        zip \
+        ${GOOSE_JOB_EXTRA_PACKAGES} \
     && rm -rf /var/lib/apt/lists/* \
-    && mkdir -p /workspace /opt/data /opt/goosetown
+    && mkdir -p /workspace /opt/data /opt/goosetown /opt/kafkallm
 
 COPY --from=goose-download /usr/local/goose/bin/goose /usr/local/goose/bin/goose
 COPY goose_job/template /opt/goosetown/template

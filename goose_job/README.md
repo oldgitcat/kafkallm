@@ -6,6 +6,8 @@ This directory builds the microVM image used for every job.
 
 - `Dockerfile` — Debian bookworm, the pinned goose CLI, and the goosetown
   template and skills
+- `Dockerfile.example` — an example Ghidra/Java extension image
+- `config/config.example.yaml` — example goose/MCP configuration
 - `template/` — copied into `/workspace` at job start (`AGENTS.md`, `goose`,
   `gtwall`)
 - `skills/` — copied into the persistent `.claude/skills` directory on first use
@@ -26,6 +28,27 @@ an unattended, offline Kafkallm job.
 The image is built into the rootless Podman storage, not Docker. The worker
 creates microVMs from it through the Podman API. The goose release is pinned and
 its SHA-256 is verified during the build.
+
+Add Debian packages at build time:
+
+```bash
+GOOSE_JOB_EXTRA_PACKAGES="openjdk-17-jre-headless" \
+  ./scripts/build-goose-image.sh
+```
+
+Use a custom Dockerfile for larger changes:
+
+```bash
+GOOSE_JOB_DOCKERFILE=goose_job/Dockerfile.example \
+  ./scripts/build-goose-image.sh
+```
+
+Host-mounted tools and goose config work without rebuilding. See the main
+README section "Editing the sandbox". Open the exact offline image with:
+
+```bash
+./scripts/sandbox-shell.sh
+```
 
 ## Smoke test
 

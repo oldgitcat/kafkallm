@@ -304,6 +304,8 @@ def _settings_for(tmp_path: Path, **overrides: Any) -> Settings:
     values: dict[str, Any] = {
         "goose_job_workspace_root": str(tmp_path / "jobs"),
         "goose_job_skills_dir": str(tmp_path / "skills"),
+        "goose_job_tools_dir": str(tmp_path / "tools"),
+        "goose_job_config_dir": str(tmp_path / "config"),
     }
     values.update(overrides)
     return _settings(**values)
@@ -350,6 +352,8 @@ def test_vm_run_starts_microvm_and_collects_result(tmp_path: Path) -> None:
     assert any(bind.endswith(":/workspace:rw,z") for bind in binds)
     assert any(bind.endswith(":/jobboot:ro,z") for bind in binds)
     assert any("/workspace/.claude/skills:rw,z" in bind for bind in binds)
+    assert any("/opt/kafkallm/tools:ro,z" in bind for bind in binds)
+    assert any("/opt/kafkallm/config:ro,z" in bind for bind in binds)
     assert body["Image"] == "goose:test"
     assert body["HostConfig"]["Memory"] == 4 * 1024**3
     assert body["HostConfig"]["PidsLimit"] == 512
@@ -360,6 +364,12 @@ def test_vm_run_starts_microvm_and_collects_result(tmp_path: Path) -> None:
     assert "GOOSE_MAX_TURNS=20" in environment
     assert "GOOSE_SUBAGENT_MAX_TURNS=10" in environment
     assert "OPENAI_API_KEY=test-virtual-key" in environment
+    assert any(
+        item.startswith("PATH=/opt/kafkallm/tools/bin:")
+        for item in environment
+    )
+    assert "KAFKALLM_TOOLS_DIR=/opt/kafkallm/tools" in environment
+    assert "KAFKALLM_CONFIG_DIR=/opt/kafkallm/config" in environment
     assert body["HostConfig"]["NetworkMode"] == "kafkallm-jobs"
     assert body["HostConfig"]["ExtraHosts"] == [
         "host.containers.internal:fd00:6b61:666b:616c::2"

@@ -23,7 +23,7 @@ Browser / CLI ──→ jobs.in ──→ worker ──→ rootless Podman (krun
                                   ├─→ jobs.out      (results)
                                   ├─→ jobs.state    (compacted GUI state)
                                   ├─→ agent.events  (audit)
-                                  ├─→ Phoenix       (OpenTelemetry)
+                                  ├─→ MLflow        (OTLP traces)
                                   └─→ RustFS        (optional artifacts)
 
 GUI ──→ jobs.in, jobs.state, agent.events
@@ -39,6 +39,10 @@ GUI ──→ jobs.in, jobs.state, agent.events
   reachable peer; it forwards only to agentgateway
 - A browser GUI for submitting jobs, uploading input files or binaries, and
   watching state, results, and audit events
+- **MLflow** observability with OTLP traces, token usage, durations, and errors
+  (Phoenix remains available as an optional second backend)
+- An editable sandbox: host-mounted tools, goose/MCP config, persistent skills,
+  extra build packages, and an example Ghidra image
 - A compacted `jobs.state` topic that acts as the GUI database; the GUI rebuilds
   its view from Kafka after a restart
 - Redpanda topics `jobs.in`, `jobs.out`, `jobs.state`, and `agent.events`
@@ -110,9 +114,10 @@ answer directly.
    docker compose --profile storage up -d --build
    ```
 
-6. Open the GUI:
+6. Open the GUI and the MLflow UI:
 
-   <http://localhost:8090>
+   - GUI: <http://localhost:8090>
+   - MLflow traces: <http://localhost:5000>
 
 The GUI is published on `127.0.0.1` only. It submits to `jobs.in` and reads the
 state and audit topics. It has no local database.
@@ -143,10 +148,11 @@ Worker and GUI logs:
 docker compose logs -f agent-worker
 docker compose logs -f gui
 docker compose logs -f llm-gateway
+docker compose logs -f mlflow
 ```
 
-Redpanda Console runs at <http://localhost:8080>. Phoenix runs at
-<http://localhost:6006>.
+Redpanda Console runs at <http://localhost:8080>. MLflow runs at
+<http://localhost:5000>. Phoenix, if enabled, runs at <http://localhost:6006>.
 
 ## How a job runs
 
@@ -184,7 +190,8 @@ Redpanda Console runs at <http://localhost:8080>. Phoenix runs at
 8. The worker parses the structured goose output, copies `outputs/` back,
    optionally runs a short skill-improvement pass, publishes `jobs.out` and the
    final `jobs.state`, uploads artifacts, and commits the Kafka offset.
-9. Audit events go to `agent.events`; traces go to Phoenix when enabled.
+9. Audit events go to `agent.events`; traces go to MLflow and, optionally,
+   Phoenix.
 
 The microVM never talks to Kafka. The worker is the only Kafka participant.
 
@@ -306,10 +313,13 @@ A result includes:
 
 The job image is built with `goose_job/Dockerfile`:
 
-- Debian bookworm slim, with bash, git, jq, Python 3, and ripgrep
+- Debian bookworm slim, with bash, git, jq, Python 3, ripgrep, binutils, file,
+  less, unzip/zip, and xxd
 - Pinned goose `1.57.0` release, verified with SHA-256 at build time
 - No `curl`, `wget`, or other network clients in the final image
 - goosetown template and skills under `/opt/goosetown`
+- Read-only tools and goose config mounts for sandbox extensions
+- Optional extra Debian packages through `GOOSE_JOB_EXTRA_PACKAGES`
 
 Build it with `./scripts/build-goose-image.sh`. The worker expects it in the
 rootless Podman storage and verifies it at startup (it can pull a registry
@@ -327,6 +337,66 @@ Per-job layout:
 The microVM costs more than a container: each job reserves `GOOSE_JOB_RAM_MIB`
 of memory and boots a guest kernel.
 
+## Editing the sandbox
+
+The job image is intentionally small, but you have four extension points. None
+of them weakens the network isolation: the job still reaches only the
+allowlisting proxy.
+
+### 1. Host-mounted tools
+
+Put static binaries or extracted tools under `GOOSE_JOB_TOOLS_DIR`
+(`/var/lib/kafkallm/tools` by default). The worker mounts this directory
+read-only at `/opt/kafkallm/tools` and prepends `/opt/kafkallm/tools/bin` to
+`PATH`.
+
+```bash
+mkdir -p /var/lib/kafkallm/tools/bin
+cp my-analyzer /var/lib/kafkallm/tools/bin/
+```
+
+### 2. Goose config and MCP servers
+
+Put a `config.yaml` in `GOOSE_JOB_CONFIG_DIR`
+(`/var/lib/kafkallm/config/config.yaml` by default). The worker mounts it
+read-only at `/opt/kafkallm/config` and copies it into goose's tmpfs config
+directory before each run. See `goose_job/config/config.example.yaml` for a
+stdio MCP example.
+
+MCP servers must already exist in the image or in the tools directory. Jobs
+have no web access, so remote MCP servers and `npx` downloads do not work.
+
+### 3. Skills
+
+Skills live in `GOOSE_JOB_SKILLS_DIR` (`/var/lib/kafkallm/skills`) and are
+bind-mounted read-write at `/workspace/.claude/skills`. Add a directory with a
+`SKILL.md`; the next job can use it. The learning pass can also update skills.
+
+### 4. Build a custom image
+
+Install extra Debian packages into the normal image:
+
+```bash
+GOOSE_JOB_EXTRA_PACKAGES="openjdk-17-jre-headless" \
+  ./scripts/build-goose-image.sh
+```
+
+For larger changes, use a custom Dockerfile that extends the job image:
+
+```bash
+GOOSE_JOB_DOCKERFILE=goose_job/Dockerfile.example \
+  ./scripts/build-goose-image.sh
+```
+
+`goose_job/Dockerfile.example` shows how to add Ghidra and Java. Put the Ghidra
+release zip in the build context and adjust `GHIDRA_ZIP` if needed.
+
+To inspect the exact sandbox interactively, without a job and without network:
+
+```bash
+./scripts/sandbox-shell.sh
+```
+
 ## Why Docker and Podman
 
 The control plane runs under Docker Compose; the job microVMs run under Podman.
@@ -334,8 +404,8 @@ The control plane runs under Docker Compose; the job microVMs run under Podman.
 - **Podman runs the microVMs.** Only Podman's `crun` krun runtime can start a
   libkrun microVM, selected through the `run.oci.handler=krun` annotation.
   Docker's runc has no krun handler.
-- **Docker runs the control plane.** The worker, GUI, Redpanda, RustFS, Phoenix,
-  and the socket proxy are ordinary containers.
+- **Docker runs the control plane.** The worker, GUI, Redpanda, RustFS, MLflow,
+  Phoenix (optional), and the socket proxy are ordinary containers.
 - **Rootless Podman is required.** Rootful Podman breaks libkrun's TSI
   networking here, so the microVMs would have no outbound network and every job
   would stall on the LLM provider.
@@ -359,7 +429,7 @@ Each job runs in its own KVM microVM.
 | Kernel | Its own guest kernel, separate from the host |
 | Privilege escalation | `no-new-privileges:true` |
 | Resources | `GOOSE_JOB_RAM_MIB` (default `2048`), `GOOSE_JOB_CPUS` (default `2`), `GOOSE_JOB_PIDS_LIMIT` (default `512`) |
-| Filesystem | Disposable job directory, tmpfs `/opt/data`, no host paths beyond the bind mounts |
+| Filesystem | Disposable job directory, tmpfs `/opt/data`, read-only tools/config mounts, writable skills mount |
 | Network | Attached only to the IPv6-only `kafkallm-jobs` internal network. The allowlisting proxy is the only peer, and it forwards only to agentgateway. Internet, LAN, Docker Compose services, other Podman services, and the Podman API are unreachable |
 | Credentials | The real provider key stays in agentgateway. The job gets a rotatable virtual key that is valid only through the gateway |
 | Tools | No browser, no `curl`/`wget` in the image; the prompt forbids web and other network use |
@@ -395,7 +465,7 @@ address and no default route. The allowlisting proxy is the only other container
 on that network. Create the network on the host with
 `./scripts/init-job-network.sh`; the worker fails closed if it is missing.
 
-## Traceability and Phoenix
+## Observability: MLflow and Phoenix
 
 Every job receives a `trace_id`, propagated through Kafka headers and connected
 to the worker and goose spans. Audit events include:
@@ -406,9 +476,31 @@ to the worker and goose spans. Audit events include:
 - `goose.reflect`
 - `artifact.stored` and `artifact.failed`
 
-Phoenix displays the trace. Prompts, responses, and tool input/output are not
-captured by default. Set `PHOENIX_CAPTURE_CONTENT=true` if that content may be
-stored locally. Phoenix is optional; its ports are bound to `127.0.0.1`.
+**MLflow** is the default backend. It runs as one container with a SQLite store
+and an OTLP/HTTP endpoint, so it does not add PostgreSQL, ClickHouse, or Redis.
+Open <http://localhost:5000> and use the **Traces** tab. Each trace includes the
+job span, the goose microVM span, durations, steps, token usage, artifacts, and
+errors.
+
+MLflow is configured with:
+
+```dotenv
+MLFLOW_ENABLED=true
+MLFLOW_TRACKING_URI=http://mlflow:5000
+MLFLOW_EXPERIMENT_ID=0
+```
+
+**Phoenix** remains available as an optional second OTLP backend. Set
+`PHOENIX_ENABLED=true` and open <http://localhost:6006>.
+
+Prompts, responses, and tool input/output are not captured by default because
+they can contain sensitive data. Set `TELEMETRY_CAPTURE_CONTENT=true` to include
+them in the traces. The legacy `PHOENIX_CAPTURE_CONTENT` name is still honoured
+as a fallback.
+
+Trace export happens in the worker/control plane, which can reach MLflow over
+the Compose network. The goose microVM keeps its strict egress isolation: it
+does not export traces directly and reaches only the allowlisting proxy.
 
 ## Workspace and artifacts
 
@@ -496,8 +588,8 @@ time. The shared skills directory uses last-writer-wins semantics.
 - The worker waits for Redpanda, agentgateway readiness, the Podman API, the
   job network, the allowlisting proxy, and the goose image before consuming
   jobs.
-- Redpanda, Console, RustFS, the Podman proxy, Phoenix, the worker, and the GUI
-  have restart policies.
+- Redpanda, Console, RustFS, the Podman proxy, MLflow, Phoenix, the worker, and
+  the GUI have restart policies.
 - The Kafka offset is committed only after the result is written to `jobs.out`.
 - Processing is **at-least-once**. A redelivered job starts a new microVM, so
   side effects must be idempotent.
@@ -529,7 +621,7 @@ HTTP handler. They require neither a Podman daemon nor Redpanda.
 
 ```text
 src/kafkallm/       worker, GUI, Kafka, state, goose runtime, models
-goose_job/          job image, goosetown template and skills
-scripts/            build-goose-image.sh, init-job-network.sh, poc-krun.sh
+goose_job/          job image, goosetown template, skills, config and tool examples
+scripts/            build-goose-image.sh, init-job-network.sh, sandbox-shell.sh, poc-krun.sh
 tests/              unit tests
 ```
