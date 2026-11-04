@@ -16,6 +16,7 @@ from kafkallm.goose_job_runtime import (
     parse_goose_output,
 )
 from kafkallm.harness import Harness
+from kafkallm.llm_gateway import verify_token
 from kafkallm.models import Job
 from kafkallm.settings import Settings
 
@@ -199,6 +200,9 @@ def _settings(**overrides: Any) -> Settings:
         "goose_job_reflect_timeout_seconds": 60,
         "goose_model": "test-model",
         "goose_provider": "openrouter",
+        "llm_gateway_url": "http://gateway:8091",
+        "llm_gateway_secret": "test-gateway-secret-0123456789",
+        "llm_gateway_token_ttl_seconds": 0,
     }
     values.update(overrides)
     return replace(Settings.from_env(), **values)
@@ -256,9 +260,10 @@ def test_vm_run_starts_microvm_and_collects_result(tmp_path: Path) -> None:
     audit = FakeAudit()
     runner = GooseJobRunner(_settings_for(tmp_path), client=client)
     workspace = _workspace(tmp_path)
+    job = Job(instruction="Do the job", input={"key": "value"})
 
     result = runner.run(
-        job=Job(instruction="Do the job", input={"key": "value"}),
+        job=job,
         workspace=workspace,
         deadline=time.monotonic() + 120,
         max_steps=5,
@@ -283,9 +288,18 @@ def test_vm_run_starts_microvm_and_collects_result(tmp_path: Path) -> None:
     assert body["HostConfig"]["PidsLimit"] == 512
     environment = body["Env"]
     assert "GOOSE_MODE=auto" in environment
-    assert "GOOSE_PROVIDER=openrouter" in environment
+    assert "GOOSE_PROVIDER=openai" in environment
+    assert "OPENAI_HOST=http://gateway:8091" in environment
     assert "GOOSE_MAX_TURNS=20" in environment
     assert "GOOSE_SUBAGENT_MAX_TURNS=10" in environment
+    token_line = next(
+        item for item in environment if item.startswith("OPENAI_API_KEY=")
+    )
+    claims = verify_token(
+        "test-gateway-secret-0123456789", token_line.split("=", 1)[1]
+    )
+    assert claims is not None
+    assert claims.job_id == job.job_id
 
     assert [event["type"] for event in audit.events] == [
         "goose.started",
@@ -410,6 +424,40 @@ def test_vm_wait_ready_pulls_a_missing_image(tmp_path: Path) -> None:
 
     assert client.pulled == ["goose:test"]
     assert client.pinged
+
+
+def test_vm_does_not_pass_provider_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "real-provider-key")
+    client = FakeDockerClient()
+    client.results = {"main.json": _goose_result()}
+    runner = GooseJobRunner(_settings_for(tmp_path), client=client)
+    workspace = _workspace(tmp_path)
+
+    runner.run(
+        job=Job(instruction="Do the job"),
+        workspace=workspace,
+        deadline=time.monotonic() + 120,
+        max_steps=5,
+    )
+
+    environment = client.create_body["Env"]
+    assert not any("real-provider-key" in item for item in environment)
+    assert not any(item.startswith("OPENROUTER_API_KEY=") for item in environment)
+    assert not any(item.startswith("OPENAI_API_KEY=real") for item in environment)
+
+
+def test_wait_ready_requires_gateway(tmp_path: Path) -> None:
+    client = FakeDockerClient()
+    runner = GooseJobRunner(
+        _settings_for(tmp_path, llm_gateway_secret=""), client=client
+    )
+
+    with pytest.raises(GooseJobRuntimeError, match="LLM gateway"):
+        runner.wait_ready()
+
+    assert not client.pinged
 
 
 def test_harness_uses_goose_runtime(tmp_path: Path) -> None:

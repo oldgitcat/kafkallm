@@ -15,6 +15,10 @@ Browser / CLI ──→ jobs.in ──→ worker ──→ rootless Podman (krun
                                   │      ├─ parallel goose subagents
                                   │      ├─ gtwall coordination
                                   │      └─ /workspace bind mount
+                                  │            │
+                                  │            ▼
+                                  │      LLM gateway  ──→ model provider
+                                  │      (real provider key)
                                   │
                                   ├─→ jobs.out      (results)
                                   ├─→ jobs.state    (compacted GUI state)
@@ -29,6 +33,8 @@ GUI ──→ jobs.in, jobs.state, agent.events
 
 - A disposable **goose** microVM per job with the **goosetown** orchestrator,
   worker, writer, reviewer, and local-researcher skills
+- An **LLM gateway** that holds the provider key and issues a short-lived token
+  to every job, so jobs never see the real credential
 - A browser GUI for submitting jobs and watching state, results, and audit
   events
 - A compacted `jobs.state` topic that acts as the GUI database; the GUI rebuilds
@@ -47,8 +53,8 @@ GUI ──→ jobs.in, jobs.state, agent.events
   microVMs
 - A rootless Podman API socket:
   `systemctl --user enable --now podman.socket`
-- A model provider key for goose (`OPENROUTER_API_KEY`,
-  `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, ...)
+- A model provider key for the gateway (`LLM_GATEWAY_UPSTREAM_API_KEY`, or the
+  `OPENROUTER_API_KEY`/`OPENAI_API_KEY` fallback)
 - Network access while building the goose job image (it downloads the pinned
   goose release)
 
@@ -65,9 +71,10 @@ answer directly.
    ```
 
    ```dotenv
-   GOOSE_PROVIDER=openrouter
    GOOSE_MODEL=nvidia/nemotron-3.5-lightning:free
-   OPENROUTER_API_KEY=your-openrouter-key
+   LLM_GATEWAY_SECRET=replace-with-openssl-rand-hex-32
+   LLM_GATEWAY_UPSTREAM_URL=https://openrouter.ai/api/v1
+   LLM_GATEWAY_UPSTREAM_API_KEY=your-openrouter-key
    ```
 
 2. Install the microVM runtime and start the rootless Podman API:
@@ -121,6 +128,7 @@ Worker and GUI logs:
 ```bash
 docker compose logs -f agent-worker
 docker compose logs -f gui
+docker compose logs -f llm-gateway
 ```
 
 Redpanda Console runs at <http://localhost:8080>. Phoenix runs at
@@ -133,9 +141,11 @@ Redpanda Console runs at <http://localhost:8080>. Phoenix runs at
 2. The worker consumes `jobs.in`, publishes `running`, and prepares a unique
    directory under `GOOSE_JOB_WORKSPACE_ROOT`.
 3. Referenced input files are downloaded from RustFS into `inputs/`.
-4. The worker starts a goose microVM through the rootless Podman API. The job
-   directory is bind mounted at `/workspace`, the prompt at `/jobboot`, and the
-   persistent skills at `/workspace/.claude/skills`.
+4. The worker mints a short-lived signed token for the job and starts a goose
+   microVM through the rootless Podman API. The job directory is bind mounted at
+   `/workspace`, the prompt at `/jobboot`, and the persistent skills at
+   `/workspace/.claude/skills`. The microVM receives `OPENAI_HOST` pointing at
+   the LLM gateway and the token, never the provider key.
 5. Inside the microVM, the entrypoint seeds the workspace with goosetown
    (`AGENTS.md`, the `goose` wrapper, `gtwall`, and the role skills) and runs:
 
@@ -145,15 +155,69 @@ Redpanda Console runs at <http://localhost:8080>. Phoenix runs at
      -i /jobboot/main-prompt.txt
    ```
 
-6. The goosetown orchestrator decomposes the job, dispatches parallel subagents
+6. goose talks the OpenAI protocol to the gateway. The gateway verifies the
+   job token, replaces it with the real provider key, and streams the upstream
+   response back to the microVM.
+7. The goosetown orchestrator decomposes the job, dispatches parallel subagents
    through goose's `delegate`/`load` tools, coordinates them over `gtwall`, and
    writes result files to `outputs/`.
-7. The worker parses the structured goose output, copies `outputs/` back,
+8. The worker parses the structured goose output, copies `outputs/` back,
    optionally runs a short skill-improvement pass, publishes `jobs.out` and the
    final `jobs.state`, uploads artifacts, and commits the Kafka offset.
-8. Audit events go to `agent.events`; traces go to Phoenix when enabled.
+9. Audit events go to `agent.events`; traces go to Phoenix when enabled.
 
 The microVM never talks to Kafka. The worker is the only Kafka participant.
+
+## LLM gateway and provider keys
+
+The `llm-gateway` service is an OpenAI-compatible pass-through proxy between the
+job microVMs and the model provider.
+
+- The real provider key is configured only on the gateway
+  (`LLM_GATEWAY_UPSTREAM_API_KEY`, or `OPENROUTER_API_KEY`/`OPENAI_API_KEY` as a
+  fallback). It is not passed to the worker, the job, or the GUI.
+- For every job the worker mints an HMAC-signed token bound to the `job_id` and
+  the job deadline. The token is valid only through the gateway and expires
+  shortly after the job budget. The job can reuse it until then, but cannot
+  mint new tokens without `LLM_GATEWAY_SECRET`.
+- The gateway accepts `Authorization: Bearer <job-token>`, verifies the
+  signature and expiry, and forwards the request to the configured upstream
+  with the real provider credential. It streams SSE responses without
+  buffering, so goose sees the provider's normal streaming behavior.
+- The job uses `GOOSE_PROVIDER=openai` and `OPENAI_HOST=<LLM_GATEWAY_URL>`. The
+  gateway maps the OpenAI paths `/v1/...` onto the configured upstream base URL.
+- The gateway logs the job ID, method, path, status, and duration. It never logs
+  the job token or the provider key.
+
+Configure the upstream with an OpenAI-compatible base URL (the same value you
+would pass as `base_url` to the OpenAI SDK):
+
+| Provider | `LLM_GATEWAY_UPSTREAM_URL` |
+|---|---|
+| OpenRouter | `https://openrouter.ai/api/v1` |
+| OpenAI | `https://api.openai.com/v1` |
+| Groq | `https://api.groq.com/openai/v1` |
+| DeepSeek | `https://api.deepseek.com/v1` |
+| Anthropic (OpenAI compatibility) | `https://api.anthropic.com/v1` |
+| Gemini (OpenAI compatibility) | `https://generativelanguage.googleapis.com/v1beta/openai` |
+| Ollama on the host | `http://host.docker.internal:11434/v1` |
+
+If the provider does not use `Authorization: Bearer`, set
+`LLM_GATEWAY_UPSTREAM_AUTH_HEADER` and `LLM_GATEWAY_UPSTREAM_AUTH_SCHEME` (for
+example `api-key` with an empty scheme for Azure OpenAI).
+
+The gateway is published on `${LLM_GATEWAY_BIND:-0.0.0.0}:${LLM_GATEWAY_PORT}`
+because libkrun's TSI networking reaches host services through a host address,
+not the host loopback. The per-job token is the access control. The listener is
+plain HTTP, so keep it on a trusted network or put it behind a TLS reverse
+proxy. `LLM_GATEWAY_SECRET` must be identical in the worker and the gateway;
+changing it invalidates all outstanding job tokens.
+
+Health check:
+
+```bash
+curl -fsS http://localhost:8091/healthz
+```
 
 ## Kafka topics
 
@@ -290,8 +354,9 @@ Each job runs in its own KVM microVM.
 | Privilege escalation | `no-new-privileges:true` |
 | Resources | `GOOSE_JOB_RAM_MIB` (default `2048`), `GOOSE_JOB_CPUS` (default `2`), `GOOSE_JOB_PIDS_LIMIT` (default `512`) |
 | Filesystem | Disposable job directory, tmpfs `/opt/data`, no host paths beyond the bind mounts |
-| Network | Reaches the model provider. The Compose services and the Podman API are not reachable: the proxy listens on the worker's loopback, and `scripts/host-firewall.sh` blocks the Docker ranges |
-| Tools | No browser, no `curl`/`wget` in the image; the prompt forbids web and network use |
+| Network | Reaches the LLM gateway, which forwards to the model provider. The Compose services and the Podman API are not reachable: the proxy listens on the worker's loopback, and `scripts/host-firewall.sh` blocks the Docker ranges |
+| Credentials | The real provider key stays in the gateway. The job gets a short-lived signed token bound to its `job_id` |
+| Tools | No browser, no `curl`/`wget` in the image; the prompt forbids web and other network use |
 | Lifetime | The microVM and its job directory are removed after the job |
 
 The worker runs with SELinux labeling disabled so it can collect outputs and
@@ -309,11 +374,15 @@ What the boundary does **not** cover:
 - **Shared skills directory.** Every job can write `.claude/skills`. A job can
   poison skills that later jobs load. Use one skills directory per trust domain,
   or run separate stacks.
-- **General internet egress.** The image has no common network clients, but the
-  microVM must reach the provider, and a job can write its own HTTP client.
-  For stricter isolation, put an allowlist proxy in front of the provider and
-  block direct egress.
-- **Provider credentials.** Provider keys are passed into every job.
+- **General internet egress.** The image has no common network clients, and the
+  gateway removes the provider key from the job, but the microVM can still
+  create its own network connections. For stricter isolation, block direct
+  egress from the rootless Podman UID and allow only the gateway host port.
+- **Gateway token.** The job holds a bearer token until it expires. A malicious
+  job can reuse that token for its own gateway requests during the job window.
+  The gateway does not enforce a per-job request or token budget.
+- **Gateway transport.** The gateway listener is plain HTTP. Keep it on a
+  trusted network or terminate TLS in front of it.
 
 For untrusted input, run:
 
@@ -322,8 +391,9 @@ sudo scripts/host-firewall.sh
 ```
 
 This blocks the Podman user from the Docker bridge ranges (Redpanda, RustFS,
-Phoenix, the worker, the GUI) while leaving the public internet reachable. Use
-`sudo scripts/host-firewall.sh --remove` to undo it.
+Phoenix, the worker, the GUI) while leaving the public internet and the gateway
+reachable. Use `sudo scripts/host-firewall.sh --remove` to undo it. To restrict
+the gateway listener to one host interface, set `LLM_GATEWAY_BIND`.
 
 ## Traceability and Phoenix
 

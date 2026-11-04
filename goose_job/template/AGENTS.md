@@ -52,8 +52,9 @@ finished delegate's result. Subagents cannot spawn further subagents.
 
 ## Safety and scope
 
-- There is no web browsing and no access to internal services.
-- Do not attempt network calls, package installs, or service discovery.
+- There is no web browsing. Your only network endpoint is the model gateway
+  that goose uses; do not attempt to reach any other host or internal service.
+- Do not attempt other network calls, package installs, or service discovery.
 - Do not read or write outside `/workspace` except `/workspace/.claude/skills`.
 - Do not store secrets, credentials, customer data, or job-specific outputs in
   skills.

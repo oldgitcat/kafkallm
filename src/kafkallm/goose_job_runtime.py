@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from kafkallm.audit import JobAudit
+from kafkallm.llm_gateway import issue_token
 from kafkallm.models import AgentResult, Job
 from kafkallm.settings import Settings
 from kafkallm.telemetry import get_tracer, set_content, set_error
@@ -27,29 +28,6 @@ _REFLECT_MIN_REMAINING_SECONDS = 60
 _SCHEDULE_RESERVE_SECONDS = 25
 _CONTAINER_POLL_SECONDS = 1.0
 _MAX_RESULT_BYTES = 500_000
-
-_PROVIDER_ENV_KEYS = (
-    "OPENAI_HOST",
-    "OPENAI_BASE_PATH",
-    "OPENAI_ORGANIZATION",
-    "OPENAI_PROJECT",
-    "OPENROUTER_HOST",
-    "OPENROUTER_PARAMETERS",
-    "ANTHROPIC_HOST",
-    "OLLAMA_HOST",
-    "OPENAI_API_KEY",
-    "OPENROUTER_API_KEY",
-    "ANTHROPIC_API_KEY",
-    "GOOGLE_API_KEY",
-    "GEMINI_API_KEY",
-    "DEEPSEEK_API_KEY",
-    "XAI_API_KEY",
-    "MISTRAL_API_KEY",
-    "GROQ_API_KEY",
-    "TOGETHER_API_KEY",
-    "FIREWORKS_API_KEY",
-    "NOUS_API_KEY",
-)
 
 # The job bundle is bind mounted read-only. The goosetown template and the
 # persistent skills live outside it. Every artifact is written to /workspace,
@@ -252,6 +230,11 @@ class GooseJobRunner:
         return self._client
 
     def wait_ready(self) -> None:
+        if not self.settings.gateway_configured:
+            raise GooseJobRuntimeError(
+                "The LLM gateway is not configured. Set LLM_GATEWAY_URL and "
+                "LLM_GATEWAY_SECRET for the worker."
+            )
         deadline = (
             time.monotonic() + self.settings.goose_startup_timeout_seconds
         )
@@ -321,6 +304,7 @@ class GooseJobRunner:
             1, int(remaining - reflect_reserve - _SCHEDULE_RESERVE_SECONDS)
         )
         environment = self._environment(
+            job_id=job.job_id,
             budget=int(remaining),
             main_budget=main_budget,
             reflect_reserve=reflect_reserve,
@@ -339,9 +323,11 @@ class GooseJobRunner:
             "agent.runtime": "goose-job",
             "goose.image": self.settings.goose_image,
             "goose.model": self.settings.goose_model or "configured-default",
-            "goose.provider": (
-                self.settings.goose_provider or "configured-default"
+            "goose.provider": "openai",
+            "goose.upstream_provider": (
+                self.settings.goose_provider or "gateway"
             ),
+            "llm.gateway": self.settings.llm_gateway_url,
             "job.id": job.job_id,
             "job.run_id": job.run_id,
         }
@@ -371,7 +357,11 @@ class GooseJobRunner:
                             "workspace": str(workdir),
                             "skills_dir": self.settings.goose_job_skills_dir,
                             "model": self.settings.goose_model or None,
-                            "provider": self.settings.goose_provider or None,
+                            "provider": "openai",
+                            "upstream_provider": (
+                                self.settings.goose_provider or "gateway"
+                            ),
+                            "gateway": self.settings.llm_gateway_url,
                             "reflect_enabled": bool(reflect_reserve),
                         },
                     )
@@ -760,10 +750,29 @@ class GooseJobRunner:
 
     def _environment(
         self,
+        job_id: str,
         budget: int,
         main_budget: int,
         reflect_reserve: int,
     ) -> dict[str, str]:
+        if not self.settings.gateway_configured:
+            raise GooseJobRuntimeError(
+                "The LLM gateway is not configured. Set LLM_GATEWAY_URL and "
+                "LLM_GATEWAY_SECRET for the worker."
+            )
+        gateway_url = self.settings.llm_gateway_url.rstrip("/")
+        if gateway_url.endswith("/v1"):
+            gateway_url = gateway_url[:-3]
+        token_ttl = max(
+            300,
+            int(budget) + 300,
+            self.settings.llm_gateway_token_ttl_seconds,
+        )
+        token = issue_token(
+            self.settings.llm_gateway_secret,
+            job_id,
+            token_ttl,
+        )
         environment = {
             "HOME": "/opt/data",
             "GOOSE_PATH_ROOT": "/opt/data/goose",
@@ -772,6 +781,9 @@ class GooseJobRunner:
             "GOOSE_DISABLE_SESSION_NAMING": "true",
             "GOOSE_TELEMETRY_ENABLED": "false",
             "GOOSE_AUTO_COMPACT_THRESHOLD": "0.9",
+            "GOOSE_PROVIDER": "openai",
+            "OPENAI_HOST": gateway_url,
+            "OPENAI_API_KEY": token,
             "GOOSE_MAX_TURNS": str(self.settings.goose_job_max_turns),
             "GOOSE_SUBAGENT_MAX_TURNS": str(
                 self.settings.goose_job_subagent_max_turns
@@ -784,16 +796,10 @@ class GooseJobRunner:
             "KAFKALLM_JOB_REFLECT_TIMEOUT": str(
                 self.settings.goose_job_reflect_timeout_seconds
             ),
-            "NO_PROXY": "127.0.0.1,localhost",
+            "NO_PROXY": "127.0.0.1,localhost,host.containers.internal",
         }
         if self.settings.goose_model:
             environment["GOOSE_MODEL"] = self.settings.goose_model
-        if self.settings.goose_provider:
-            environment["GOOSE_PROVIDER"] = self.settings.goose_provider
-        for key in _PROVIDER_ENV_KEYS:
-            value = os.getenv(key)
-            if value:
-                environment[key] = value
         return environment
 
     def _build_prompt(self, job: Job) -> str:
@@ -807,8 +813,10 @@ class GooseJobRunner:
             "Write all generated result files to: /workspace/outputs\n"
             "Do not modify files outside /workspace except the persistent "
             "skills in /workspace/.claude/skills.\n"
-            "There is no web browsing and no access to internal services. "
-            "Work only from the provided instruction and input files.\n"
+            "There is no web browsing. Your only network endpoint is the model "
+            "gateway used by goose; do not try to reach any other host or "
+            "internal service. Work only from the provided instruction and "
+            "input files.\n"
             "Work autonomously; do not ask for approval or clarification.\n"
             "Return the completed result as your final response.\n\n"
             f"Instruction:\n{job.instruction}\n\n"

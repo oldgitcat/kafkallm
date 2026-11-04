@@ -2,7 +2,8 @@
 #   ./scripts/build-goose-image.sh
 #
 # The image intentionally contains no curl, wget, or other network clients in
-# its final stage. The only outbound path is the LLM provider used by goose.
+# its final stage. The only outbound path is the Kafkallm LLM gateway used by
+# goose; the provider credentials stay in the gateway.
 FROM debian:bookworm-slim AS goose-download
 
 ARG GOOSE_VERSION=1.57.0

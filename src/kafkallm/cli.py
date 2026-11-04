@@ -50,6 +50,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("worker", help="Start the agent worker")
     subparsers.add_parser("gui", help="Start the job GUI")
+    subparsers.add_parser(
+        "gateway", help="Start the OpenAI-compatible LLM gateway"
+    )
 
     submit = subparsers.add_parser("submit", help="Send a job to jobs.in")
     submit.add_argument("instruction", help="Task for the agent")
@@ -178,6 +181,10 @@ def main() -> None:
             from kafkallm.gui import run_gui
 
             run_gui(settings)
+        elif args.command == "gateway":
+            from kafkallm.llm_gateway import run_gateway
+
+            run_gateway(settings)
     except (KafkaException, RuntimeError, ValueError, json.JSONDecodeError) as exc:
         parser.exit(1, f"Error: {exc}\n")
     finally:

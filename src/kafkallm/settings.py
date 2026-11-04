@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import socket
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 def _int_env(name: str, default: int) -> int:
@@ -49,6 +49,17 @@ class Settings:
     goose_job_skills_dir: str
     goose_job_reflect_enabled: bool
     goose_job_reflect_timeout_seconds: int
+    llm_gateway_url: str
+    llm_gateway_secret: str = field(repr=False)
+    llm_gateway_token_ttl_seconds: int
+    llm_gateway_host: str
+    llm_gateway_port: int
+    llm_gateway_upstream_url: str
+    llm_gateway_upstream_api_key: str = field(repr=False)
+    llm_gateway_upstream_auth_header: str
+    llm_gateway_upstream_auth_scheme: str
+    llm_gateway_upstream_timeout_seconds: int
+    llm_gateway_max_request_bytes: int
     gui_host: str
     gui_port: int
     s3_endpoint_url: str
@@ -119,6 +130,36 @@ class Settings:
             goose_job_reflect_timeout_seconds=_int_env(
                 "GOOSE_JOB_REFLECT_TIMEOUT_SECONDS", 300
             ),
+            llm_gateway_url=os.getenv(
+                "LLM_GATEWAY_URL", "http://host.containers.internal:8091"
+            ),
+            llm_gateway_secret=os.getenv("LLM_GATEWAY_SECRET", ""),
+            llm_gateway_token_ttl_seconds=_int_env(
+                "LLM_GATEWAY_TOKEN_TTL_SECONDS", 0
+            ),
+            llm_gateway_host=os.getenv("LLM_GATEWAY_HOST", "0.0.0.0"),
+            llm_gateway_port=_int_env("LLM_GATEWAY_PORT", 8091),
+            llm_gateway_upstream_url=os.getenv(
+                "LLM_GATEWAY_UPSTREAM_URL", "https://openrouter.ai/api/v1"
+            ),
+            llm_gateway_upstream_api_key=(
+                os.getenv("LLM_GATEWAY_UPSTREAM_API_KEY")
+                or os.getenv("OPENROUTER_API_KEY")
+                or os.getenv("OPENAI_API_KEY")
+                or ""
+            ),
+            llm_gateway_upstream_auth_header=os.getenv(
+                "LLM_GATEWAY_UPSTREAM_AUTH_HEADER", "Authorization"
+            ),
+            llm_gateway_upstream_auth_scheme=os.getenv(
+                "LLM_GATEWAY_UPSTREAM_AUTH_SCHEME", "Bearer"
+            ),
+            llm_gateway_upstream_timeout_seconds=_int_env(
+                "LLM_GATEWAY_UPSTREAM_TIMEOUT_SECONDS", 600
+            ),
+            llm_gateway_max_request_bytes=_int_env(
+                "LLM_GATEWAY_MAX_REQUEST_BYTES", 20 * 1024 * 1024
+            ),
             gui_host=os.getenv("GUI_HOST", "0.0.0.0"),
             gui_port=_int_env("GUI_PORT", 8090),
             s3_endpoint_url=os.getenv("S3_ENDPOINT_URL", ""),
@@ -138,3 +179,7 @@ class Settings:
     @property
     def storage_configured(self) -> bool:
         return bool(self.s3_endpoint_url)
+
+    @property
+    def gateway_configured(self) -> bool:
+        return bool(self.llm_gateway_url and self.llm_gateway_secret)
