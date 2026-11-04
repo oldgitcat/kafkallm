@@ -170,6 +170,9 @@ services:
       - /tmp:size=256m
     security_opt:
       - no-new-privileges:true
+      # The job microVMs create files with private SELinux categories. The
+      # worker is the trusted control plane and must be able to remove them.
+      - label=disable
     cap_drop:
       - ALL
     stop_grace_period: 30s

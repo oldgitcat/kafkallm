@@ -619,7 +619,7 @@ class GooseJobRunner:
                 "MemorySwap": self._memory_bytes(),
                 "PidsLimit": self.settings.goose_job_pids_limit,
                 "NanoCpus": self.settings.goose_job_cpus * 1_000_000_000,
-                "SecurityOpt": ["no-new-privileges:true"],
+                "SecurityOpt": ["no-new-privileges:true", "label=disable"],
             },
         }
         api = self.client.api
@@ -830,7 +830,14 @@ class GooseJobRunner:
                 )
 
     def _remove_workdir(self, workdir: Path) -> None:
-        shutil.rmtree(workdir, ignore_errors=True)
+        for attempt in range(10):
+            if not workdir.exists():
+                return
+            shutil.rmtree(workdir, ignore_errors=True)
+            if not workdir.exists():
+                return
+            time.sleep(0.2 * (attempt + 1))
+        logger.warning("Could not remove goose job directory %s", workdir)
 
     @staticmethod
     def _is_not_found(exc: Exception) -> bool:

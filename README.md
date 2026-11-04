@@ -294,6 +294,10 @@ Each job runs in its own KVM microVM.
 | Tools | No browser, no `curl`/`wget` in the image; the prompt forbids web and network use |
 | Lifetime | The microVM and its job directory are removed after the job |
 
+The worker runs with SELinux labeling disabled so it can collect outputs and
+remove files that rootless Podman created with private MCS categories. The job
+microVM still runs with `no-new-privileges` and the microVM boundary.
+
 What the boundary does **not** cover:
 
 - **The hypervisor.** libkrun and KVM run on the host, so a VMM bug is still a
