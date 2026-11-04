@@ -66,6 +66,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=_file_ref,
         help="S3 reference in bucket/key form; may be repeated",
     )
+    submit.add_argument(
+        "--upload",
+        action="append",
+        default=[],
+        type=Path,
+        help="Upload a local file into the job inputs; may be repeated",
+    )
     submit.add_argument("--job-id")
     submit.add_argument("--run-id")
     submit.add_argument("--timeout", type=int, default=300)
@@ -84,6 +91,24 @@ def submit(settings: Settings, args: argparse.Namespace) -> None:
     input_data = json.loads(args.input)
     if not isinstance(input_data, dict):
         raise ValueError("--input must be a JSON object.")
+    input_files = list(args.input_file)
+    if args.upload:
+        from kafkallm.storage import S3Storage
+
+        if len(input_files) + len(args.upload) > settings.upload_max_files:
+            raise ValueError(
+                f"At most {settings.upload_max_files} input files are allowed."
+            )
+        storage = S3Storage(settings)
+        total = 0
+        for path in args.upload:
+            data = path.read_bytes()
+            if len(data) > settings.upload_max_file_bytes:
+                raise ValueError(f"{path} exceeds the per-file upload size limit.")
+            total += len(data)
+            if total > settings.upload_max_total_bytes:
+                raise ValueError("The uploads exceed the total size limit.")
+            input_files.append(storage.upload_input(path.name, data))
     ensure_topics(settings)
     producer = KafkaProducer(settings)
     state = StatePublisher(settings, producer)
@@ -95,7 +120,7 @@ def submit(settings: Settings, args: argparse.Namespace) -> None:
             values = {
                 "instruction": args.instruction,
                 "input": input_data,
-                "input_files": args.input_file,
+                "input_files": input_files,
                 "timeout_seconds": args.timeout,
                 "max_steps": args.max_steps,
                 "trace_id": current_trace_id() or new_trace_id(),

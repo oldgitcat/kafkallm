@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from pathlib import Path
 
 import boto3
@@ -10,7 +11,6 @@ from botocore.exceptions import ClientError
 
 from kafkallm.models import FileRef
 from kafkallm.settings import Settings
-
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +59,13 @@ class S3Storage:
         destination.parent.mkdir(parents=True, exist_ok=True)
         self.client.download_file(reference.bucket, reference.key, str(destination))
 
+    def upload_input(self, filename: str, data: bytes) -> FileRef:
+        """Store an uploaded input file and return its bucket/key reference."""
+        name = _safe_filename(filename)
+        key = f"uploads/{uuid.uuid4().hex}/{name}"
+        self.client.put_object(Bucket=self.bucket, Key=key, Body=data)
+        return FileRef(bucket=self.bucket, key=key)
+
     def upload_outputs(
         self,
         outputs: Path,
@@ -74,9 +81,7 @@ class S3Storage:
         try:
             for path in paths:
                 if time.monotonic() > deadline:
-                    raise TimeoutError(
-                        "The job timeout was reached while uploading."
-                    )
+                    raise TimeoutError("The job timeout was reached while uploading.")
                 relative = path.relative_to(outputs).as_posix()
                 key = f"{job_id}/{run_id}/{relative}"
                 for attempt in range(3):
@@ -108,3 +113,12 @@ class S3Storage:
                 except Exception:
                     logger.exception("Failed to clean up uploaded artifacts")
             raise
+
+
+def _safe_filename(filename: str) -> str:
+    name = Path(filename.replace("\\", "/")).name.strip()
+    name = "".join(
+        "_" if ord(char) < 32 or char in {"/", "\\"} else char for char in name
+    )
+    name = name[:200]
+    return name if name and name not in {".", ".."} else "upload.bin"

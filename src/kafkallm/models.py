@@ -92,6 +92,7 @@ class JobState(BaseModel):
     instruction: str
     status: Literal["queued", "running", "succeeded", "failed", "invalid"]
     trace_id: str | None = Field(default=None, min_length=1, max_length=128)
+    input_files: list[FileRef] = Field(default_factory=list, max_length=32)
     timeout_seconds: int = Field(default=300, ge=1, le=3600)
     max_steps: int = Field(default=6, ge=1, le=50)
     submitted_at: datetime = Field(default_factory=utc_now)
@@ -113,6 +114,7 @@ class JobState(BaseModel):
             instruction=job.instruction,
             status="queued",
             trace_id=job.trace_id,
+            input_files=job.input_files,
             timeout_seconds=job.timeout_seconds,
             max_steps=job.max_steps,
             worker_id=worker_id,

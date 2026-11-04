@@ -149,6 +149,10 @@
         <label for="input">Structured input (JSON)</label>
         <textarea id="input" spellcheck="false">{}</textarea>
 
+        <label for="files">Input files or binaries</label>
+        <input id="files" type="file" multiple>
+        <div class="hint">Any file type. Files are uploaded to RustFS and copied into the job at <span class="mono">/workspace/inputs</span>.</div>
+
         <div class="row">
           <div>
             <label for="timeout">Timeout (seconds)</label>
@@ -210,6 +214,13 @@
       return data;
     }
 
+    async function uploadFiles(files) {
+      const form = new FormData();
+      for (const file of files) form.append("files", file, file.name);
+      const data = await api("/api/uploads", { method: "POST", body: form });
+      return data.input_files || [];
+    }
+
     function renderJobs() {
       if (!state.jobs.length) {
         $("jobs").className = "empty";
@@ -266,6 +277,9 @@
       const usage = job.usage && Object.keys(job.usage).length
         ? Object.entries(job.usage).map(([k, v]) => `${esc(k)}=${esc(v)}`).join(" · ")
         : "—";
+      const inputFiles = (job.input_files || []).length
+        ? `<div class="events">${job.input_files.map((a) => `<div class="mono">${esc(a.bucket)}/${esc(a.key)}</div>`).join("")}</div>`
+        : `<span class="muted">none</span>`;
       const artifacts = (job.artifacts || []).length
         ? `<div class="events">${job.artifacts.map((a) => `<div class="mono">${esc(a.bucket)}/${esc(a.key)}</div>`).join("")}</div>`
         : `<span class="muted">none</span>`;
@@ -297,6 +311,7 @@
         ${job.result ? `<div class="block"><h3>Result</h3><pre>${esc(job.result)}</pre></div>` : ""}
         ${job.error ? `<div class="block"><h3>Error</h3><pre>${esc(job.error)}</pre></div>` : ""}
         ${job.artifact_error ? `<div class="block"><h3>Artifact error</h3><pre>${esc(job.artifact_error)}</pre></div>` : ""}
+        <div class="block"><h3>Input files</h3>${inputFiles}</div>
         <div class="block"><h3>Artifacts</h3>${artifacts}</div>
         <div class="block"><h3>Audit events</h3>${events}</div>
       </section>`;
@@ -306,14 +321,18 @@
       event.preventDefault();
       const button = $("submit");
       const message = $("message");
+      const files = Array.from($("files").files || []);
       button.disabled = true;
       message.className = "message";
-      message.textContent = "Submitting…";
+      message.textContent = files.length ? "Uploading files…" : "Submitting…";
       try {
         const input = JSON.parse($("input").value || "{}");
+        const inputFiles = files.length ? await uploadFiles(files) : [];
+        message.textContent = "Submitting…";
         const payload = {
           instruction: $("instruction").value.trim(),
           input,
+          input_files: inputFiles,
           timeout_seconds: Number($("timeout").value),
           max_steps: Number($("max_steps").value),
         };
@@ -325,6 +344,7 @@
         message.className = "message ok";
         message.textContent = `Queued ${job.job_id}`;
         $("instruction").value = "";
+        $("files").value = "";
         await loadJobs();
         await selectJob(job.job_id);
       } catch (error) {

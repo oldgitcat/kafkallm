@@ -8,8 +8,17 @@ from dataclasses import replace
 from typing import Any
 
 from kafkallm.gui import JobServer, JobStore
-from kafkallm.models import Job, JobState
+from kafkallm.models import FileRef, Job, JobState
 from kafkallm.settings import Settings
+
+
+class FakeStorage:
+    def __init__(self) -> None:
+        self.uploads: list[tuple[str, bytes]] = []
+
+    def upload_input(self, filename: str, data: bytes) -> FileRef:
+        self.uploads.append((filename, data))
+        return FileRef(bucket="jobs", key=f"uploads/{filename}")
 
 
 class RecordingProducer:
@@ -39,6 +48,31 @@ def _request(url: str, payload: dict[str, Any] | None = None) -> tuple[int, Any]
         data=data,
         headers={"Content-Type": "application/json"},
         method="POST" if data is not None else "GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read())
+
+
+def _post_multipart(
+    url: str, filename: str, data: bytes, boundary: str = "kafkallm-test"
+) -> tuple[int, Any]:
+    body = (
+        (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="files"; filename="{filename}"\r\n'
+            "Content-Type: application/octet-stream\r\n\r\n"
+        ).encode()
+        + data
+        + f"\r\n--{boundary}--\r\n".encode()
+    )
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        method="POST",
     )
     try:
         with urllib.request.urlopen(request, timeout=5) as response:
@@ -116,6 +150,84 @@ def test_gui_submits_a_job_and_serves_state() -> None:
         )
         assert status == 400
         assert "Invalid job" in error["error"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_gui_uploads_binary_inputs_and_attaches_them_to_the_job() -> None:
+    settings = replace(
+        _settings(),
+        s3_endpoint_url="http://fake-s3",
+        upload_max_files=4,
+        upload_max_file_bytes=1024,
+        upload_max_total_bytes=4096,
+    )
+    producer = RecordingProducer()
+    storage = FakeStorage()
+    store = JobStore(settings)
+    server = JobServer(
+        ("127.0.0.1", 0),
+        store,
+        producer,
+        settings,
+        storage_factory=lambda _settings: storage,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    payload = b"\x00\x01binary\r\nwith\xffbytes"
+    try:
+        status, uploaded = _post_multipart(
+            f"{base}/api/uploads", "payload.bin", payload
+        )
+        assert status == 201
+        assert storage.uploads == [("payload.bin", payload)]
+        assert uploaded["input_files"] == [
+            {"bucket": "jobs", "key": "uploads/payload.bin"}
+        ]
+
+        status, job = _request(
+            f"{base}/api/jobs",
+            {
+                "instruction": "Use the uploaded file",
+                "input_files": uploaded["input_files"],
+            },
+        )
+        assert status == 201
+        assert job["input_files"] == uploaded["input_files"]
+        assert producer.messages[0][2].input_files[0].key == ("uploads/payload.bin")
+        queued_state = producer.messages[1][2]
+        assert queued_state.input_files[0].key == "uploads/payload.bin"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_gui_rejects_oversized_uploads() -> None:
+    settings = replace(
+        _settings(),
+        s3_endpoint_url="http://fake-s3",
+        upload_max_file_bytes=4,
+    )
+    storage = FakeStorage()
+    server = JobServer(
+        ("127.0.0.1", 0),
+        JobStore(settings),
+        RecordingProducer(),
+        settings,
+        storage_factory=lambda _settings: storage,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        status, error = _post_multipart(f"{base}/api/uploads", "too-big.bin", b"12345")
+        assert status == 413
+        assert "size limit" in error["error"]
+        assert storage.uploads == []
     finally:
         server.shutdown()
         server.server_close()

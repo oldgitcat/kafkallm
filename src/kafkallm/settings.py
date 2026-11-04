@@ -63,6 +63,9 @@ class Settings:
     goose_job_proxy_upstream_port: int
     gui_host: str
     gui_port: int
+    upload_max_files: int
+    upload_max_file_bytes: int
+    upload_max_total_bytes: int
     s3_endpoint_url: str
     s3_region: str
     s3_bucket: str
@@ -150,6 +153,11 @@ class Settings:
             ),
             gui_host=os.getenv("GUI_HOST", "0.0.0.0"),
             gui_port=_int_env("GUI_PORT", 8090),
+            upload_max_files=_int_env("UPLOAD_MAX_FILES", 16),
+            upload_max_file_bytes=_int_env("UPLOAD_MAX_FILE_BYTES", 50 * 1024 * 1024),
+            upload_max_total_bytes=_int_env(
+                "UPLOAD_MAX_TOTAL_BYTES", 100 * 1024 * 1024
+            ),
             s3_endpoint_url=os.getenv("S3_ENDPOINT_URL", ""),
             s3_region=os.getenv("S3_REGION", "local"),
             s3_bucket=os.getenv("S3_BUCKET", "jobs"),

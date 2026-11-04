@@ -5,6 +5,9 @@ import logging
 import signal
 import threading
 import uuid
+from collections.abc import Callable
+from email.parser import BytesParser
+from email.policy import default as email_policy
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -17,16 +20,37 @@ from kafkallm.kafka import KafkaProducer, ensure_topics, wait_for_kafka
 from kafkallm.models import Job
 from kafkallm.settings import Settings
 from kafkallm.state import StatePublisher
+from kafkallm.storage import S3Storage
 from kafkallm.telemetry import (
     current_trace_id,
     inject_trace_headers,
     new_trace_id,
 )
 
-
 logger = logging.getLogger(__name__)
 
 _MAX_EVENTS_PER_JOB = 200
+_MULTIPART_OVERHEAD_BYTES = 1024 * 1024
+
+
+def _multipart_files(content_type: str, body: bytes) -> list[tuple[str, bytes]]:
+    """Extract uploaded file parts without a third-party multipart parser."""
+    if "\r" in content_type or "\n" in content_type:
+        raise ValueError("Invalid Content-Type header.")
+    if not content_type.lower().startswith("multipart/form-data"):
+        raise ValueError("Expected multipart/form-data.")
+    header = (f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n").encode()
+    message = BytesParser(policy=email_policy).parsebytes(header + body)
+    if not message.is_multipart():
+        raise ValueError("The request body is not multipart form data.")
+    files: list[tuple[str, bytes]] = []
+    for part in message.iter_parts():
+        filename = part.get_filename()
+        if not filename:
+            continue
+        data = part.get_payload(decode=True)
+        files.append((filename, data if isinstance(data, bytes) else b""))
+    return files
 
 
 class JobStore:
@@ -142,12 +166,23 @@ class JobServer(ThreadingHTTPServer):
         store: JobStore,
         producer: KafkaProducer,
         settings: Settings,
+        storage_factory: Callable[[Settings], S3Storage] | None = None,
     ) -> None:
         super().__init__(address, JobHandler)
         self.store = store
         self.producer = producer
         self.settings = settings
         self.producer_lock = threading.Lock()
+        self.storage_factory = storage_factory or S3Storage
+        self.storage_lock = threading.Lock()
+        self._storage: S3Storage | None = None
+
+    def get_storage(self) -> S3Storage:
+        if self._storage is None:
+            with self.storage_lock:
+                if self._storage is None:
+                    self._storage = self.storage_factory(self.settings)
+        return self._storage
 
 
 class JobHandler(BaseHTTPRequestHandler):
@@ -156,7 +191,7 @@ class JobHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         logger.info("%s - %s", self.address_string(), format % args)
 
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         if self.path in {"/", "/index.html"}:
             self._send_file()
         elif self.path == "/healthz":
@@ -167,21 +202,18 @@ class JobHandler(BaseHTTPRequestHandler):
             job_id = self.path.rsplit("/", 1)[-1]
             job = self.server.store.job(job_id)
             if job is None:
-                self._send_json(
-                    {"error": "job not found"}, status=HTTPStatus.NOT_FOUND
-                )
+                self._send_json({"error": "job not found"}, status=HTTPStatus.NOT_FOUND)
             else:
                 self._send_json(job)
         else:
-            self._send_json(
-                {"error": "not found"}, status=HTTPStatus.NOT_FOUND
-            )
+            self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
 
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:
+        if self.path == "/api/uploads":
+            self._handle_upload()
+            return
         if self.path != "/api/jobs":
-            self._send_json(
-                {"error": "not found"}, status=HTTPStatus.NOT_FOUND
-            )
+            self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -222,6 +254,99 @@ class JobHandler(BaseHTTPRequestHandler):
             )
             return
         self._send_json(job.model_dump(mode="json"), status=HTTPStatus.CREATED)
+
+    def _handle_upload(self) -> None:
+        settings = self.server.settings
+        if not settings.storage_configured:
+            self._send_json(
+                {
+                    "error": "File uploads require S3/RustFS. Set "
+                    "S3_ENDPOINT_URL and the S3 credentials."
+                },
+                status=HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if length <= 0:
+            self._send_json(
+                {"error": "A non-empty multipart body is required."},
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return
+        if length > settings.upload_max_total_bytes + _MULTIPART_OVERHEAD_BYTES:
+            self._send_json(
+                {"error": "The upload exceeds the configured size limit."},
+                status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+            )
+            return
+        body = self.rfile.read(length)
+        try:
+            files = _multipart_files(self.headers.get("Content-Type", ""), body)
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        if not files:
+            self._send_json(
+                {"error": "No files were found in the upload."},
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return
+        if len(files) > settings.upload_max_files:
+            self._send_json(
+                {
+                    "error": f"At most {settings.upload_max_files} files "
+                    "can be uploaded at once."
+                },
+                status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+            )
+            return
+        total = 0
+        for _, data in files:
+            if len(data) > settings.upload_max_file_bytes:
+                self._send_json(
+                    {"error": "A file exceeds the configured per-file size limit."},
+                    status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                )
+                return
+            total += len(data)
+            if total > settings.upload_max_total_bytes:
+                self._send_json(
+                    {"error": "The upload exceeds the configured size limit."},
+                    status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                )
+                return
+        try:
+            storage = self.server.get_storage()
+            references = [
+                storage.upload_input(filename, data) for filename, data in files
+            ]
+        except Exception as exc:
+            logger.exception("Could not store uploaded input files")
+            self._send_json(
+                {"error": f"Could not store uploaded files: {exc}"},
+                status=HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+            return
+        self._send_json(
+            {
+                "files": [
+                    {
+                        "name": filename,
+                        "size": len(data),
+                        "bucket": reference.bucket,
+                        "key": reference.key,
+                    }
+                    for (filename, data), reference in zip(files, references)
+                ],
+                "input_files": [
+                    reference.model_dump(mode="json") for reference in references
+                ],
+            },
+            status=HTTPStatus.CREATED,
+        )
 
     def _send_file(self) -> None:
         path = Path(__file__).parent / "static" / "index.html"

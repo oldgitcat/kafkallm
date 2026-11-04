@@ -37,8 +37,8 @@ GUI ──→ jobs.in, jobs.state, agent.events
   OpenRouter key and accepts only a rotatable virtual key from jobs
 - An IPv6-only internal Podman network where the allowlisting proxy is the only
   reachable peer; it forwards only to agentgateway
-- A browser GUI for submitting jobs and watching state, results, and audit
-  events
+- A browser GUI for submitting jobs, uploading input files or binaries, and
+  watching state, results, and audit events
 - A compacted `jobs.state` topic that acts as the GUI database; the GUI rebuilds
   its view from Kafka after a restart
 - Redpanda topics `jobs.in`, `jobs.out`, `jobs.state`, and `agent.events`
@@ -123,6 +123,10 @@ state and audit topics. It has no local database.
 # Submit a job
 docker compose run --rm jobctl submit "Say hello"
 
+# Submit a job with a local file or binary (mounted into the CLI container)
+docker compose run --rm -v "$PWD:/data:ro" jobctl submit \
+  "Inspect the uploaded binary" --upload /data/tool.bin
+
 # Read results
 docker compose run --rm jobctl results --from-beginning --idle-timeout 5
 
@@ -150,7 +154,9 @@ Redpanda Console runs at <http://localhost:8080>. Phoenix runs at
    `jobs.state`.
 2. The worker consumes `jobs.in`, publishes `running`, and prepares a unique
    directory under `GOOSE_JOB_WORKSPACE_ROOT`.
-3. Referenced input files are downloaded from RustFS into `inputs/`.
+3. Files uploaded through the GUI or attached with `submit --upload` are
+   downloaded from RustFS into `inputs/`. The job sees them under
+   `/workspace/inputs`.
 4. The worker ensures the allowlisting proxy is running on the IPv6-only
    `kafkallm-jobs` network, then starts a goose microVM through the rootless
    Podman API. The job is attached only to that internal network, and
@@ -437,7 +443,7 @@ Local RustFS defaults:
 
 These credentials are for local development only.
 
-Submit a job with an input file:
+Submit a job with an existing S3 object:
 
 ```bash
 docker compose run --rm jobctl submit \
@@ -446,6 +452,25 @@ docker compose run --rm jobctl submit \
 ```
 
 The bucket must already contain the file.
+
+Upload local files or binaries:
+
+- **GUI:** use **Input files or binaries** in the submit form. The browser
+  uploads to `POST /api/uploads`; the files are stored under
+  `uploads/<uuid>/<filename>` in RustFS and attached to the job as
+  `input_files`. The job copies them into `/workspace/inputs`.
+- **CLI:**
+
+  ```bash
+  docker compose run --rm -v "$PWD:/data:ro" jobctl submit \
+    "Inspect the uploaded files" \
+    --upload /data/data.csv \
+    --upload /data/tool.bin
+  ```
+
+Uploads require `S3_ENDPOINT_URL` and the S3 credentials. Limits are
+`UPLOAD_MAX_FILES` (default 16), `UPLOAD_MAX_FILE_BYTES` (default 50 MiB), and
+`UPLOAD_MAX_TOTAL_BYTES` (default 100 MiB).
 
 ## Scheduling
 
