@@ -330,13 +330,26 @@
       overflow-x: auto;
     }
     #jobs table {
-      min-width: 760px;
+      width: 100%;
+      min-width: 0;
+      table-layout: fixed;
+    }
+    #jobs th,
+    #jobs td {
+      overflow-wrap: anywhere;
+    }
+    #jobs td.mono {
+      word-break: break-all;
     }
     tbody tr.detail-row { cursor: default; }
     tbody tr.detail-row:hover { background: transparent; }
     .detail-row > td {
       padding: 0 8px 18px;
       background: var(--panel-soft);
+      overflow-wrap: anywhere;
+    }
+    .detail-row .mono {
+      word-break: break-all;
     }
     .detail-row section {
       margin: 0;
@@ -660,6 +673,15 @@
         </tr>${selected ? renderDetailRow() : ""}`;
       }).join("");
       $("jobs").innerHTML = `<table>
+        <colgroup>
+          <col style="width: 11%">
+          <col style="width: 22%">
+          <col style="width: 28%">
+          <col style="width: 8%">
+          <col style="width: 15%">
+          <col style="width: 10%">
+          <col style="width: 6%">
+        </colgroup>
         <thead><tr><th>Status</th><th>Job</th><th>Instruction</th><th>Sandbox</th><th>Submitted</th><th>Duration</th><th>Steps</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>`;
