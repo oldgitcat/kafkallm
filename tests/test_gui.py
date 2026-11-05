@@ -131,12 +131,14 @@ def test_gui_submits_a_job_and_serves_state() -> None:
             {
                 "instruction": "Write a file",
                 "input": {"name": "world"},
+                "sandbox": "reverse",
                 "timeout_seconds": 120,
                 "max_steps": 4,
             },
         )
         assert status == 201
         assert job["instruction"] == "Write a file"
+        assert job["sandbox"] == "reverse"
         assert [message[0] for message in producer.messages] == [
             "jobs.in",
             "jobs.state",

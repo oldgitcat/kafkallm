@@ -10,8 +10,14 @@ def test_job_defaults_and_serialization() -> None:
     job = Job(instruction="Hello")
 
     assert job.type == "llm_task"
+    assert job.sandbox == "default"
     assert job.job_id != job.run_id
     assert json.loads(to_json_bytes(job))["instruction"] == "Hello"
+
+
+def test_job_rejects_unknown_sandbox() -> None:
+    with pytest.raises(ValidationError):
+        Job.model_validate({"instruction": "Hello", "sandbox": "windows"})
 
 
 def test_job_rejects_unknown_fields() -> None:
@@ -37,5 +43,13 @@ def test_job_state_is_the_gui_projection() -> None:
     assert state.job_id == job.job_id
     assert state.status == "queued"
     assert state.worker_id == "worker-1"
+    assert state.sandbox == "default"
     assert state.submitted_at is not None
     assert state.started_at is None
+
+
+def test_job_state_keeps_the_reverse_sandbox() -> None:
+    job = Job(instruction="Analyze this", sandbox="reverse")
+    state = JobState.queued(job)
+
+    assert state.sandbox == "reverse"

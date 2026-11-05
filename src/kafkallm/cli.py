@@ -73,6 +73,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Upload a local file into the job inputs; may be repeated",
     )
+    submit.add_argument(
+        "--sandbox",
+        choices=("default", "reverse"),
+        default="default",
+        help="Job sandbox image: default or reverse (REA + Ghidra)",
+    )
     submit.add_argument("--job-id")
     submit.add_argument("--run-id")
     submit.add_argument("--timeout", type=int, default=300)
@@ -121,6 +127,7 @@ def submit(settings: Settings, args: argparse.Namespace) -> None:
                 "instruction": args.instruction,
                 "input": input_data,
                 "input_files": input_files,
+                "sandbox": args.sandbox,
                 "timeout_seconds": args.timeout,
                 "max_steps": args.max_steps,
                 "trace_id": current_trace_id() or new_trace_id(),

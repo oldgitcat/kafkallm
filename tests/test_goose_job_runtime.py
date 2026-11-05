@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from kafkallm.goose_job_runtime import (
+    _VM_RUN_SCRIPT,
     GooseJobRunner,
     GooseJobRuntimeError,
     _parse_bytes,
@@ -244,6 +245,7 @@ def _settings(**overrides: Any) -> Settings:
     values: dict[str, Any] = {
         "goose_job_docker_host": "tcp://podman-proxy:2375",
         "goose_image": "goose:test",
+        "goose_re_image": "rea:test",
         "goose_job_ram_mib": 2048,
         "goose_job_cpus": 2,
         "goose_job_use_passt": False,
@@ -497,6 +499,70 @@ def test_vm_wait_ready_pulls_a_missing_image(tmp_path: Path) -> None:
 
     assert client.pulled == ["goose:test"]
     assert client.pinged
+
+
+def test_reverse_sandbox_uses_re_image_and_rea_environment(tmp_path: Path) -> None:
+    client = FakeDockerClient()
+    client.results = {"main.json": _goose_result(text="Analyzed")}
+    runner = GooseJobRunner(
+        _settings_for(tmp_path, goose_re_image="rea:test"), client=client
+    )
+
+    runner.run(
+        job=Job(instruction="Analyze the binary", sandbox="reverse"),
+        workspace=_workspace(tmp_path),
+        deadline=time.monotonic() + 120,
+        max_steps=5,
+    )
+
+    body = client.create_body
+    assert body["Image"] == "rea:test"
+    environment = dict(item.split("=", 1) for item in body["Env"])
+    assert environment["KAFKALLM_SANDBOX"] == "reverse"
+    assert environment["GHIDRA_INSTALL_DIR"] == "/opt/ghidra"
+    assert environment["JAVA_HOME"] == "/opt/java/openjdk"
+    assert environment["REA_MCP_INPUT_SCHEMA_PROFILE"] == "compact"
+    assert environment["REA_MCP_OUTPUT_SCHEMA_PROFILE"] == "compact"
+    assert "REA_GHIDRA_STARTUP_TIMEOUT_MS" in environment
+
+
+def test_default_sandbox_uses_the_goose_image(tmp_path: Path) -> None:
+    client = FakeDockerClient()
+    client.results = {"main.json": _goose_result()}
+    runner = GooseJobRunner(
+        _settings_for(tmp_path, goose_re_image="rea:test"), client=client
+    )
+
+    runner.run(
+        job=Job(instruction="Do the job"),
+        workspace=_workspace(tmp_path),
+        deadline=time.monotonic() + 120,
+        max_steps=5,
+    )
+
+    body = client.create_body
+    assert body["Image"] == "goose:test"
+    environment = dict(item.split("=", 1) for item in body["Env"])
+    assert environment["KAFKALLM_SANDBOX"] == "default"
+    assert "GHIDRA_INSTALL_DIR" not in environment
+    assert "REA_GHIDRA_STARTUP_TIMEOUT_MS" not in environment
+
+
+def test_reverse_prompt_mentions_rea(tmp_path: Path) -> None:
+    runner = GooseJobRunner(_settings_for(tmp_path))
+
+    prompt = runner._build_prompt(Job(instruction="Analyze", sandbox="reverse"))
+
+    assert "REA MCP server" in prompt
+    assert "Ghidra is installed at /opt/ghidra" in prompt
+    assert "REA MCP server" not in runner._build_prompt(Job(instruction="Plain"))
+
+
+def test_run_script_enables_rea_only_for_reverse_sandbox() -> None:
+    assert '--with-extension "rea:/opt/kafkallm/rea-mcp"' in _VM_RUN_SCRIPT
+    assert "TMPDIR=/workspace/.scratch/tmp" in _VM_RUN_SCRIPT
+    assert "chmod -R a+rwX /workspace/.scratch" in _VM_RUN_SCRIPT
+    assert 'KAFKALLM_SANDBOX:-default' in _VM_RUN_SCRIPT
 
 
 def test_vm_does_not_pass_provider_credentials(

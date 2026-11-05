@@ -8,6 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+Sandbox = Literal["default", "reverse"]
 
 
 def utc_now() -> datetime:
@@ -53,6 +54,7 @@ class Job(BaseModel):
     instruction: str = Field(min_length=1, max_length=100_000)
     input: dict = Field(default_factory=dict)
     input_files: list[FileRef] = Field(default_factory=list, max_length=32)
+    sandbox: Sandbox = "default"
     multi_agent: bool = True
     agents: list[AgentSpec] = Field(default_factory=list, max_length=20)
     timeout_seconds: int = Field(default=300, ge=1, le=3600)
@@ -105,6 +107,7 @@ class JobState(BaseModel):
     status: Literal["queued", "running", "succeeded", "failed", "invalid"]
     trace_id: str | None = Field(default=None, min_length=1, max_length=128)
     input_files: list[FileRef] = Field(default_factory=list, max_length=32)
+    sandbox: Sandbox = "default"
     multi_agent: bool = True
     agent_names: list[str] = Field(default_factory=list, max_length=20)
     timeout_seconds: int = Field(default=300, ge=1, le=3600)
@@ -129,6 +132,7 @@ class JobState(BaseModel):
             status="queued",
             trace_id=job.trace_id,
             input_files=job.input_files,
+            sandbox=job.sandbox,
             multi_agent=job.multi_agent,
             agent_names=[agent.name for agent in job.agents] if job.multi_agent else [],
             timeout_seconds=job.timeout_seconds,

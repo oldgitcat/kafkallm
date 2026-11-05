@@ -330,7 +330,7 @@
       overflow-x: auto;
     }
     #jobs table {
-      min-width: 680px;
+      min-width: 760px;
     }
     #detail section {
       margin-top: 24px;
@@ -425,6 +425,13 @@
         <label for="files">Input files or binaries</label>
         <input id="files" type="file" multiple>
         <div class="hint">Any file type. Files are uploaded to RustFS and copied into the job at <span class="mono">/workspace/inputs</span>.</div>
+
+        <label for="sandbox">Sandbox</label>
+        <select id="sandbox">
+          <option value="default">Default: goose + goosetown</option>
+          <option value="reverse">Reverse engineering: REA + Ghidra</option>
+        </select>
+        <div class="hint">The reverse sandbox includes REA as an MCP server, Ghidra, GDB, binwalk, YARA, and Python RE libraries.</div>
 
         <label class="check"><input id="multi_agent" type="checkbox" checked> Use goosetown multi-agent flock</label>
         <div id="agent-options" class="agent-options"><span class="muted">Loading agents…</span></div>
@@ -639,12 +646,13 @@
           <td>${badge(job.status)}</td>
           <td class="mono">${esc(job.job_id)}</td>
           <td><div class="snippet" title="${esc(job.instruction)}">${esc(job.instruction)}</div></td>
+          <td class="muted">${job.sandbox === "reverse" ? "REA" : "default"}</td>
           <td class="muted">${esc(fmtTime(job.submitted_at))}</td>
           <td class="muted">${esc(duration(job))}</td>
           <td class="muted">${esc(job.steps ?? 0)}</td>
         </tr>`).join("");
       $("jobs").innerHTML = `<table>
-        <thead><tr><th>Status</th><th>Job</th><th>Instruction</th><th>Submitted</th><th>Duration</th><th>Steps</th></tr></thead>
+        <thead><tr><th>Status</th><th>Job</th><th>Instruction</th><th>Sandbox</th><th>Submitted</th><th>Duration</th><th>Steps</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>`;
       for (const row of $("jobs").querySelectorAll("tbody tr")) {
@@ -711,6 +719,7 @@
           <div class="field"><div class="k">Submitted</div><div class="v">${esc(fmtTime(job.submitted_at))}</div></div>
           <div class="field"><div class="k">Started</div><div class="v">${esc(fmtTime(job.started_at))}</div></div>
           <div class="field"><div class="k">Finished</div><div class="v">${esc(fmtTime(job.finished_at))}</div></div>
+          <div class="field"><div class="k">Sandbox</div><div class="v">${job.sandbox === "reverse" ? "reverse engineering (REA + Ghidra)" : "default"}</div></div>
           <div class="field"><div class="k">Mode</div><div class="v">${job.multi_agent === false ? "single agent" : "goosetown flock"}</div></div>
           <div class="field"><div class="k">Flock</div><div class="v">${esc((job.agent_names || []).join(", ") || "built-in roles")}</div></div>
           <div class="field"><div class="k">Usage</div><div class="v mono">${usage}</div></div>
@@ -745,6 +754,7 @@
           instruction: $("instruction").value.trim(),
           input,
           input_files: inputFiles,
+          sandbox: $("sandbox").value,
           multi_agent: multiAgent,
           agent_ids: agentIds,
           timeout_seconds: Number($("timeout").value),

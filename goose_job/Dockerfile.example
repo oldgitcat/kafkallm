@@ -1,32 +1,26 @@
-# Example custom sandbox image. It extends the normal job image with Java and
-# Ghidra. Put a Ghidra release zip next to this file or adjust GHIDRA_ZIP.
+# Example custom sandbox image. Extend either the normal job image or the
+# reverse-engineering image (REA + Ghidra) with extra packages.
 #
 # Build it with:
+#   GOOSE_JOB_BASE_IMAGE=kafkallm-rea-job:latest \
+#   GOOSE_IMAGE=kafkallm-custom-job:latest \
 #   GOOSE_JOB_DOCKERFILE=goose_job/Dockerfile.example \
 #     ./scripts/build-goose-image.sh
 #
-# For lighter tool additions, prefer GOOSE_JOB_EXTRA_PACKAGES in the main
-# Dockerfile, or drop static binaries and extracted tools into
-# GOOSE_JOB_TOOLS_DIR (/var/lib/kafkallm/tools) on the host.
+# For small additions, prefer GOOSE_JOB_EXTRA_PACKAGES in the main Dockerfile;
+# for static binaries, drop them into GOOSE_JOB_TOOLS_DIR
+# (/var/lib/kafkallm/tools) on the host instead of rebuilding.
 
-FROM localhost/kafkallm-goose-job:latest
+ARG BASE_IMAGE=kafkallm-goose-job:latest
+FROM ${BASE_IMAGE}
 
 USER root
 
-ARG GHIDRA_ZIP=goose_job/ghidra.zip
-
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        openjdk-17-jre-headless \
-        unzip \
-    && rm -rf /var/lib/apt/lists/* \
-    && mkdir -p /opt/kafkallm/tools/bin /opt/kafkallm/tools/ghidra
+        gdb \
+        binwalk \
+        yara \
+    && rm -rf /var/lib/apt/lists/*
 
-COPY ${GHIDRA_ZIP} /tmp/ghidra.zip
-
-RUN unzip -q /tmp/ghidra.zip -d /opt/kafkallm/tools/ghidra \
-    && ln -s /opt/kafkallm/tools/ghidra/ghidra_*/ghidraRun \
-       /opt/kafkallm/tools/bin/ghidraRun \
-    && rm -f /tmp/ghidra.zip
-
-ENV PATH=/opt/kafkallm/tools/bin:$PATH
+WORKDIR /workspace

@@ -82,10 +82,29 @@ started=$(date +%s)
 budget=${KAFKALLM_JOB_BUDGET_SECONDS:-0}
 main_timeout=${KAFKALLM_JOB_MAIN_TIMEOUT:-300}
 
+# The reverse-engineering image ships REA as a local stdio MCP server. Give
+# Ghidra a large scratch area on the host-backed workspace, not the small /tmp
+# tmpfs. The default image does not have the wrapper and never gets the flag.
+set --
+if [ "${KAFKALLM_SANDBOX:-default}" = "reverse" ]; then
+  mkdir -p /workspace/.scratch/tmp
+  # krun maps guest writes to the host user that runs Podman, while the worker
+  # collects the workspace as a different UID. Keep the scratch tree writable
+  # so the worker can remove it after the job.
+  chmod 0777 /workspace/.scratch /workspace/.scratch/tmp 2>/dev/null || true
+  export TMPDIR=/workspace/.scratch/tmp
+  if [ -x /opt/kafkallm/rea-mcp ]; then
+    set -- --with-extension "rea:/opt/kafkallm/rea-mcp"
+  else
+    echo "Reverse sandbox requested but /opt/kafkallm/rea-mcp is missing." >&2
+  fi
+fi
+
 timeout --signal=TERM "$main_timeout" \
   ./goose run --no-session -q --output-format json \
     --with-builtin developer \
     --max-turns "${GOOSE_MAX_TURNS:-60}" \
+    "$@" \
     -i /jobboot/main-prompt.txt \
   > "$RESULT_DIR/main.json" 2> "$RESULT_DIR/main.err"
 echo "$?" > "$RESULT_DIR/main.exit"
@@ -109,11 +128,16 @@ if [ "${KAFKALLM_JOB_REFLECT_ENABLED:-0}" = "1" ]; then
       ./goose run --no-session -q --output-format json \
         --with-builtin developer \
         --max-turns "${GOOSE_REFLECT_MAX_TURNS:-20}" \
+        "$@" \
         -i /jobboot/reflect-prompt.txt \
       > "$RESULT_DIR/reflect.json" 2> "$RESULT_DIR/reflect.err"
     echo "$?" > "$RESULT_DIR/reflect.exit"
   fi
 fi
+
+# Ghidra and other tools may create read-only files in the scratch tree. Make
+# everything removable by the worker UID before the microVM exits.
+chmod -R a+rwX /workspace/.scratch 2>/dev/null || true
 """
 
 _REFLECT_PROMPT = """Review the job that just completed and improve the reusable goosetown skills for this class of job.
@@ -342,6 +366,7 @@ class GooseJobRunner:
     ) -> AgentResult:
         del max_steps
         workspace = Path(workspace)
+        image = self._image_for(job)
         prompt = self._build_prompt(job)
         remaining = max(0.0, deadline - time.monotonic())
         reflect_reserve = self._reflect_reserve(remaining)
@@ -353,6 +378,7 @@ class GooseJobRunner:
             budget=int(remaining),
             main_budget=main_budget,
             reflect_reserve=reflect_reserve,
+            sandbox=job.sandbox,
             multi_agent=job.multi_agent,
             agent_count=len(job.agents),
         )
@@ -368,7 +394,8 @@ class GooseJobRunner:
         attributes = {
             "openinference.span.kind": "AGENT",
             "agent.runtime": "goose-job",
-            "goose.image": self.settings.goose_image,
+            "goose.image": image,
+            "goose.sandbox": job.sandbox,
             "goose.model": self.settings.goose_model or "configured-default",
             "goose.provider": "openai",
             "goose.upstream_provider": (self.settings.goose_provider or "gateway"),
@@ -384,10 +411,12 @@ class GooseJobRunner:
         ) as span:
             set_content(span, "input.value", prompt)
             try:
+                self._ensure_image(image)
                 self._prepare_workdir(workdir, workspace, prompt, job)
                 self._ensure_extension_dirs()
                 proxy_ipv6 = self._ensure_proxy()
                 container = self._create_container(
+                    image=image,
                     environment=environment,
                     labels=labels,
                     workdir=workdir,
@@ -404,6 +433,8 @@ class GooseJobRunner:
                             "container_id": container.id,
                             "workspace": str(workdir),
                             "skills_dir": self.settings.goose_job_skills_dir,
+                            "image": image,
+                            "sandbox": job.sandbox,
                             "model": self.settings.goose_model or None,
                             "provider": "openai",
                             "upstream_provider": (
@@ -491,26 +522,33 @@ class GooseJobRunner:
                 self._remove_container(container)
                 self._remove_workdir(workdir)
 
-    def _ensure_image(self) -> None:
+    def _image_for(self, job: Job) -> str:
+        """Map a job's sandbox name to an allowlisted local image."""
+        if job.sandbox == "reverse":
+            return self.settings.goose_re_image
+        return self.settings.goose_image
+
+    def _ensure_image(self, image: str | None = None) -> None:
+        image = image or self.settings.goose_image
         try:
-            self.client.images.get(self.settings.goose_image)
+            self.client.images.get(image)
             return
         except Exception:
             pass
-        logger.info("Pulling %s into the Podman storage", self.settings.goose_image)
+        logger.info("Pulling %s into the Podman storage", image)
         try:
-            self.client.images.pull(self.settings.goose_image)
+            self.client.images.pull(image)
         except Exception as exc:
             raise GooseJobRuntimeError(
-                f"goose image {self.settings.goose_image} is not available "
-                f"in the Podman storage and could not be pulled: {exc}"
+                f"goose image {image} is not available in the Podman storage "
+                f"and could not be pulled: {exc}. Run the matching build "
+                "script on the host if this is a local sandbox image."
             ) from exc
         try:
-            self.client.images.get(self.settings.goose_image)
+            self.client.images.get(image)
         except Exception as exc:
             raise GooseJobRuntimeError(
-                f"goose image {self.settings.goose_image} is not available "
-                "in the Podman storage."
+                f"goose image {image} is not available in the Podman storage."
             ) from exc
 
     def _ensure_extension_dirs(self) -> None:
@@ -780,6 +818,7 @@ class GooseJobRunner:
 
     def _create_container(
         self,
+        image: str,
         environment: dict[str, str],
         labels: dict[str, str],
         workdir: Path,
@@ -793,7 +832,7 @@ class GooseJobRunner:
         if self.settings.goose_job_use_passt:
             annotations["krun.use_passt"] = "1"
         body = {
-            "Image": self.settings.goose_image,
+            "Image": image,
             "Cmd": ["/bin/sh", "/jobboot/run-job.sh"],
             "Env": [f"{key}={value}" for key, value in environment.items()],
             "Labels": labels,
@@ -965,6 +1004,7 @@ class GooseJobRunner:
         budget: int,
         main_budget: int,
         reflect_reserve: int,
+        sandbox: str,
         multi_agent: bool,
         agent_count: int,
     ) -> dict[str, str]:
@@ -978,12 +1018,14 @@ class GooseJobRunner:
         environment = {
             "HOME": "/opt/data",
             "PATH": (
-                "/opt/kafkallm/tools/bin:/usr/local/goose/bin:"
+                "/opt/kafkallm/tools/bin:/opt/java/openjdk/bin:"
+                "/opt/ghidra/support:/usr/local/goose/bin:"
                 "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
             ),
             "KAFKALLM_TOOLS_DIR": "/opt/kafkallm/tools",
             "KAFKALLM_CONFIG_DIR": "/opt/kafkallm/config",
             "KAFKALLM_AGENTS_PATH": "/jobboot/agents.json",
+            "KAFKALLM_SANDBOX": sandbox,
             "KAFKALLM_MULTI_AGENT": "1" if multi_agent else "0",
             "KAFKALLM_AGENT_COUNT": str(agent_count),
             "GOOSE_PATH_ROOT": "/opt/data/goose",
@@ -1010,6 +1052,18 @@ class GooseJobRunner:
             ),
             "NO_PROXY": "127.0.0.1,localhost,host.containers.internal",
         }
+        if sandbox == "reverse":
+            environment.update(
+                {
+                    "GHIDRA_INSTALL_DIR": "/opt/ghidra",
+                    "JAVA_HOME": "/opt/java/openjdk",
+                    # Large binaries can take a while; the job deadline still
+                    # caps the total run.
+                    "REA_GHIDRA_STARTUP_TIMEOUT_MS": "900000",
+                    "REA_MCP_INPUT_SCHEMA_PROFILE": "compact",
+                    "REA_MCP_OUTPUT_SCHEMA_PROFILE": "compact",
+                }
+            )
         if self.settings.goose_model:
             environment["GOOSE_MODEL"] = self.settings.goose_model
         return environment
@@ -1044,9 +1098,22 @@ class GooseJobRunner:
                 "Goosetown multi-agent mode is OFF. Do the job yourself; do "
                 "not delegate or spawn subagents.\n"
             )
+        if job.sandbox == "reverse":
+            sandbox_note = (
+                "Reverse-engineering sandbox: the local REA MCP server is "
+                "enabled as 'rea'. Use it to inspect binaries, firmware, "
+                "JavaScript/Electron apps, .NET assemblies, APKs, and other "
+                "artifacts. Ghidra is installed at /opt/ghidra and the `rea` "
+                "CLI is on PATH. Prefer REA's structured tools over ad-hoc "
+                "disassembly, and cite the input paths and evidence in your "
+                "result.\n"
+            )
+        else:
+            sandbox_note = ""
         return (
             role
             + mode
+            + sandbox_note
             + "Decompose the job when useful, coordinate through gtwall, and "
             "synthesize the final result.\n"
             "Workspace root: /workspace\n"

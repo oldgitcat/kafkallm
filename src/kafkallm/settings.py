@@ -37,6 +37,7 @@ class Settings:
     goose_provider: str
     goose_startup_timeout_seconds: int
     goose_image: str
+    goose_re_image: str
     goose_job_tmpfs_size: str
     goose_job_max_turns: int
     goose_job_subagent_max_turns: int
@@ -112,6 +113,7 @@ class Settings:
                 "GOOSE_STARTUP_TIMEOUT_SECONDS", 300
             ),
             goose_image=os.getenv("GOOSE_IMAGE", "kafkallm-goose-job:latest"),
+            goose_re_image=os.getenv("GOOSE_RE_IMAGE", "kafkallm-rea-job:latest"),
             goose_job_tmpfs_size=os.getenv("GOOSE_JOB_TMPFS_SIZE", "1g"),
             goose_job_max_turns=_int_env("GOOSE_JOB_MAX_TURNS", 60),
             goose_job_subagent_max_turns=_int_env("GOOSE_JOB_SUBAGENT_MAX_TURNS", 40),

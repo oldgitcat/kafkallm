@@ -44,7 +44,8 @@ GUI ──→ jobs.in, jobs.state, agents.state, agent.events
 - **MLflow** observability with OTLP traces, token usage, durations, and errors
   (Phoenix remains available as an optional second backend)
 - An editable sandbox: host-mounted tools, goose/MCP config, persistent skills,
-  extra build packages, and an example Ghidra image
+  extra build packages, plus a selectable **REA + Ghidra** reverse-engineering
+  image
 - A compacted `jobs.state` topic that acts as the GUI database; the GUI rebuilds
   its view from Kafka after a restart
 - A compacted `agents.state` topic with editable goosetown agent profiles
@@ -64,8 +65,9 @@ GUI ──→ jobs.in, jobs.state, agents.state, agent.events
 - A rootless Podman API socket:
   `systemctl --user enable --now podman.socket`
 - An OpenRouter API key for agentgateway (`OPENROUTER_API_KEY`)
-- Network access while building the goose job image (it downloads the pinned
-  goose release)
+- Network access while building the job images (they download pinned goose,
+  Node, JDK, Ghidra, and REA releases)
+- About 4 GiB of disk and several minutes for the optional reverse image
 
 goosetown relies on goose subagents and tool calling. Use a model with
 reliable tool calling; small free models may ignore the delegation workflow and
@@ -112,6 +114,13 @@ answer directly.
    ./scripts/build-goose-image.sh
    ```
 
+   For the optional reverse-engineering sandbox (REA + Ghidra), build the
+   second image as well:
+
+   ```bash
+   ./scripts/build-rea-image.sh
+   ```
+
 5. Start the stack:
 
    ```bash
@@ -135,6 +144,11 @@ docker compose run --rm jobctl submit "Say hello"
 # Submit a job with a local file or binary (mounted into the CLI container)
 docker compose run --rm -v "$PWD:/data:ro" jobctl submit \
   "Inspect the uploaded binary" --upload /data/tool.bin
+
+# Submit into the reverse-engineering sandbox (REA + Ghidra)
+docker compose run --rm -v "$PWD:/data:ro" jobctl submit \
+  "Reverse engineer this binary and summarize its behavior" \
+  --sandbox reverse --upload /data/tool.bin
 
 # Read results
 docker compose run --rm jobctl results --from-beginning --idle-timeout 5
@@ -323,6 +337,7 @@ with a review prompt. It may update one reusable skill under
   "instruction": "Analyze the input data",
   "input": {"arbitrary": "JSON data"},
   "input_files": [],
+  "sandbox": "default",
   "multi_agent": true,
   "agents": [],
   "timeout_seconds": 300,
@@ -357,6 +372,52 @@ The job image is built with `goose_job/Dockerfile`:
 Build it with `./scripts/build-goose-image.sh`. The worker expects it in the
 rootless Podman storage and verifies it at startup (it can pull a registry
 image if `GOOSE_IMAGE` points to one).
+
+### Reverse-engineering sandbox
+
+`sandbox=reverse` selects a second image, built from
+`goose_job/Dockerfile.rea`, instead of the default image. It adds:
+
+- **REA** `6.8.0` as a local stdio MCP server (`rea mcp`), wired into goose as
+  the `rea` extension. The `rea` CLI is also on `PATH`.
+- **Ghidra** `12.1.4` with **Temurin JDK 21.0.13+9**, the combination verified
+  by REA.
+- Static RE tools: GDB, binutils, binwalk, YARA, strace, ltrace, nasm,
+  patchelf, 7-Zip, and Python libraries for Capstone, pyelftools, pefile, and
+  pwntools. REA can also use the bundled objdump and GDB.
+
+The reverse image starts from `kafkallm-goose-job:latest`, so build the normal
+image first. `scripts/build-rea-image.sh` does that automatically if the base
+image is missing. Both images are pinned and verified with SHA-256 at build
+time. The reverse image is roughly 3.3 GiB on disk. Verify the REA/Ghidra
+integration offline with:
+
+```bash
+podman run --rm --network none localhost/kafkallm-rea-job:latest \
+  rea doctor --provider ghidra --json
+```
+
+Use it from the GUI (sandbox selector) or the CLI:
+
+```bash
+docker compose run --rm -v "$PWD:/data:ro" jobctl submit \
+  "Analyze /workspace/inputs/tool.bin with REA and explain its network behavior" \
+  --sandbox reverse --upload /data/tool.bin
+```
+
+The job image is selected by an allowlisted enum, not an arbitrary image name.
+The worker still mounts only `/workspace`, `/jobboot`, the tools/config
+directories, and the persistent skills. The microVM still has no internet
+access; REA and Ghidra run fully offline against uploaded files. Ghidra is
+JVM-heavy, so set `GOOSE_JOB_RAM_MIB=4096` (or more) and raise
+`GOOSE_JOB_MEMORY_LIMIT` to leave room for the hypervisor overhead (for
+example `6g`) when using reverse jobs. The per-job reservation is the same for
+both sandboxes, so a larger value applies to all jobs on that worker.
+
+REA is MIT-licensed. Ghidra is Apache 2.0. The image also installs the Debian
+packages above under their respective licenses. REA's optional Frida
+integration is not installed, so dynamic instrumentation with Frida is not
+available out of the box.
 
 Per-job layout:
 
@@ -414,15 +475,18 @@ GOOSE_JOB_EXTRA_PACKAGES="openjdk-17-jre-headless" \
   ./scripts/build-goose-image.sh
 ```
 
-For larger changes, use a custom Dockerfile that extends the job image:
+For larger changes, use a custom Dockerfile that extends either job image:
 
 ```bash
+GOOSE_JOB_BASE_IMAGE=kafkallm-rea-job:latest \
+GOOSE_IMAGE=kafkallm-custom-job:latest \
 GOOSE_JOB_DOCKERFILE=goose_job/Dockerfile.example \
   ./scripts/build-goose-image.sh
 ```
 
-`goose_job/Dockerfile.example` shows how to add Ghidra and Java. Put the Ghidra
-release zip in the build context and adjust `GHIDRA_ZIP` if needed.
+`goose_job/Dockerfile.example` shows the pattern. If you extend the reverse
+image, it already contains REA, Ghidra, and JDK 21; add only the extra tools
+you need. The standard reverse sandbox itself is `goose_job/Dockerfile.rea`.
 
 To inspect the exact sandbox interactively, without a job and without network:
 
@@ -664,6 +728,6 @@ HTTP handler. They require neither a Podman daemon nor Redpanda.
 ```text
 src/kafkallm/       worker, GUI, Kafka, state, agents, goose runtime, models
 goose_job/          job image, goosetown template, skills, config and tool examples
-scripts/            build-goose-image.sh, init-job-network.sh, sandbox-shell.sh, poc-krun.sh
+scripts/            build-goose-image.sh, build-rea-image.sh, init-job-network.sh, sandbox-shell.sh, poc-krun.sh
 tests/              unit tests
 ```

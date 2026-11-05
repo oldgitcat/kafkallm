@@ -15,6 +15,8 @@ x-app-environment: &app-environment
   GOOSE_PROVIDER: ${GOOSE_PROVIDER:-}
   GOOSE_STARTUP_TIMEOUT_SECONDS: ${GOOSE_STARTUP_TIMEOUT_SECONDS:-300}
   GOOSE_IMAGE: ${GOOSE_IMAGE:-kafkallm-goose-job:latest}
+  # Optional reverse-engineering sandbox (REA + Ghidra).
+  GOOSE_RE_IMAGE: ${GOOSE_RE_IMAGE:-kafkallm-rea-job:latest}
   GOOSE_JOB_DOCKER_HOST: ${GOOSE_JOB_DOCKER_HOST:-tcp://127.0.0.1:2375}
   GOOSE_JOB_RAM_MIB: ${GOOSE_JOB_RAM_MIB:-2048}
   GOOSE_JOB_CPUS: ${GOOSE_JOB_CPUS:-2}
