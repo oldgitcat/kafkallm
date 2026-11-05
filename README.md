@@ -482,11 +482,20 @@ Open <http://localhost:5000> and use the **Traces** tab. Each trace includes the
 job span, the goose microVM span, durations, steps, token usage, artifacts, and
 errors.
 
+MLflow receives two kinds of traces:
+
+- **Job traces** from the worker: `job.submit`, `job.handle`, `agent.run`, and
+  `goose.job.vm.run`, with steps, token usage, artifacts, and errors.
+- **LLM request traces** from agentgateway: request model, status, duration, and
+  token usage for every call that passes through the gateway.
+
 MLflow is configured with:
 
 ```dotenv
 MLFLOW_ENABLED=true
 MLFLOW_TRACKING_URI=http://mlflow:5000
+MLFLOW_OTLP_HOST=mlflow
+MLFLOW_OTLP_PORT=5000
 MLFLOW_EXPERIMENT_ID=0
 ```
 

@@ -201,6 +201,10 @@ services:
       # replaces with the provider key before forwarding upstream.
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       LLM_GATEWAY_VIRTUAL_KEY: ${LLM_GATEWAY_VIRTUAL_KEY:-}
+      MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://mlflow:5000}
+      MLFLOW_OTLP_HOST: ${MLFLOW_OTLP_HOST:-mlflow}
+      MLFLOW_OTLP_PORT: ${MLFLOW_OTLP_PORT:-5000}
+      MLFLOW_EXPERIMENT_ID: ${MLFLOW_EXPERIMENT_ID:-0}
     volumes:
       - ./agentgateway/config.yaml:/config/config.yaml:ro,z
     ports:
