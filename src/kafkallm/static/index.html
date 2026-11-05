@@ -65,6 +65,12 @@
       gap: 20px;
       align-items: start;
     }
+    main > *,
+    .stack,
+    .stack > *,
+    section {
+      min-width: 0;
+    }
     @media (max-width: 860px) {
       header { padding-top: 24px; }
       main { grid-template-columns: 1fr; }
@@ -301,7 +307,13 @@
       background: var(--panel-soft);
       color: var(--text);
     }
-    #jobs { overflow-x: auto; }
+    #jobs {
+      max-width: 100%;
+      overflow-x: auto;
+    }
+    #jobs table {
+      min-width: 680px;
+    }
     #detail section {
       margin-top: 24px;
       padding: 20px 0 0;
