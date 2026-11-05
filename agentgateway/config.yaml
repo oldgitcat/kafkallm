@@ -1,5 +1,10 @@
 # yaml-language-server: $schema=https://agentgateway.dev/schema/config
 #
+# The admin UI is published on 127.0.0.1 by Compose, but the process must bind
+# it on all container interfaces for the port mapping to work.
+config:
+  adminAddr: "0.0.0.0:15000"
+#
 # agentgateway holds the real OpenRouter key. Clients authenticate with a
 # virtual key and never see the provider credential. The virtual key comes from
 # .env, so this file is safe to commit.

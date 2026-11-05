@@ -208,6 +208,8 @@ services:
       # host.containers.internal is mapped to the host-side pasta address.
       # The virtual key still gates every request.
       - "${LLM_GATEWAY_BIND:-0.0.0.0}:${LLM_GATEWAY_PORT:-8091}:4000"
+      # agentgateway admin UI; localhost only.
+      - "127.0.0.1:${AGENTGATEWAY_UI_PORT:-15000}:15000"
     restart: unless-stopped
     read_only: true
     tmpfs:
