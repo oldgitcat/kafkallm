@@ -6,137 +6,292 @@
   <title>Kafkallm · goose jobs</title>
   <style>
     :root {
-      color-scheme: dark;
-      --bg: #12100e;
-      --panel: #1c1814;
-      --panel-2: #241f1a;
-      --border: #3a3128;
-      --text: #efe6d8;
-      --muted: #a89782;
-      --accent: #d99a4e;
-      --accent-2: #7fb069;
-      --danger: #d96c5f;
-      --running: #6fa8dc;
-      --queued: #b8a06a;
+      color-scheme: light;
+      --bg: #f7f7f5;
+      --panel: #ffffff;
+      --panel-soft: #fafafa;
+      --text: #18181b;
+      --muted: #71717a;
+      --border: #e4e4e7;
+      --border-soft: #f0f0f1;
+      --accent: #18181b;
+      --accent-soft: #f4f4f5;
+      --ok: #15803d;
+      --warn: #a16207;
+      --err: #b91c1c;
+      --info: #1d4ed8;
     }
     * { box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; }
     body {
       margin: 0;
-      background:
-        radial-gradient(1200px 600px at 10% -10%, #2a2118 0%, transparent 60%),
-        var(--bg);
+      background: var(--bg);
       color: var(--text);
-      font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      font: 14px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
     }
     header {
-      padding: 28px 32px 18px;
-      border-bottom: 1px solid var(--border);
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 40px 24px 24px;
       display: flex;
-      align-items: baseline;
-      gap: 16px;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 24px;
       flex-wrap: wrap;
     }
-    header h1 { margin: 0; font-size: 24px; letter-spacing: .3px; }
-    header .sub { color: var(--muted); font-size: 13px; }
+    header h1 {
+      margin: 0;
+      font-size: 21px;
+      font-weight: 650;
+      letter-spacing: -0.02em;
+    }
+    header .sub {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    header a.sub {
+      text-decoration: none;
+    }
+    header a.sub:hover {
+      color: var(--text);
+    }
     main {
-      max-width: 1280px;
+      max-width: 1200px;
       margin: 0 auto;
-      padding: 24px 32px 64px;
+      padding: 0 24px 80px;
       display: grid;
-      grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
-      gap: 24px;
+      grid-template-columns: minmax(300px, 380px) minmax(0, 1fr);
+      gap: 20px;
       align-items: start;
     }
-    @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+    @media (max-width: 860px) {
+      header { padding-top: 24px; }
+      main { grid-template-columns: 1fr; }
+    }
     section {
       background: var(--panel);
       border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 18px;
+      border-radius: 8px;
+      padding: 20px;
     }
-    h2 { margin: 0 0 14px; font-size: 15px; text-transform: uppercase; letter-spacing: 1.2px; color: var(--muted); }
-    label { display: block; margin: 12px 0 6px; font-size: 13px; color: var(--muted); }
+    h2 {
+      margin: 0 0 16px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--muted);
+    }
+    label {
+      display: block;
+      margin: 14px 0 6px;
+      font-size: 12px;
+      font-weight: 550;
+      color: var(--muted);
+    }
     input, textarea, select {
       width: 100%;
-      background: var(--panel-2);
+      background: #fff;
       color: var(--text);
       border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 10px 12px;
+      border-radius: 6px;
+      padding: 9px 10px;
       font: inherit;
+      outline: none;
+      transition: border-color .15s ease, box-shadow .15s ease;
     }
-    textarea { min-height: 150px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
-    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    button {
-      margin-top: 16px;
-      width: 100%;
-      padding: 12px 16px;
-      border: 0;
-      border-radius: 8px;
-      background: linear-gradient(180deg, #e2a958, #c9863c);
-      color: #21160a;
-      font-weight: 700;
-      font-size: 14px;
+    input:focus, textarea:focus, select:focus {
+      border-color: #a1a1aa;
+      box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+    textarea {
+      min-height: 140px;
+      resize: vertical;
+    }
+    #input {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+    }
+    input[type="file"] {
+      color: var(--muted);
+      font-size: 12px;
+      padding: 8px;
+    }
+    input[type="file"]::file-selector-button {
+      margin-right: 10px;
+      padding: 6px 10px;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      background: var(--panel-soft);
+      color: var(--text);
+      font: inherit;
       cursor: pointer;
     }
-    button:disabled { opacity: .55; cursor: wait; }
-    .hint { color: var(--muted); font-size: 12px; margin-top: 10px; }
-    .message { margin-top: 12px; font-size: 13px; }
-    .message.error { color: var(--danger); }
-    .message.ok { color: var(--accent-2); }
-    table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
-    th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .7px; }
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    button {
+      margin-top: 18px;
+      width: 100%;
+      padding: 10px 14px;
+      border: 0;
+      border-radius: 6px;
+      background: var(--accent);
+      color: #fff;
+      font-weight: 600;
+      font-size: 13px;
+      cursor: pointer;
+      transition: background .15s ease, opacity .15s ease;
+    }
+    button:hover { background: #27272a; }
+    button:disabled { opacity: .45; cursor: wait; }
+    .hint {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+      margin-top: 8px;
+    }
+    .message {
+      min-height: 18px;
+      margin-top: 10px;
+      font-size: 12px;
+    }
+    .message.error { color: var(--err); }
+    .message.ok { color: var(--ok); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th {
+      padding: 0 8px 8px;
+      border-bottom: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 600;
+      text-align: left;
+    }
+    td {
+      padding: 10px 8px;
+      border-bottom: 1px solid var(--border-soft);
+      vertical-align: middle;
+    }
     tbody tr { cursor: pointer; }
-    tbody tr:hover, tbody tr.selected { background: #2a241d; }
+    tbody tr:hover { background: var(--panel-soft); }
+    tbody tr.selected { background: var(--accent-soft); }
+    tbody tr:last-child td { border-bottom: 0; }
     .badge {
       display: inline-block;
-      padding: 2px 8px;
-      border-radius: 999px;
-      font-size: 11px;
-      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 4px;
+      background: var(--accent-soft);
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 650;
+      letter-spacing: .03em;
       text-transform: uppercase;
-      letter-spacing: .5px;
-      border: 1px solid currentColor;
+      white-space: nowrap;
     }
-    .badge.queued { color: var(--queued); }
-    .badge.running { color: var(--running); }
-    .badge.succeeded { color: var(--accent-2); }
-    .badge.failed, .badge.invalid { color: var(--danger); }
-    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+    .badge.queued { background: #fef3c7; color: var(--warn); }
+    .badge.running { background: #dbeafe; color: var(--info); }
+    .badge.succeeded { background: #dcfce7; color: var(--ok); }
+    .badge.failed, .badge.invalid { background: #fee2e2; color: var(--err); }
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+    }
     .muted { color: var(--muted); }
-    .snippet { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .empty { color: var(--muted); padding: 18px 4px; }
-    #detail { margin-top: 24px; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px 18px; margin-bottom: 16px; }
-    .field .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; }
-    .field .v { font-size: 13px; word-break: break-word; }
-    .block { margin-top: 14px; }
-    .block h3 { margin: 0 0 6px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .8px; }
+    .snippet {
+      max-width: 360px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .empty {
+      padding: 28px 8px;
+      color: var(--muted);
+      font-size: 13px;
+      text-align: center;
+    }
+    #jobs { overflow-x: auto; }
+    #detail section {
+      margin-top: 24px;
+      padding: 20px 0 0;
+      border: 0;
+      border-top: 1px solid var(--border);
+      border-radius: 0;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 14px 20px;
+      margin-bottom: 4px;
+    }
+    .field .k {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .field .v {
+      margin-top: 2px;
+      font-size: 13px;
+      word-break: break-word;
+    }
+    .block { margin-top: 20px; }
+    .block h3 {
+      margin: 0 0 7px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 600;
+    }
     pre {
       margin: 0;
       padding: 12px;
-      background: #0e0c0a;
+      background: var(--panel-soft);
       border: 1px solid var(--border);
-      border-radius: 8px;
+      border-radius: 6px;
       overflow: auto;
-      max-height: 360px;
+      max-height: 320px;
       white-space: pre-wrap;
       word-break: break-word;
-      font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+      font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
     }
-    .events { display: flex; flex-direction: column; gap: 6px; }
-    .event { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: var(--panel-2); }
-    .event .line { display: flex; gap: 10px; flex-wrap: wrap; align-items: baseline; }
-    .event .type { font-weight: 700; }
-    .event .err { color: var(--danger); font-size: 12px; margin-top: 4px; white-space: pre-wrap; }
-    a { color: var(--accent); }
+    .events { border-top: 1px solid var(--border-soft); }
+    .event {
+      padding: 10px 0;
+      border: 0;
+      border-bottom: 1px solid var(--border-soft);
+      border-radius: 0;
+      background: transparent;
+    }
+    .event:last-child { border-bottom: 0; }
+    .event .line {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: baseline;
+    }
+    .event .type { font-weight: 600; }
+    .event .err {
+      margin-top: 4px;
+      color: var(--err);
+      font-size: 12px;
+      white-space: pre-wrap;
+    }
+    a {
+      color: var(--text);
+      text-underline-offset: 2px;
+    }
   </style>
 </head>
 <body>
   <header>
-    <h1>Kafkallm</h1>
-    <span class="sub">goose + goosetown jobs · Kafka is the queue, state store, and audit log</span>
+    <div>
+      <h1>Kafkallm</h1>
+      <p class="sub">goose jobs · Kafka queue · isolated microVMs</p>
+    </div>
+    <a class="sub" href="http://localhost:5000" target="_blank" rel="noreferrer">MLflow traces ↗</a>
   </header>
 
   <main>
