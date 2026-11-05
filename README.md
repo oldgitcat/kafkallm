@@ -197,6 +197,10 @@ Redpanda Console runs at <http://localhost:8080>. MLflow runs at
      -i /jobboot/main-prompt.txt
    ```
 
+   In multi-agent mode the worker additionally enables the `summon` and
+   `skills` builtins and writes the selected flock to `.claude/agents/*.md`,
+   so `delegate(source: "...")` can resolve the role names.
+
 6. goose talks the OpenAI protocol to `http://host.containers.internal:8091`,
    which resolves to the proxy. The proxy forwards only to agentgateway on the
    host; the job cannot reach the internet, the LAN, Docker Compose services, or
@@ -306,9 +310,13 @@ name, role, description, instructions, and a list of skills.
 
 The job form has **Use goosetown multi-agent flock**. When it is enabled, the
 selected agents are embedded in the job as a snapshot. The worker writes them
-to `/jobboot/agents.json`, tells the orchestrator to use them as delegate
-roles, and keeps the normal goosetown skills. When it is disabled, the prompt
-runs a single goose agent without delegation.
+to `/jobboot/agents.json` and, more importantly, renders each non-orchestrator
+role as an agent source at `.claude/agents/<agent_id>.md`. goose's `summon`
+extension discovers those files, so the orchestrator can call
+`delegate(source: "<role name>", ...)` and `load(source: ...)`. The run also
+enables the `skills` builtin so the role skills are discoverable. When the
+flock is disabled, the prompt runs a single goose agent without `summon` or
+delegation.
 
 A separate persistent goosetown container is not used: the actual multi-agent
 flock runs inside each disposable job microVM. This keeps the jobs isolated and
@@ -379,7 +387,9 @@ image if `GOOSE_IMAGE` points to one).
 `goose_job/Dockerfile.rea`, instead of the default image. It adds:
 
 - **REA** `6.8.0` as a local stdio MCP server (`rea mcp`), wired into goose as
-  the `rea` extension. The `rea` CLI is also on `PATH`.
+  the `rea` extension. The `rea` CLI is also on `PATH`. The MCP input schema
+  profile is `compact`; output schemas are set to `off` to keep the tool list
+  small (`full` is the other valid output profile).
 - **Ghidra** `12.1.4` with **Temurin JDK 21.0.13+9**, the combination verified
   by REA.
 - Static RE tools: GDB, binutils, binwalk, YARA, strace, ltrace, nasm,

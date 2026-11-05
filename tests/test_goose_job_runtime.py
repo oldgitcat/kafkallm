@@ -522,7 +522,7 @@ def test_reverse_sandbox_uses_re_image_and_rea_environment(tmp_path: Path) -> No
     assert environment["GHIDRA_INSTALL_DIR"] == "/opt/ghidra"
     assert environment["JAVA_HOME"] == "/opt/java/openjdk"
     assert environment["REA_MCP_INPUT_SCHEMA_PROFILE"] == "compact"
-    assert environment["REA_MCP_OUTPUT_SCHEMA_PROFILE"] == "compact"
+    assert environment["REA_MCP_OUTPUT_SCHEMA_PROFILE"] == "off"
     assert "REA_GHIDRA_STARTUP_TIMEOUT_MS" in environment
 
 
@@ -563,6 +563,9 @@ def test_run_script_enables_rea_only_for_reverse_sandbox() -> None:
     assert "TMPDIR=/workspace/.scratch/tmp" in _VM_RUN_SCRIPT
     assert "chmod -R a+rwX /workspace/.scratch" in _VM_RUN_SCRIPT
     assert 'KAFKALLM_SANDBOX:-default' in _VM_RUN_SCRIPT
+    # Multi-agent runs need goose's summon and skills builtins.
+    assert 'builtins="$builtins,summon,skills"' in _VM_RUN_SCRIPT
+    assert '--with-builtin "$builtins"' in _VM_RUN_SCRIPT
     # The learning pass does not need REA and must not start Ghidra again.
     assert _VM_RUN_SCRIPT.count('"$@"') == 1
 
@@ -629,6 +632,7 @@ def test_prompt_and_bundle_include_selected_agents(tmp_path: Path) -> None:
     prompt = runner._build_prompt(job)
     assert "Goosetown multi-agent mode is ON" in prompt
     assert "Security reviewer (reviewer)" in prompt
+    assert "delegate(source:" in prompt
     assert "/jobboot/agents.json" in prompt
     assert "KAFKALLM_MULTI_AGENT" not in prompt
 
@@ -639,6 +643,43 @@ def test_prompt_and_bundle_include_selected_agents(tmp_path: Path) -> None:
         (workdir / "bundle" / "agents.json").read_text(encoding="utf-8")
     )
     assert bundle[0]["agent_id"] == "security-reviewer"
+    source = (workdir / ".claude" / "agents" / "security-reviewer.md").read_text(
+        encoding="utf-8"
+    )
+    assert 'name: "Security reviewer"' in source
+    assert "Review for injection and secret leaks." in source
+    assert "load_skill" in source
+    assert "gtwall" in source
+
+
+def test_orchestrator_is_not_exposed_as_a_delegate(tmp_path: Path) -> None:
+    runner = GooseJobRunner(_settings_for(tmp_path))
+    orchestrator = AgentSpec(
+        agent_id="orchestrator",
+        name="Orchestrator",
+        role="orchestrator",
+        description="Coordinates the flock.",
+    )
+    worker = AgentSpec(
+        agent_id="worker",
+        name="Worker",
+        role="worker",
+        description="Builds artifacts.",
+    )
+    job = Job(
+        instruction="Build it",
+        multi_agent=True,
+        agents=[orchestrator, worker],
+    )
+    workdir = tmp_path / "vm"
+
+    runner._prepare_workdir(workdir, _workspace(tmp_path), "prompt", job)
+
+    agents_dir = workdir / ".claude" / "agents"
+    assert sorted(path.name for path in agents_dir.iterdir()) == ["worker.md"]
+    prompt = runner._build_prompt(job)
+    assert "Worker (worker)" in prompt
+    assert "Orchestrator (orchestrator)" not in prompt
 
 
 def test_single_agent_prompt_disables_delegation(tmp_path: Path) -> None:

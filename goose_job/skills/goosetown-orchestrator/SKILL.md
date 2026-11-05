@@ -14,11 +14,19 @@ single-step work yourself.
 
 ## Delegate types
 
-- `goosetown-researcher-local` — searches `inputs/`, `WORK_LOGS/`, `.scratch/`,
-  and `.claude/skills/` for prior context. Read-only.
-- `goosetown-worker` — builds code, scripts, configs, and data files.
-- `goosetown-writer` — synthesizes several sources into one document.
-- `goosetown-reviewer` — reviews an output against criteria and reports issues.
+The selected flock is installed as agent sources under `.claude/agents/` and is
+exposed by goose's `summon` extension. Call `load()` once to list the exact
+source names; then use `delegate(source: "<name>", instructions: "...")`.
+Typical roles:
+
+- local researcher — searches `inputs/`, `WORK_LOGS/`, `.scratch/`, and
+  `.claude/skills/` for prior context. Read-only.
+- worker — builds code, scripts, configs, and data files.
+- writer — synthesizes several sources into one document.
+- reviewer — reviews an output against criteria and reports issues.
+
+If no flock roles were selected, use `delegate(instructions: ...)` and load the
+built-in `goosetown-*` skills in the delegate task.
 
 There is no internet access. Do not use the network researchers.
 

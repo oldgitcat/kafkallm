@@ -13,7 +13,7 @@ from typing import Any
 
 from kafkallm.audit import JobAudit
 from kafkallm.job_network import ensure_job_network
-from kafkallm.models import AgentResult, Job
+from kafkallm.models import AgentResult, AgentSpec, Job
 from kafkallm.settings import Settings
 from kafkallm.telemetry import get_tracer, set_content, set_error
 
@@ -82,6 +82,14 @@ started=$(date +%s)
 budget=${KAFKALLM_JOB_BUDGET_SECONDS:-0}
 main_timeout=${KAFKALLM_JOB_MAIN_TIMEOUT:-300}
 
+# Summon provides the delegate/load tools, and Skills makes the goosetown role
+# skills discoverable inside the orchestrator and its delegates. Keep both out
+# of single-agent runs so those jobs cannot spawn subagents by accident.
+builtins=developer
+if [ "${KAFKALLM_MULTI_AGENT:-0}" = "1" ]; then
+  builtins="$builtins,summon,skills"
+fi
+
 # The reverse-engineering image ships REA as a local stdio MCP server. Give
 # Ghidra a large scratch area on the host-backed workspace, not the small /tmp
 # tmpfs. The default image does not have the wrapper and never gets the flag.
@@ -102,7 +110,7 @@ fi
 
 timeout --signal=TERM "$main_timeout" \
   ./goose run --no-session -q --output-format json \
-    --with-builtin developer \
+    --with-builtin "$builtins" \
     --max-turns "${GOOSE_MAX_TURNS:-60}" \
     "$@" \
     -i /jobboot/main-prompt.txt \
@@ -148,6 +156,50 @@ _REFLECT_PROMPT = """Review the job that just completed and improve the reusable
 
 Keep it short: at most one skill change and a few tool calls. Return a one-line summary.
 """
+
+
+def _agent_source(agent: AgentSpec) -> str:
+    """Render one selected flock member as a goosetown agent source.
+
+    goose's Summon extension discovers agent sources from `.claude/agents/*.md`
+    and exposes them through `delegate(source: "<name>")`. The YAML values are
+    JSON strings because JSON is valid YAML and safely quotes multiline text.
+    """
+    description = agent.description.strip() or f"{agent.role} delegate."
+    instructions = agent.instructions.strip() or "No additional role instructions."
+    if agent.skills:
+        skills = "\n".join(
+            f'- `{skill}`: call `load_skill(name: "{skill}")` before starting. '
+            "If that tool is unavailable, read "
+            f"`/workspace/.claude/skills/{skill}/SKILL.md` and follow it."
+            for skill in agent.skills
+        )
+    else:
+        skills = "- No reusable skill is assigned."
+    return (
+        "---\n"
+        f"name: {json.dumps(agent.name)}\n"
+        f"description: {json.dumps(description)}\n"
+        "---\n\n"
+        f"You are {agent.name}, the {agent.role} delegate in one isolated "
+        "Kafkallm job.\n\n"
+        f"{description}\n\n"
+        "Role instructions:\n"
+        f"{instructions}\n\n"
+        "Reusable skills:\n"
+        f"{skills}\n\n"
+        "Coordination:\n"
+        "- Your gtwall ID is provided in the delegate instructions. FIRST "
+        "ACTION: run `./gtwall --usage`, then post and read updates with "
+        "`./gtwall <your-id>`.\n"
+        "- Work only on the files assigned by the orchestrator. Other delegates "
+        "may be working in parallel, so never edit files they own.\n"
+        "- Write results incrementally to the exact output path assigned to "
+        "you, and report that path when you finish.\n"
+        "- You cannot spawn further delegates.\n"
+        "- There is no web access. Use only /workspace and the installed "
+        "command-line tools.\n"
+    )
 
 
 class GooseJobRuntimeError(RuntimeError):
@@ -774,6 +826,16 @@ class GooseJobRunner:
         (workdir / "bundle").mkdir(parents=True, exist_ok=True)
         (workdir / ".kafkallm").mkdir(parents=True, exist_ok=True)
         (workdir / ".claude").mkdir(parents=True, exist_ok=True)
+        agents_dir = workdir / ".claude" / "agents"
+        agents_dir.mkdir(parents=True, exist_ok=True)
+        if job.multi_agent:
+            for agent in job.agents:
+                # The orchestrator is the main session, not a delegate.
+                if agent.role == "orchestrator":
+                    continue
+                (agents_dir / f"{agent.agent_id}.md").write_text(
+                    _agent_source(agent), encoding="utf-8"
+                )
         inputs = workspace / "inputs"
         if inputs.is_dir():
             for entry in inputs.rglob("*"):
@@ -809,11 +871,14 @@ class GooseJobRunner:
             workdir,
             workdir / ".kafkallm",
             workdir / ".claude",
+            agents_dir,
             workdir / "inputs",
             workdir / "outputs",
             bundle,
         ):
             os.chmod(directory, 0o777)
+        for agent_file in agents_dir.glob("*.md"):
+            os.chmod(agent_file, 0o644)
 
     def _create_container(
         self,
@@ -1060,7 +1125,7 @@ class GooseJobRunner:
                     # caps the total run.
                     "REA_GHIDRA_STARTUP_TIMEOUT_MS": "900000",
                     "REA_MCP_INPUT_SCHEMA_PROFILE": "compact",
-                    "REA_MCP_OUTPUT_SCHEMA_PROFILE": "compact",
+                    "REA_MCP_OUTPUT_SCHEMA_PROFILE": "off",
                 }
             )
         if self.settings.goose_model:
@@ -1073,23 +1138,41 @@ class GooseJobRunner:
                 "You are the goosetown orchestrator for one isolated Kafkallm "
                 "job. Follow the goosetown-orchestrator skill.\n"
             )
-            if job.agents:
+            delegates = [
+                agent for agent in job.agents if agent.role != "orchestrator"
+            ]
+            if delegates:
                 flock = "\n".join(
                     f"- {agent.name} ({agent.role}): {agent.description}"
-                    for agent in job.agents
+                    for agent in delegates
                 )
                 mode = (
-                    "Goosetown multi-agent mode is ON. Use the selected flock "
-                    "as delegate roles. Read /jobboot/agents.json for the full "
-                    "role instructions and skills, and pass the relevant role "
-                    "instructions to each delegate you spawn.\n"
+                    "Goosetown multi-agent mode is ON. The summon extension "
+                    "provides the `delegate` and `load` tools.\n"
+                    "The selected flock is installed as agent sources in "
+                    "/workspace/.claude/agents. Call `load()` once to list "
+                    "them.\n"
                     f"Selected flock:\n{flock}\n"
+                    "For each independent piece, call "
+                    '`delegate(source: "<exact role name>", '
+                    'instructions: "...")`. Give the delegate the gtwall '
+                    "preamble, a unique gtwall ID, exact files it owns, and "
+                    "acceptance criteria. Use `load(source: ...)` only to read "
+                    "a role into your own context. You can also use "
+                    "`delegate(instructions: ...)` for ad-hoc work.\n"
+                    "Read /jobboot/agents.json for the complete selected "
+                    "flock metadata. Delegate nontrivial artifacts and use a "
+                    "second role to review them; only do truly trivial "
+                    "single-step work yourself.\n"
                 )
             else:
                 mode = (
-                    "Goosetown multi-agent mode is ON. Use the built-in "
-                    "goosetown role skills (researcher-local, worker, writer, "
-                    "reviewer) when delegating.\n"
+                    "Goosetown multi-agent mode is ON. The summon extension "
+                    "provides the `delegate` and `load` tools. No flock roles "
+                    "were selected, so use `delegate(instructions: ...)` with "
+                    "the built-in goosetown role skills (researcher-local, "
+                    "worker, writer, reviewer) and load those skills in the "
+                    "delegate task.\n"
                 )
         else:
             role = "You are the goose agent for one isolated Kafkallm job.\n"
