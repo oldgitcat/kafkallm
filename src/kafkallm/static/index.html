@@ -332,9 +332,15 @@
     #jobs table {
       min-width: 760px;
     }
-    #detail section {
-      margin-top: 24px;
-      padding: 20px 0 0;
+    tbody tr.detail-row { cursor: default; }
+    tbody tr.detail-row:hover { background: transparent; }
+    .detail-row > td {
+      padding: 0 8px 18px;
+      background: var(--panel-soft);
+    }
+    .detail-row section {
+      margin: 0;
+      padding: 18px 4px 4px;
       border: 0;
       border-top: 1px solid var(--border);
       border-radius: 0;
@@ -489,12 +495,11 @@
     <section>
       <h2>Jobs</h2>
       <div id="jobs" class="empty">Loading…</div>
-      <div id="detail"></div>
     </section>
   </main>
 
   <script>
-    const state = { jobs: [], agents: [], selected: null, selectedAgents: null, timer: null };
+    const state = { jobs: [], agents: [], selected: null, selectedAgents: null, detail: null, detailError: null, timer: null };
     const $ = (id) => document.getElementById(id);
 
     function esc(value) {
@@ -641,8 +646,10 @@
         return;
       }
       $("jobs").className = "";
-      const rows = state.jobs.map((job) => `
-        <tr data-id="${esc(job.job_id)}" class="${job.job_id === state.selected ? "selected" : ""}">
+      const rows = state.jobs.map((job) => {
+        const selected = job.job_id === state.selected;
+        return `
+        <tr data-id="${esc(job.job_id)}" class="${selected ? "selected" : ""}">
           <td>${badge(job.status)}</td>
           <td class="mono">${esc(job.job_id)}</td>
           <td><div class="snippet" title="${esc(job.instruction)}">${esc(job.instruction)}</div></td>
@@ -650,14 +657,27 @@
           <td class="muted">${esc(fmtTime(job.submitted_at))}</td>
           <td class="muted">${esc(duration(job))}</td>
           <td class="muted">${esc(job.steps ?? 0)}</td>
-        </tr>`).join("");
+        </tr>${selected ? renderDetailRow() : ""}`;
+      }).join("");
       $("jobs").innerHTML = `<table>
         <thead><tr><th>Status</th><th>Job</th><th>Instruction</th><th>Sandbox</th><th>Submitted</th><th>Duration</th><th>Steps</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>`;
-      for (const row of $("jobs").querySelectorAll("tbody tr")) {
+      for (const row of $("jobs").querySelectorAll("tbody tr[data-id]")) {
         row.addEventListener("click", () => selectJob(row.dataset.id));
       }
+    }
+
+    function renderDetailRow() {
+      let content;
+      if (state.detailError) {
+        content = `<section><h2>Job detail</h2><div class="message error">${esc(state.detailError)}</div></section>`;
+      } else if (state.detail && state.detail.job_id === state.selected) {
+        content = renderDetail(state.detail);
+      } else {
+        content = `<section><h2>Job detail</h2><span class="muted">Loading…</span></section>`;
+      }
+      return `<tr class="detail-row"><td colspan="7">${content}</td></tr>`;
     }
 
     async function loadJobs() {
@@ -673,18 +693,30 @@
 
     async function selectJob(jobId) {
       state.selected = jobId;
+      state.detail = null;
+      state.detailError = null;
       renderJobs();
       await loadDetail();
     }
 
     async function loadDetail() {
-      if (!state.selected) { $("detail").innerHTML = ""; return; }
-      try {
-        const job = await api(`/api/jobs/${encodeURIComponent(state.selected)}`);
-        $("detail").innerHTML = renderDetail(job);
-      } catch (error) {
-        $("detail").innerHTML = `<div class="message error">${esc(error.message)}</div>`;
+      if (!state.selected) {
+        state.detail = null;
+        state.detailError = null;
+        return;
       }
+      const selected = state.selected;
+      try {
+        const job = await api(`/api/jobs/${encodeURIComponent(selected)}`);
+        if (state.selected !== selected) return;
+        state.detail = job;
+        state.detailError = null;
+      } catch (error) {
+        if (state.selected !== selected) return;
+        state.detail = null;
+        state.detailError = error.message;
+      }
+      renderJobs();
     }
 
     function renderDetail(job) {
