@@ -563,6 +563,8 @@ def test_run_script_enables_rea_only_for_reverse_sandbox() -> None:
     assert "TMPDIR=/workspace/.scratch/tmp" in _VM_RUN_SCRIPT
     assert "chmod -R a+rwX /workspace/.scratch" in _VM_RUN_SCRIPT
     assert 'KAFKALLM_SANDBOX:-default' in _VM_RUN_SCRIPT
+    # The learning pass does not need REA and must not start Ghidra again.
+    assert _VM_RUN_SCRIPT.count('"$@"') == 1
 
 
 def test_vm_does_not_pass_provider_credentials(

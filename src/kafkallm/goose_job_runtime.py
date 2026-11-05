@@ -128,7 +128,6 @@ if [ "${KAFKALLM_JOB_REFLECT_ENABLED:-0}" = "1" ]; then
       ./goose run --no-session -q --output-format json \
         --with-builtin developer \
         --max-turns "${GOOSE_REFLECT_MAX_TURNS:-20}" \
-        "$@" \
         -i /jobboot/reflect-prompt.txt \
       > "$RESULT_DIR/reflect.json" 2> "$RESULT_DIR/reflect.err"
     echo "$?" > "$RESULT_DIR/reflect.exit"

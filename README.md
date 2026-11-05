@@ -401,7 +401,7 @@ Use it from the GUI (sandbox selector) or the CLI:
 
 ```bash
 docker compose run --rm -v "$PWD:/data:ro" jobctl submit \
-  "Analyze /workspace/inputs/tool.bin with REA and explain its network behavior" \
+  "Analyze the uploaded binary under /workspace/inputs with REA and explain its network behavior" \
   --sandbox reverse --upload /data/tool.bin
 ```
 
@@ -656,7 +656,8 @@ Upload local files or binaries:
 - **GUI:** use **Input files or binaries** in the submit form. The browser
   uploads to `POST /api/uploads`; the files are stored under
   `uploads/<uuid>/<filename>` in RustFS and attached to the job as
-  `input_files`. The job copies them into `/workspace/inputs`.
+  `input_files`. The job copies them into `/workspace/inputs` as
+  `NN-<filename>` (for example `00-tool.bin`).
 - **CLI:**
 
   ```bash
