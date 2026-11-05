@@ -353,6 +353,8 @@ class GooseJobRunner:
             budget=int(remaining),
             main_budget=main_budget,
             reflect_reserve=reflect_reserve,
+            multi_agent=job.multi_agent,
+            agent_count=len(job.agents),
         )
         created_at = int(time.time())
         workdir = self._workdir(job)
@@ -382,7 +384,7 @@ class GooseJobRunner:
         ) as span:
             set_content(span, "input.value", prompt)
             try:
-                self._prepare_workdir(workdir, workspace, prompt)
+                self._prepare_workdir(workdir, workspace, prompt, job)
                 self._ensure_extension_dirs()
                 proxy_ipv6 = self._ensure_proxy()
                 container = self._create_container(
@@ -722,7 +724,13 @@ class GooseJobRunner:
     def _workdir(self, job: Job) -> Path:
         return Path(self.settings.goose_job_workspace_root) / f"goose-vm-{job.run_id}"
 
-    def _prepare_workdir(self, workdir: Path, workspace: Path, prompt: str) -> None:
+    def _prepare_workdir(
+        self,
+        workdir: Path,
+        workspace: Path,
+        prompt: str,
+        job: Job,
+    ) -> None:
         shutil.rmtree(workdir, ignore_errors=True)
         (workdir / "inputs").mkdir(parents=True, exist_ok=True)
         (workdir / "outputs").mkdir(parents=True, exist_ok=True)
@@ -742,6 +750,15 @@ class GooseJobRunner:
         (bundle / "run-job.sh").write_text(_VM_RUN_SCRIPT, encoding="utf-8")
         (bundle / "main-prompt.txt").write_text(prompt, encoding="utf-8")
         (bundle / "reflect-prompt.txt").write_text(_REFLECT_PROMPT, encoding="utf-8")
+        (bundle / "agents.json").write_text(
+            json.dumps(
+                [agent.model_dump(mode="json") for agent in job.agents]
+                if job.multi_agent
+                else [],
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
         os.chmod(bundle / "run-job.sh", 0o755)
         skills_dir = Path(self.settings.goose_job_skills_dir)
         try:
@@ -948,6 +965,8 @@ class GooseJobRunner:
         budget: int,
         main_budget: int,
         reflect_reserve: int,
+        multi_agent: bool,
+        agent_count: int,
     ) -> dict[str, str]:
         if not self.settings.gateway_configured:
             raise GooseJobRuntimeError(
@@ -964,6 +983,9 @@ class GooseJobRunner:
             ),
             "KAFKALLM_TOOLS_DIR": "/opt/kafkallm/tools",
             "KAFKALLM_CONFIG_DIR": "/opt/kafkallm/config",
+            "KAFKALLM_AGENTS_PATH": "/jobboot/agents.json",
+            "KAFKALLM_MULTI_AGENT": "1" if multi_agent else "0",
+            "KAFKALLM_AGENT_COUNT": str(agent_count),
             "GOOSE_PATH_ROOT": "/opt/data/goose",
             "GOOSE_MODE": "auto",
             "GOOSE_DISABLE_KEYRING": "1",
@@ -976,7 +998,9 @@ class GooseJobRunner:
             "OPENAI_API_KEY": self.settings.llm_gateway_virtual_key,
             "GOOSE_MAX_TURNS": str(self.settings.goose_job_max_turns),
             "GOOSE_SUBAGENT_MAX_TURNS": str(self.settings.goose_job_subagent_max_turns),
-            "GOOSE_MAX_CONCURRENT_SUBAGENTS": "5",
+            "GOOSE_MAX_CONCURRENT_SUBAGENTS": str(
+                max(1, min(5, agent_count)) if agent_count else 5
+            ),
             "GOOSE_REFLECT_MAX_TURNS": "20",
             "KAFKALLM_JOB_BUDGET_SECONDS": str(max(0, budget)),
             "KAFKALLM_JOB_MAIN_TIMEOUT": str(main_budget + 10),
@@ -991,11 +1015,40 @@ class GooseJobRunner:
         return environment
 
     def _build_prompt(self, job: Job) -> str:
+        if job.multi_agent:
+            role = (
+                "You are the goosetown orchestrator for one isolated Kafkallm "
+                "job. Follow the goosetown-orchestrator skill.\n"
+            )
+            if job.agents:
+                flock = "\n".join(
+                    f"- {agent.name} ({agent.role}): {agent.description}"
+                    for agent in job.agents
+                )
+                mode = (
+                    "Goosetown multi-agent mode is ON. Use the selected flock "
+                    "as delegate roles. Read /jobboot/agents.json for the full "
+                    "role instructions and skills, and pass the relevant role "
+                    "instructions to each delegate you spawn.\n"
+                    f"Selected flock:\n{flock}\n"
+                )
+            else:
+                mode = (
+                    "Goosetown multi-agent mode is ON. Use the built-in "
+                    "goosetown role skills (researcher-local, worker, writer, "
+                    "reviewer) when delegating.\n"
+                )
+        else:
+            role = "You are the goose agent for one isolated Kafkallm job.\n"
+            mode = (
+                "Goosetown multi-agent mode is OFF. Do the job yourself; do "
+                "not delegate or spawn subagents.\n"
+            )
         return (
-            "You are the goosetown orchestrator for one isolated Kafkallm job.\n"
-            "Follow the goosetown-orchestrator skill. Decompose the job and "
-            "use parallel subagents (delegate/load) when that helps. Coordinate "
-            "through gtwall and synthesize the final result.\n"
+            role
+            + mode
+            + "Decompose the job when useful, coordinate through gtwall, and "
+            "synthesize the final result.\n"
             "Workspace root: /workspace\n"
             "Input files: /workspace/inputs\n"
             "Write all generated result files to: /workspace/outputs\n"

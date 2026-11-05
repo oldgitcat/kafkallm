@@ -34,16 +34,17 @@ def ensure_topics(settings: Settings) -> None:
             settings.events_topic,
         }
     }
-    topics[settings.state_topic] = NewTopic(
-        settings.state_topic,
-        num_partitions=settings.kafka_topic_partitions,
-        replication_factor=1,
-        config={
-            "cleanup.policy": "compact",
-            "retention.ms": "-1",
-            "min.cleanable.dirty.ratio": "0.01",
-        },
-    )
+    for name in {settings.state_topic, settings.agents_topic}:
+        topics[name] = NewTopic(
+            name,
+            num_partitions=settings.kafka_topic_partitions,
+            replication_factor=1,
+            config={
+                "cleanup.policy": "compact",
+                "retention.ms": "-1",
+                "min.cleanable.dirty.ratio": "0.01",
+            },
+        )
     futures = admin.create_topics(list(topics.values()))
     for name, future in futures.items():
         try:

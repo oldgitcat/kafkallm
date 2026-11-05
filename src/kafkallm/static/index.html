@@ -214,6 +214,93 @@
       font-size: 13px;
       text-align: center;
     }
+    .stack { display: grid; gap: 20px; align-items: start; }
+    .check {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 12px 0 4px;
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 500;
+    }
+    .check input { width: auto; }
+    .agent-options { display: grid; gap: 6px; margin-bottom: 4px; }
+    .agent-option {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 9px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 12px;
+    }
+    .agent-option input { width: auto; }
+    .agent-option .role {
+      margin-left: auto;
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .agent-list { display: grid; gap: 0; }
+    .agent-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 0;
+      border-bottom: 1px solid var(--border-soft);
+    }
+    .agent-row:last-child { border-bottom: 0; }
+    .agent-row.disabled { opacity: .55; }
+    .agent-row .info { flex: 1; min-width: 0; }
+    .agent-row .name { font-size: 13px; font-weight: 600; }
+    .agent-row .meta {
+      color: var(--muted);
+      font-size: 11px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .agent-row button {
+      width: auto;
+      margin: 0;
+      padding: 4px 8px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 500;
+    }
+    .agent-row button:hover {
+      background: var(--panel-soft);
+      color: var(--text);
+    }
+    details {
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+    }
+    summary {
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+    }
+    #agent-instructions {
+      min-height: 90px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+    }
+    .agent-actions { display: flex; gap: 8px; }
+    .agent-actions button { margin-top: 14px; }
+    button.secondary {
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid var(--border);
+    }
+    button.secondary:hover {
+      background: var(--panel-soft);
+      color: var(--text);
+    }
     #jobs { overflow-x: auto; }
     #detail section {
       margin-top: 24px;
@@ -295,6 +382,7 @@
   </header>
 
   <main>
+    <div class="stack">
     <section>
       <h2>Submit a job</h2>
       <form id="job-form">
@@ -307,6 +395,9 @@
         <label for="files">Input files or binaries</label>
         <input id="files" type="file" multiple>
         <div class="hint">Any file type. Files are uploaded to RustFS and copied into the job at <span class="mono">/workspace/inputs</span>.</div>
+
+        <label class="check"><input id="multi_agent" type="checkbox" checked> Use goosetown multi-agent flock</label>
+        <div id="agent-options" class="agent-options"><span class="muted">Loading agents…</span></div>
 
         <div class="row">
           <div>
@@ -325,6 +416,39 @@
       </form>
     </section>
 
+    <section id="agents-panel">
+      <h2>Goosetown agents</h2>
+      <div id="agents" class="agent-list"><span class="muted">Loading agents…</span></div>
+      <details>
+        <summary>Add or edit agent</summary>
+        <form id="agent-form">
+          <input id="agent-id" type="hidden">
+          <label for="agent-name">Name</label>
+          <input id="agent-name" required placeholder="e.g. Security reviewer">
+          <div class="row">
+            <div>
+              <label for="agent-role">Role</label>
+              <input id="agent-role" placeholder="reviewer">
+            </div>
+            <div>
+              <label for="agent-skills">Skills (comma separated)</label>
+              <input id="agent-skills" placeholder="goosetown-reviewer">
+            </div>
+          </div>
+          <label for="agent-description">Description</label>
+          <input id="agent-description" placeholder="What this agent is for">
+          <label for="agent-instructions">Instructions</label>
+          <textarea id="agent-instructions" class="small" placeholder="Role-specific instructions passed to the delegate."></textarea>
+          <label class="check"><input id="agent-enabled" type="checkbox" checked> Enabled</label>
+          <div class="agent-actions">
+            <button id="agent-save" type="submit">Save agent</button>
+            <button id="agent-reset" type="button" class="secondary">New</button>
+          </div>
+        </form>
+      </details>
+    </section>
+    </div>
+
     <section>
       <h2>Jobs</h2>
       <div id="jobs" class="empty">Loading…</div>
@@ -333,7 +457,7 @@
   </main>
 
   <script>
-    const state = { jobs: [], selected: null, timer: null };
+    const state = { jobs: [], agents: [], selected: null, selectedAgents: null, timer: null };
     const $ = (id) => document.getElementById(id);
 
     function esc(value) {
@@ -374,6 +498,101 @@
       for (const file of files) form.append("files", file, file.name);
       const data = await api("/api/uploads", { method: "POST", body: form });
       return data.input_files || [];
+    }
+
+    const enabledAgents = () => state.agents.filter((agent) => agent.enabled);
+
+    function renderAgentOptions() {
+      const container = $("agent-options");
+      const agents = enabledAgents();
+      if (!agents.length) {
+        container.innerHTML = `<span class="muted" style="font-size:12px">No enabled agents. The job will use the built-in goosetown roles.</span>`;
+        return;
+      }
+      const selected = state.selectedAgents === null
+        ? new Set(agents.map((agent) => agent.agent_id))
+        : new Set(state.selectedAgents);
+      container.innerHTML = agents.map((agent) => `
+        <label class="agent-option">
+          <input type="checkbox" value="${esc(agent.agent_id)}" ${selected.has(agent.agent_id) ? "checked" : ""}>
+          <span>${esc(agent.name)}</span>
+          <span class="role">${esc(agent.role)}</span>
+        </label>`).join("");
+      for (const input of container.querySelectorAll("input")) {
+        input.addEventListener("change", () => {
+          state.selectedAgents = Array.from(
+            container.querySelectorAll("input:checked")
+          ).map((item) => item.value);
+        });
+      }
+    }
+
+    function renderAgents() {
+      const container = $("agents");
+      if (!state.agents.length) {
+        container.innerHTML = `<span class="muted">No agents yet.</span>`;
+        return;
+      }
+      container.innerHTML = state.agents.map((agent) => `
+        <div class="agent-row ${agent.enabled ? "" : "disabled"}">
+          <div class="info">
+            <div class="name">${esc(agent.name)}</div>
+            <div class="meta">${esc(agent.role)} · ${esc((agent.skills || []).join(", ") || "no skills")}</div>
+            <div class="meta">${esc(agent.description || "")}</div>
+          </div>
+          <button type="button" data-edit="${esc(agent.agent_id)}">Edit</button>
+          ${agent.enabled ? `<button type="button" data-disable="${esc(agent.agent_id)}">Disable</button>` : ""}
+        </div>`).join("");
+      for (const button of container.querySelectorAll("[data-edit]")) {
+        button.addEventListener("click", () => editAgent(button.dataset.edit));
+      }
+      for (const button of container.querySelectorAll("[data-disable]")) {
+        button.addEventListener("click", () => disableAgent(button.dataset.disable));
+      }
+    }
+
+    async function loadAgents() {
+      try {
+        const data = await api("/api/agents");
+        state.agents = data.agents || [];
+        renderAgentOptions();
+        renderAgents();
+      } catch (error) {
+        $("agents").innerHTML = `<span class="message error">${esc(error.message)}</span>`;
+      }
+    }
+
+    function resetAgentForm() {
+      $("agent-id").value = "";
+      $("agent-name").value = "";
+      $("agent-role").value = "";
+      $("agent-skills").value = "";
+      $("agent-description").value = "";
+      $("agent-instructions").value = "";
+      $("agent-enabled").checked = true;
+    }
+
+    function editAgent(agentId) {
+      const agent = state.agents.find((item) => item.agent_id === agentId);
+      if (!agent) return;
+      $("agent-id").value = agent.agent_id;
+      $("agent-name").value = agent.name;
+      $("agent-role").value = agent.role;
+      $("agent-skills").value = (agent.skills || []).join(", ");
+      $("agent-description").value = agent.description || "";
+      $("agent-instructions").value = agent.instructions || "";
+      $("agent-enabled").checked = agent.enabled;
+      $("agents-panel").querySelector("details").open = true;
+      $("agent-name").focus();
+    }
+
+    async function disableAgent(agentId) {
+      try {
+        await api(`/api/agents/${encodeURIComponent(agentId)}`, { method: "DELETE" });
+        await loadAgents();
+      } catch (error) {
+        $("agents").innerHTML = `<span class="message error">${esc(error.message)}</span>`;
+      }
     }
 
     function renderJobs() {
@@ -460,6 +679,8 @@
           <div class="field"><div class="k">Submitted</div><div class="v">${esc(fmtTime(job.submitted_at))}</div></div>
           <div class="field"><div class="k">Started</div><div class="v">${esc(fmtTime(job.started_at))}</div></div>
           <div class="field"><div class="k">Finished</div><div class="v">${esc(fmtTime(job.finished_at))}</div></div>
+          <div class="field"><div class="k">Mode</div><div class="v">${job.multi_agent === false ? "single agent" : "goosetown flock"}</div></div>
+          <div class="field"><div class="k">Flock</div><div class="v">${esc((job.agent_names || []).join(", ") || "built-in roles")}</div></div>
           <div class="field"><div class="k">Usage</div><div class="v mono">${usage}</div></div>
         </div>
         <div class="block"><h3>Instruction</h3><pre>${esc(job.instruction)}</pre></div>
@@ -484,10 +705,16 @@
         const input = JSON.parse($("input").value || "{}");
         const inputFiles = files.length ? await uploadFiles(files) : [];
         message.textContent = "Submitting…";
+        const multiAgent = $("multi_agent").checked;
+        const agentIds = multiAgent
+          ? Array.from($("agent-options").querySelectorAll("input:checked")).map((item) => item.value)
+          : [];
         const payload = {
           instruction: $("instruction").value.trim(),
           input,
           input_files: inputFiles,
+          multi_agent: multiAgent,
+          agent_ids: agentIds,
           timeout_seconds: Number($("timeout").value),
           max_steps: Number($("max_steps").value),
         };
@@ -510,7 +737,39 @@
       }
     });
 
+    $("agent-reset").addEventListener("click", resetAgentForm);
+
+    $("agent-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = $("agent-save");
+      button.disabled = true;
+      try {
+        const payload = {
+          agent_id: $("agent-id").value || undefined,
+          name: $("agent-name").value.trim(),
+          role: $("agent-role").value.trim() || "custom",
+          description: $("agent-description").value.trim(),
+          instructions: $("agent-instructions").value.trim(),
+          skills: $("agent-skills").value.split(",").map((value) => value.trim()).filter(Boolean),
+          enabled: $("agent-enabled").checked,
+        };
+        if (!payload.agent_id) delete payload.agent_id;
+        await api("/api/agents", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        resetAgentForm();
+        await loadAgents();
+      } catch (error) {
+        $("agents").innerHTML = `<span class="message error">${esc(error.message)}</span>`;
+      } finally {
+        button.disabled = false;
+      }
+    });
+
     loadJobs();
+    loadAgents();
     state.timer = setInterval(async () => {
       await loadJobs();
       await loadDetail();

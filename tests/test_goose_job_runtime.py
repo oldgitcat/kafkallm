@@ -16,7 +16,7 @@ from kafkallm.goose_job_runtime import (
     parse_goose_output,
 )
 from kafkallm.harness import Harness
-from kafkallm.models import Job
+from kafkallm.models import AgentSpec, Job
 from kafkallm.settings import Settings
 
 
@@ -364,12 +364,11 @@ def test_vm_run_starts_microvm_and_collects_result(tmp_path: Path) -> None:
     assert "GOOSE_MAX_TURNS=20" in environment
     assert "GOOSE_SUBAGENT_MAX_TURNS=10" in environment
     assert "OPENAI_API_KEY=test-virtual-key" in environment
-    assert any(
-        item.startswith("PATH=/opt/kafkallm/tools/bin:")
-        for item in environment
-    )
+    assert any(item.startswith("PATH=/opt/kafkallm/tools/bin:") for item in environment)
     assert "KAFKALLM_TOOLS_DIR=/opt/kafkallm/tools" in environment
     assert "KAFKALLM_CONFIG_DIR=/opt/kafkallm/config" in environment
+    assert "KAFKALLM_MULTI_AGENT=1" in environment
+    assert "KAFKALLM_AGENT_COUNT=0" in environment
     assert body["HostConfig"]["NetworkMode"] == "kafkallm-jobs"
     assert body["HostConfig"]["ExtraHosts"] == [
         "host.containers.internal:fd00:6b61:666b:616c::2"
@@ -541,6 +540,46 @@ def test_harness_uses_goose_runtime(tmp_path: Path) -> None:
     assert isinstance(harness.goose, GooseJobRunner)
 
     harness.close()
+
+
+def test_prompt_and_bundle_include_selected_agents(tmp_path: Path) -> None:
+    runner = GooseJobRunner(_settings_for(tmp_path))
+    agent = AgentSpec(
+        agent_id="security-reviewer",
+        name="Security reviewer",
+        role="reviewer",
+        description="Checks security-sensitive outputs.",
+        instructions="Review for injection and secret leaks.",
+        skills=["goosetown-reviewer"],
+    )
+    job = Job(
+        instruction="Review this",
+        multi_agent=True,
+        agents=[agent],
+    )
+
+    prompt = runner._build_prompt(job)
+    assert "Goosetown multi-agent mode is ON" in prompt
+    assert "Security reviewer (reviewer)" in prompt
+    assert "/jobboot/agents.json" in prompt
+    assert "KAFKALLM_MULTI_AGENT" not in prompt
+
+    workdir = tmp_path / "vm"
+    workspace = _workspace(tmp_path)
+    runner._prepare_workdir(workdir, workspace, prompt, job)
+    bundle = json.loads(
+        (workdir / "bundle" / "agents.json").read_text(encoding="utf-8")
+    )
+    assert bundle[0]["agent_id"] == "security-reviewer"
+
+
+def test_single_agent_prompt_disables_delegation(tmp_path: Path) -> None:
+    runner = GooseJobRunner(_settings_for(tmp_path))
+
+    prompt = runner._build_prompt(Job(instruction="Do it", multi_agent=False))
+
+    assert "Goosetown multi-agent mode is OFF" in prompt
+    assert "do not delegate" in prompt
 
 
 def test_parse_goose_output_extracts_text_usage_and_steps() -> None:

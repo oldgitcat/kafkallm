@@ -2,17 +2,16 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
-
 
 ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
 
 
 def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 @dataclass(slots=True)
@@ -29,20 +28,33 @@ class FileRef(BaseModel):
     key: str = Field(min_length=1)
 
 
+class AgentSpec(BaseModel):
+    """A reusable goosetown role that the orchestrator can delegate to."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: str = Field(pattern=ID_PATTERN)
+    name: str = Field(min_length=1, max_length=80)
+    role: str = Field(default="custom", min_length=1, max_length=40)
+    description: str = Field(default="", max_length=4_000)
+    instructions: str = Field(default="", max_length=20_000)
+    skills: list[str] = Field(default_factory=list, max_length=20)
+    enabled: bool = True
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
 class Job(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    job_id: str = Field(
-        default_factory=lambda: str(uuid.uuid4()), pattern=ID_PATTERN
-    )
-    run_id: str = Field(
-        default_factory=lambda: str(uuid.uuid4()), pattern=ID_PATTERN
-    )
+    job_id: str = Field(default_factory=lambda: str(uuid.uuid4()), pattern=ID_PATTERN)
+    run_id: str = Field(default_factory=lambda: str(uuid.uuid4()), pattern=ID_PATTERN)
     type: Literal["llm_task"] = "llm_task"
     trace_id: str | None = Field(default=None, min_length=1, max_length=128)
     instruction: str = Field(min_length=1, max_length=100_000)
     input: dict = Field(default_factory=dict)
     input_files: list[FileRef] = Field(default_factory=list, max_length=32)
+    multi_agent: bool = True
+    agents: list[AgentSpec] = Field(default_factory=list, max_length=20)
     timeout_seconds: int = Field(default=300, ge=1, le=3600)
     max_steps: int = Field(default=6, ge=1, le=50)
 
@@ -65,7 +77,7 @@ class JobResult(BaseModel):
     usage: dict[str, int] = Field(default_factory=dict)
 
     @classmethod
-    def failure(cls, error: str, worker_id: str) -> "JobResult":
+    def failure(cls, error: str, worker_id: str) -> JobResult:
         now = utc_now()
         return cls(
             job_id=str(uuid.uuid4()),
@@ -93,6 +105,8 @@ class JobState(BaseModel):
     status: Literal["queued", "running", "succeeded", "failed", "invalid"]
     trace_id: str | None = Field(default=None, min_length=1, max_length=128)
     input_files: list[FileRef] = Field(default_factory=list, max_length=32)
+    multi_agent: bool = True
+    agent_names: list[str] = Field(default_factory=list, max_length=20)
     timeout_seconds: int = Field(default=300, ge=1, le=3600)
     max_steps: int = Field(default=6, ge=1, le=50)
     submitted_at: datetime = Field(default_factory=utc_now)
@@ -107,7 +121,7 @@ class JobState(BaseModel):
     usage: dict[str, int] = Field(default_factory=dict)
 
     @classmethod
-    def queued(cls, job: Job, worker_id: str | None = None) -> "JobState":
+    def queued(cls, job: Job, worker_id: str | None = None) -> JobState:
         return cls(
             job_id=job.job_id,
             run_id=job.run_id,
@@ -115,6 +129,8 @@ class JobState(BaseModel):
             status="queued",
             trace_id=job.trace_id,
             input_files=job.input_files,
+            multi_agent=job.multi_agent,
+            agent_names=[agent.name for agent in job.agents] if job.multi_agent else [],
             timeout_seconds=job.timeout_seconds,
             max_steps=job.max_steps,
             worker_id=worker_id,

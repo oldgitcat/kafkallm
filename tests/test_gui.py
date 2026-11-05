@@ -7,6 +7,7 @@ import urllib.request
 from dataclasses import replace
 from typing import Any
 
+from kafkallm.agents import AgentStore, default_agents
 from kafkallm.gui import JobServer, JobStore
 from kafkallm.models import FileRef, Job, JobState
 from kafkallm.settings import Settings
@@ -49,6 +50,15 @@ def _request(url: str, payload: dict[str, Any] | None = None) -> tuple[int, Any]
         headers={"Content-Type": "application/json"},
         method="POST" if data is not None else "GET",
     )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read())
+
+
+def _delete(url: str) -> tuple[int, Any]:
+    request = urllib.request.Request(url, method="DELETE")
     try:
         with urllib.request.urlopen(request, timeout=5) as response:
             return response.status, json.loads(response.read())
@@ -200,6 +210,76 @@ def test_gui_uploads_binary_inputs_and_attaches_them_to_the_job() -> None:
         assert producer.messages[0][2].input_files[0].key == ("uploads/payload.bin")
         queued_state = producer.messages[1][2]
         assert queued_state.input_files[0].key == "uploads/payload.bin"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_gui_manages_agents_and_attaches_the_selected_flock() -> None:
+    settings = _settings()
+    producer = RecordingProducer()
+    agents = AgentStore(settings)
+    for agent in default_agents():
+        agents.put(agent)
+    server = JobServer(
+        ("127.0.0.1", 0),
+        JobStore(settings),
+        producer,
+        settings,
+        agents=agents,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        status, data = _request(f"{base}/api/agents")
+        assert status == 200
+        assert {agent["agent_id"] for agent in data["agents"]} >= {
+            "worker",
+            "reviewer",
+        }
+
+        status, created = _request(
+            f"{base}/api/agents",
+            {
+                "name": "Security reviewer",
+                "role": "reviewer",
+                "description": "Checks security-sensitive outputs.",
+                "skills": ["goosetown-reviewer"],
+            },
+        )
+        assert status == 201
+        assert created["agent_id"] == "security-reviewer"
+        assert any(topic == "agents.state" for topic, _, _ in producer.messages)
+
+        status, job = _request(
+            f"{base}/api/jobs",
+            {
+                "instruction": "Review the design",
+                "agent_ids": ["worker", "security-reviewer"],
+            },
+        )
+        assert status == 201
+        assert [agent["agent_id"] for agent in job["agents"]] == [
+            "worker",
+            "security-reviewer",
+        ]
+        job_message = next(
+            model for topic, _, model in producer.messages if topic == "jobs.in"
+        )
+        assert [agent.agent_id for agent in job_message.agents] == [
+            "worker",
+            "security-reviewer",
+        ]
+        queued = next(
+            model for topic, _, model in producer.messages if topic == "jobs.state"
+        )
+        assert queued.agent_names == ["Worker", "Security reviewer"]
+
+        status, disabled = _delete(f"{base}/api/agents/security-reviewer")
+        assert status == 200
+        assert disabled["enabled"] is False
     finally:
         server.shutdown()
         server.server_close()

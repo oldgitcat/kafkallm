@@ -22,17 +22,19 @@ Browser / CLI ──→ jobs.in ──→ worker ──→ rootless Podman (krun
                                   │
                                   ├─→ jobs.out      (results)
                                   ├─→ jobs.state    (compacted GUI state)
+                                  ├─→ agents.state  (compacted goosetown flock)
                                   ├─→ agent.events  (audit)
                                   ├─→ MLflow        (OTLP traces)
                                   └─→ RustFS        (optional artifacts)
 
-GUI ──→ jobs.in, jobs.state, agent.events
+GUI ──→ jobs.in, jobs.state, agents.state, agent.events
 ```
 
 ## Included
 
 - A disposable **goose** microVM per job with the **goosetown** orchestrator,
   worker, writer, reviewer, and local-researcher skills
+- GUI-managed goosetown agent profiles stored in compacted Kafka state
 - An **[agentgateway](https://agentgateway.dev/)** LLM gateway that holds the
   OpenRouter key and accepts only a rotatable virtual key from jobs
 - An IPv6-only internal Podman network where the allowlisting proxy is the only
@@ -45,7 +47,9 @@ GUI ──→ jobs.in, jobs.state, agent.events
   extra build packages, and an example Ghidra image
 - A compacted `jobs.state` topic that acts as the GUI database; the GUI rebuilds
   its view from Kafka after a restart
-- Redpanda topics `jobs.in`, `jobs.out`, `jobs.state`, and `agent.events`
+- A compacted `agents.state` topic with editable goosetown agent profiles
+- Redpanda topics `jobs.in`, `jobs.out`, `jobs.state`, `agents.state`, and
+  `agent.events`
 - A Kafka worker with manual offset commits and a bounded startup wait
 - A persistent skills directory that goose and goosetown improve across jobs
 - Correlated traces for submission, worker, and the goose run
@@ -239,12 +243,14 @@ The worker polls agentgateway's readiness endpoint over the Compose network at
 | `jobs.in` | delete, 7 days | Jobs submitted by the GUI or CLI |
 | `jobs.out` | delete, 7 days | Final `JobResult` records |
 | `jobs.state` | **compact** | Latest materialized `JobState` per `job_id`; the GUI's database |
+| `agents.state` | **compact** | Latest goosetown `AgentSpec` per `agent_id` |
 | `agent.events` | delete, 7 days | Audit events for each job |
 
-The GUI consumes `jobs.state` and `agent.events` from the beginning with a
-unique consumer group. Compaction keeps the latest state per job, so a restart
-rebuilds the view without a local store. State transitions are published by
-both the GUI/CLI (`queued`) and the worker (`running`, `succeeded`/`failed`).
+The GUI consumes `jobs.state`, `agents.state`, and `agent.events` from the
+beginning with unique consumer groups. Compaction keeps the latest state per
+key, so a restart rebuilds the view without a local store. State transitions
+are published by both the GUI/CLI (`queued`) and the worker (`running`,
+`succeeded`/`failed`).
 
 ## goosetown and skills
 
@@ -269,6 +275,31 @@ Skills are stored on the host at `GOOSE_JOB_SKILLS_DIR`
 next. The directory is world-writable because rootless Podman maps the job's
 uid into a subuid range.
 
+### Agent management
+
+The GUI has a **Goosetown agents** panel. Agent profiles are stored in the
+compacted `agents.state` Kafka topic, so there is still no separate database.
+On the first GUI start the standard flock is seeded:
+
+- `Orchestrator` — decomposes the job and synthesizes the result
+- `Local researcher` — read-only search of inputs, notes, and skills
+- `Worker` — builds code, scripts, configs, and data
+- `Writer` — synthesizes sources into one deliverable
+- `Reviewer` — reviews against explicit acceptance criteria
+
+You can add, edit, enable, or disable agents in the GUI. Each profile has a
+name, role, description, instructions, and a list of skills.
+
+The job form has **Use goosetown multi-agent flock**. When it is enabled, the
+selected agents are embedded in the job as a snapshot. The worker writes them
+to `/jobboot/agents.json`, tells the orchestrator to use them as delegate
+roles, and keeps the normal goosetown skills. When it is disabled, the prompt
+runs a single goose agent without delegation.
+
+A separate persistent goosetown container is not used: the actual multi-agent
+flock runs inside each disposable job microVM. This keeps the jobs isolated and
+avoids a second long-lived service that would need host workspace access.
+
 ### Learning pass
 
 After a successful main run, the worker can run a second, shorter goose session
@@ -292,6 +323,8 @@ with a review prompt. It may update one reusable skill under
   "instruction": "Analyze the input data",
   "input": {"arbitrary": "JSON data"},
   "input_files": [],
+  "multi_agent": true,
+  "agents": [],
   "timeout_seconds": 300,
   "max_steps": 6
 }
@@ -629,7 +662,7 @@ HTTP handler. They require neither a Podman daemon nor Redpanda.
 ## Repository layout
 
 ```text
-src/kafkallm/       worker, GUI, Kafka, state, goose runtime, models
+src/kafkallm/       worker, GUI, Kafka, state, agents, goose runtime, models
 goose_job/          job image, goosetown template, skills, config and tool examples
 scripts/            build-goose-image.sh, init-job-network.sh, sandbox-shell.sh, poc-krun.sh
 tests/              unit tests

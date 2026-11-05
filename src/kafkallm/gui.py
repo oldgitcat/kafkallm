@@ -16,8 +16,14 @@ from typing import Any
 from confluent_kafka import Consumer, KafkaError, KafkaException
 from pydantic import ValidationError
 
+from kafkallm.agents import (
+    AgentPublisher,
+    AgentStore,
+    new_agent_id,
+    seed_default_agents,
+)
 from kafkallm.kafka import KafkaProducer, ensure_topics, wait_for_kafka
-from kafkallm.models import Job
+from kafkallm.models import AgentSpec, Job, utc_now
 from kafkallm.settings import Settings
 from kafkallm.state import StatePublisher
 from kafkallm.storage import S3Storage
@@ -167,6 +173,7 @@ class JobServer(ThreadingHTTPServer):
         producer: KafkaProducer,
         settings: Settings,
         storage_factory: Callable[[Settings], S3Storage] | None = None,
+        agents: AgentStore | None = None,
     ) -> None:
         super().__init__(address, JobHandler)
         self.store = store
@@ -176,6 +183,8 @@ class JobServer(ThreadingHTTPServer):
         self.storage_factory = storage_factory or S3Storage
         self.storage_lock = threading.Lock()
         self._storage: S3Storage | None = None
+        self.agents = agents or AgentStore(settings)
+        self.agent_publisher = AgentPublisher(settings, producer)
 
     def get_storage(self) -> S3Storage:
         if self._storage is None:
@@ -198,6 +207,15 @@ class JobHandler(BaseHTTPRequestHandler):
             self._send_json({"status": "ok"})
         elif self.path == "/api/jobs":
             self._send_json({"jobs": self.server.store.jobs()})
+        elif self.path == "/api/agents":
+            self._send_json(
+                {
+                    "agents": [
+                        agent.model_dump(mode="json")
+                        for agent in self.server.agents.agents()
+                    ]
+                }
+            )
         elif self.path.startswith("/api/jobs/"):
             job_id = self.path.rsplit("/", 1)[-1]
             job = self.server.store.job(job_id)
@@ -212,6 +230,9 @@ class JobHandler(BaseHTTPRequestHandler):
         if self.path == "/api/uploads":
             self._handle_upload()
             return
+        if self.path == "/api/agents":
+            self._handle_agent_save()
+            return
         if self.path != "/api/jobs":
             self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
             return
@@ -220,6 +241,24 @@ class JobHandler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length) or b"{}")
             if not isinstance(payload, dict):
                 raise ValueError("The request body must be a JSON object.")
+            agent_ids = payload.pop("agent_ids", None)
+            multi_agent = bool(payload.get("multi_agent", True))
+            if multi_agent and agent_ids is not None:
+                if not isinstance(agent_ids, list):
+                    raise ValueError("agent_ids must be a list.")
+                selected: list[AgentSpec] = []
+                for raw_id in agent_ids:
+                    agent = self.server.agents.get(str(raw_id))
+                    if agent is None:
+                        raise ValueError(f"Unknown agent: {raw_id}")
+                    if agent.enabled:
+                        selected.append(agent)
+                payload["agents"] = [
+                    agent.model_dump(mode="json") for agent in selected
+                ]
+            elif not multi_agent:
+                payload["agents"] = []
+            payload["multi_agent"] = multi_agent
             job = Job.model_validate(
                 {
                     **payload,
@@ -254,6 +293,65 @@ class JobHandler(BaseHTTPRequestHandler):
             )
             return
         self._send_json(job.model_dump(mode="json"), status=HTTPStatus.CREATED)
+
+    def do_DELETE(self) -> None:
+        if not self.path.startswith("/api/agents/"):
+            self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
+            return
+        agent_id = self.path.rsplit("/", 1)[-1]
+        agent = self.server.agents.get(agent_id)
+        if agent is None:
+            self._send_json({"error": "agent not found"}, status=HTTPStatus.NOT_FOUND)
+            return
+        updated = agent.model_copy(update={"enabled": False, "updated_at": utc_now()})
+        try:
+            with self.server.producer_lock:
+                self.server.agent_publisher.save(updated)
+        except Exception as exc:
+            logger.exception("Could not disable agent")
+            self._send_json(
+                {"error": f"Could not disable agent: {exc}"},
+                status=HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+            return
+        self.server.agents.put(updated)
+        self._send_json(updated.model_dump(mode="json"))
+
+    def _handle_agent_save(self) -> None:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            payload = json.loads(self.rfile.read(length) or b"{}")
+            if not isinstance(payload, dict):
+                raise ValueError("The agent must be a JSON object.")
+            name = str(payload.get("name", "")).strip()
+            if not name:
+                raise ValueError("The agent name is required.")
+            agent = AgentSpec.model_validate(
+                {
+                    **payload,
+                    "agent_id": payload.get("agent_id") or new_agent_id(name),
+                    "name": name,
+                    "updated_at": utc_now().isoformat(),
+                }
+            )
+        except (ValueError, ValidationError) as exc:
+            self._send_json(
+                {"error": f"Invalid agent: {exc}"},
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return
+        try:
+            with self.server.producer_lock:
+                self.server.agent_publisher.save(agent)
+        except Exception as exc:
+            logger.exception("Could not save agent")
+            self._send_json(
+                {"error": f"Could not save agent: {exc}"},
+                status=HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+            return
+        self.server.agents.put(agent)
+        self._send_json(agent.model_dump(mode="json"), status=HTTPStatus.CREATED)
 
     def _handle_upload(self) -> None:
         settings = self.server.settings
@@ -385,8 +483,15 @@ def run_gui(settings: Settings) -> None:
     store = JobStore(settings)
     store.start()
     producer = KafkaProducer(settings)
+    agents = AgentStore(settings)
+    seed_default_agents(settings, producer)
+    agents.start()
     server = JobServer(
-        (settings.gui_host, settings.gui_port), store, producer, settings
+        (settings.gui_host, settings.gui_port),
+        store,
+        producer,
+        settings,
+        agents=agents,
     )
 
     def shutdown(signum: int, frame: Any) -> None:
@@ -405,5 +510,6 @@ def run_gui(settings: Settings) -> None:
         server.serve_forever(poll_interval=0.5)
     finally:
         server.server_close()
+        agents.stop()
         store.stop()
         producer.close()
