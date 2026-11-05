@@ -247,24 +247,42 @@
       color: var(--muted);
       font-size: 11px;
     }
-    .agent-list { display: grid; gap: 0; }
+    .agent-list {
+      display: grid;
+      gap: 8px;
+      min-width: 0;
+    }
     .agent-row {
       display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 9px 0;
-      border-bottom: 1px solid var(--border-soft);
+      align-items: flex-start;
+      flex-wrap: wrap;
+      gap: 8px 12px;
+      min-width: 0;
+      padding: 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
     }
-    .agent-row:last-child { border-bottom: 0; }
     .agent-row.disabled { opacity: .55; }
-    .agent-row .info { flex: 1; min-width: 0; }
-    .agent-row .name { font-size: 13px; font-weight: 600; }
+    .agent-row .info {
+      flex: 1 1 150px;
+      min-width: 0;
+      overflow: hidden;
+    }
+    .agent-row .name {
+      font-size: 13px;
+      font-weight: 600;
+      overflow-wrap: anywhere;
+    }
     .agent-row .meta {
       color: var(--muted);
       font-size: 11px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+      overflow-wrap: anywhere;
+    }
+    .agent-row .actions {
+      display: flex;
+      flex: 0 0 auto;
+      flex-wrap: wrap;
+      gap: 6px;
     }
     .agent-row button {
       width: auto;
@@ -552,8 +570,10 @@
             <div class="meta">${esc(agent.role)} · ${esc((agent.skills || []).join(", ") || "no skills")}</div>
             <div class="meta">${esc(agent.description || "")}</div>
           </div>
-          <button type="button" data-edit="${esc(agent.agent_id)}">Edit</button>
-          ${agent.enabled ? `<button type="button" data-disable="${esc(agent.agent_id)}">Disable</button>` : ""}
+          <div class="actions">
+            <button type="button" data-edit="${esc(agent.agent_id)}">Edit</button>
+            ${agent.enabled ? `<button type="button" data-disable="${esc(agent.agent_id)}">Disable</button>` : ""}
+          </div>
         </div>`).join("");
       for (const button of container.querySelectorAll("[data-edit]")) {
         button.addEventListener("click", () => editAgent(button.dataset.edit));
