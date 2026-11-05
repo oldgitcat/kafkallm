@@ -232,6 +232,7 @@
     }
     .check input { width: auto; }
     .agent-options { display: grid; gap: 6px; margin-bottom: 4px; }
+    .agent-options[hidden] { display: none; }
     .agent-option {
       display: flex;
       align-items: center;
@@ -582,6 +583,10 @@
       }
     }
 
+    function syncAgentOptions() {
+      $("agent-options").hidden = !$("multi_agent").checked;
+    }
+
     function renderAgents() {
       const container = $("agents");
       if (!state.agents.length) {
@@ -787,6 +792,9 @@
         <div class="block"><h3>Audit events</h3>${events}</div>
       </section>`;
     }
+
+    $("multi_agent").addEventListener("change", syncAgentOptions);
+    syncAgentOptions();
 
     $("job-form").addEventListener("submit", async (event) => {
       event.preventDefault();
