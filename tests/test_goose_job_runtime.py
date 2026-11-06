@@ -17,7 +17,7 @@ from kafkallm.goose_job_runtime import (
     parse_goose_output,
 )
 from kafkallm.harness import Harness
-from kafkallm.models import AgentSpec, Job, SandboxSpec
+from kafkallm.models import AgentResult, AgentSpec, Job, SandboxSpec
 from kafkallm.sandboxes import SandboxStore
 from kafkallm.settings import Settings
 
@@ -681,6 +681,88 @@ def test_harness_uses_goose_runtime(tmp_path: Path) -> None:
     assert isinstance(harness.goose, GooseJobRunner)
 
     harness.close()
+
+
+def test_unlimited_job_is_rejected_when_disabled(tmp_path: Path) -> None:
+    settings = _settings(
+        workspace_root=str(tmp_path),
+        allow_unlimited_jobs=False,
+    )
+    harness = Harness(settings)
+
+    result = harness.process(Job(instruction="Run forever", unlimited=True))
+
+    harness.close()
+    assert result.status == "failed"
+    assert result.error is not None
+    assert "Unlimited jobs are disabled" in result.error
+
+
+def test_unlimited_environment_disables_timeout_and_turn_caps(
+    tmp_path: Path,
+) -> None:
+    client = FakeDockerClient()
+    client.results = {"main.json": _goose_result()}
+    settings = _settings_for(
+        tmp_path,
+        allow_unlimited_jobs=True,
+        unlimited_max_turns=12345,
+        unlimited_max_subagent_turns=6789,
+    )
+    runner = GooseJobRunner(settings, client=client)
+
+    runner.run(
+        job=Job(instruction="Run forever", unlimited=True),
+        workspace=_workspace(tmp_path),
+        deadline=time.monotonic() + 120,
+        max_steps=5,
+    )
+
+    environment = dict(item.split("=", 1) for item in client.create_body["Env"])
+    assert environment["KAFKALLM_JOB_UNLIMITED"] == "1"
+    assert environment["KAFKALLM_JOB_MAIN_TIMEOUT"] == "0"
+    assert environment["GOOSE_MAX_TURNS"] == "12345"
+    assert environment["GOOSE_SUBAGENT_MAX_TURNS"] == "6789"
+
+
+def test_run_polls_the_heartbeat_while_waiting(tmp_path: Path) -> None:
+    client = FakeDockerClient()
+    client.results = {"main.json": _goose_result()}
+    runner = GooseJobRunner(_settings_for(tmp_path), client=client)
+    calls: list[int] = []
+
+    runner.run(
+        job=Job(instruction="Do it"),
+        workspace=_workspace(tmp_path),
+        deadline=time.monotonic() + 120,
+        max_steps=5,
+        heartbeat=lambda: calls.append(1),
+    )
+
+    assert calls
+
+
+def test_unlimited_result_is_stored_as_an_artifact(tmp_path: Path) -> None:
+    settings = _settings_for(
+        tmp_path,
+        allow_unlimited_jobs=True,
+        max_result_bytes=10,
+    )
+    harness = Harness(settings)
+    outputs = tmp_path / "outputs"
+    outputs.mkdir()
+
+    result = harness._limit_result(
+        AgentResult(text="x" * 100, steps=2),
+        outputs,
+        Job(instruction="Run forever", unlimited=True),
+    )
+
+    harness.close()
+    assert (outputs / "result-full.md").read_text(encoding="utf-8") == "x" * 100
+    assert result.text.startswith("x" * 10)
+    assert "result-full.md" in result.text
+    assert result.steps == 2
 
 
 def test_prompt_and_bundle_include_selected_agents(tmp_path: Path) -> None:

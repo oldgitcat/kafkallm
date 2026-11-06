@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import shutil
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -22,6 +22,10 @@ from kafkallm.telemetry import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Ten years. Used internally for "unlimited" jobs so deadline arithmetic and
+# timeout calculations remain finite without imposing a practical limit.
+_UNLIMITED_TIMEOUT_SECONDS = 10 * 365 * 24 * 60 * 60
 
 
 @contextmanager
@@ -60,14 +64,48 @@ class Harness:
             self._storage = S3Storage(self.settings)
         return self._storage
 
-    def process(self, job: Job, job_audit: JobAudit | None = None) -> JobResult:
+    def _limit_result(
+        self,
+        agent_result: AgentResult,
+        outputs: Path,
+        job: Job,
+    ) -> AgentResult:
+        """Keep Kafka messages bounded and preserve large results as artifacts."""
+        if not job.unlimited:
+            return agent_result
+        limit = max(1, self.settings.max_result_bytes)
+        encoded = agent_result.text.encode("utf-8")
+        if len(encoded) <= limit:
+            return agent_result
+        full_path = outputs / "result-full.md"
+        full_path.write_text(agent_result.text, encoding="utf-8")
+        truncated = encoded[:limit].decode("utf-8", errors="ignore")
+        return AgentResult(
+            text=(
+                truncated + "\n\n[Result truncated for the Kafka state message. "
+                "The full result was written to result-full.md and is available "
+                "as an artifact when S3 storage is configured.]"
+            ),
+            steps=agent_result.steps,
+            usage=agent_result.usage,
+        )
+
+    def process(
+        self,
+        job: Job,
+        job_audit: JobAudit | None = None,
+        heartbeat: Callable[[], None] | None = None,
+    ) -> JobResult:
         trace_id = job.trace_id or current_trace_id() or new_trace_id()
         job = job.model_copy(update={"trace_id": trace_id})
         if job_audit is None and self.audit is not None:
             job_audit = self.audit.for_job(job)
         started_at = utc_now()
         run_started = time.perf_counter()
-        timeout = min(job.timeout_seconds, self.settings.max_job_timeout_seconds)
+        if job.unlimited:
+            timeout = _UNLIMITED_TIMEOUT_SECONDS
+        else:
+            timeout = min(job.timeout_seconds, self.settings.max_job_timeout_seconds)
         deadline = time.monotonic() + timeout
         workspace_root = Path(self.settings.workspace_root)
         workspace_root.mkdir(parents=True, exist_ok=True)
@@ -88,6 +126,11 @@ class Harness:
         ) as span:
             set_content(span, "input.value", job.instruction)
             try:
+                if job.unlimited and not self.settings.allow_unlimited_jobs:
+                    raise RuntimeError(
+                        "Unlimited jobs are disabled. Set ALLOW_UNLIMITED_JOBS=true "
+                        "on the worker and GUI."
+                    )
                 with _job_workspace(workspace_root, job) as root:
                     inputs = root / "inputs"
                     outputs = root / "outputs"
@@ -106,14 +149,20 @@ class Harness:
                                 reference, inputs / f"{index:02d}-{filename}"
                             )
 
-                    max_steps = min(job.max_steps, self.settings.max_agent_steps)
+                    max_steps = (
+                        0
+                        if job.unlimited
+                        else min(job.max_steps, self.settings.max_agent_steps)
+                    )
                     agent_result: AgentResult = self.goose.run(
                         job=job,
                         workspace=root,
                         deadline=deadline,
                         max_steps=max_steps,
                         audit=job_audit,
+                        heartbeat=heartbeat,
                     )
+                    agent_result = self._limit_result(agent_result, outputs, job)
                     steps = agent_result.steps
                     usage = agent_result.usage
 
@@ -135,6 +184,11 @@ class Harness:
                                     job_id=job.job_id,
                                     run_id=job.run_id,
                                     deadline=deadline,
+                                    max_files=(
+                                        0
+                                        if job.unlimited
+                                        else self.settings.max_output_files
+                                    ),
                                 )
                             except Exception as exc:
                                 logger.exception(

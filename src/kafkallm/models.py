@@ -119,6 +119,7 @@ class Job(BaseModel):
     sandbox: str = Field(default="default", pattern=ID_PATTERN)
     multi_agent: bool = True
     agents: list[AgentSpec] = Field(default_factory=list, max_length=20)
+    unlimited: bool = False
     timeout_seconds: int = Field(default=300, ge=1, le=3600)
     max_steps: int = Field(default=6, ge=1, le=50)
 
@@ -172,6 +173,7 @@ class JobState(BaseModel):
     sandbox: str = Field(default="default", pattern=ID_PATTERN)
     multi_agent: bool = True
     agent_names: list[str] = Field(default_factory=list, max_length=20)
+    unlimited: bool = False
     timeout_seconds: int = Field(default=300, ge=1, le=3600)
     max_steps: int = Field(default=6, ge=1, le=50)
     submitted_at: datetime = Field(default_factory=utc_now)
@@ -197,6 +199,7 @@ class JobState(BaseModel):
             sandbox=job.sandbox,
             multi_agent=job.multi_agent,
             agent_names=[agent.name for agent in job.agents] if job.multi_agent else [],
+            unlimited=job.unlimited,
             timeout_seconds=job.timeout_seconds,
             max_steps=job.max_steps,
             worker_id=worker_id,

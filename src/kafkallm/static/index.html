@@ -544,6 +544,9 @@
           </div>
         </div>
 
+        <label class="check"><input id="unlimited" type="checkbox" disabled> Unlimited runtime and result size</label>
+        <div id="unlimited-hint" class="hint">Checking this disables the job timeout and Goose turn cap. Oversized results are preserved as a <span class="mono">result-full.md</span> artifact.</div>
+
         <button id="submit" type="submit">Submit job</button>
         <div id="message" class="message"></div>
         <div class="hint">The worker runs the job in an isolated goose microVM. Files written to <span class="mono">outputs/</span> are uploaded as artifacts.</div>
@@ -628,7 +631,7 @@
   </main>
 
   <script>
-    const state = { jobs: [], agents: [], sandboxes: [], selected: null, selectedAgents: null, detail: null, detailError: null, timer: null };
+    const state = { jobs: [], agents: [], sandboxes: [], features: { unlimited_jobs: false }, selected: null, selectedAgents: null, detail: null, detailError: null, timer: null };
     const $ = (id) => document.getElementById(id);
 
     function esc(value) {
@@ -744,6 +747,27 @@
         $("sandbox").disabled = true;
         $("sandbox-hint").textContent = error.message;
       }
+    }
+
+    async function loadFeatures() {
+      try {
+        const data = await api("/api/features");
+        state.features = { ...state.features, ...data };
+      } catch (error) {
+        state.features.unlimited_jobs = false;
+      }
+      $("unlimited").disabled = !state.features.unlimited_jobs;
+      if (!state.features.unlimited_jobs) {
+        $("unlimited").checked = false;
+        $("unlimited-hint").textContent = "Unlimited jobs are disabled on this worker. Set ALLOW_UNLIMITED_JOBS=true to enable them.";
+      }
+      syncUnlimited();
+    }
+
+    function syncUnlimited() {
+      const unlimited = $("unlimited").checked;
+      $("timeout").disabled = unlimited;
+      $("max_steps").disabled = unlimited;
     }
 
     function resetSandboxForm() {
@@ -1028,6 +1052,8 @@
           <div class="field"><div class="k">Finished</div><div class="v">${esc(fmtTime(job.finished_at))}</div></div>
           <div class="field"><div class="k">Sandbox</div><div class="v">${esc(sandboxLabel(job.sandbox))}${sandboxSpec(job.sandbox)?.description ? ` <span class="muted">${esc(sandboxSpec(job.sandbox).description)}</span>` : ""}</div></div>
           <div class="field"><div class="k">Mode</div><div class="v">${job.multi_agent === false ? "single agent" : "goosetown flock"}</div></div>
+          <div class="field"><div class="k">Runtime</div><div class="v">${job.unlimited ? "unlimited" : `${esc(job.timeout_seconds)}s`}</div></div>
+          <div class="field"><div class="k">Max steps</div><div class="v">${job.unlimited ? "unlimited" : esc(job.max_steps)}</div></div>
           <div class="field"><div class="k">Flock</div><div class="v">${esc((job.agent_names || []).join(", ") || "built-in roles")}</div></div>
           <div class="field"><div class="k">Usage</div><div class="v mono">${usage}</div></div>
         </div>
@@ -1049,6 +1075,7 @@
 
     $("multi_agent").addEventListener("change", syncAgentOptions);
     $("sandbox").addEventListener("change", updateSandboxHint);
+    $("unlimited").addEventListener("change", syncUnlimited);
     syncAgentOptions();
 
     $("job-form").addEventListener("submit", async (event) => {
@@ -1076,6 +1103,7 @@
           sandbox,
           multi_agent: multiAgent,
           agent_ids: agentIds,
+          unlimited: $("unlimited").checked,
           timeout_seconds: Number($("timeout").value),
           max_steps: Number($("max_steps").value),
         };
@@ -1189,6 +1217,7 @@
     loadJobs();
     loadAgents();
     loadSandboxes();
+    loadFeatures();
     state.timer = setInterval(async () => {
       await loadJobs();
       await loadDetail();

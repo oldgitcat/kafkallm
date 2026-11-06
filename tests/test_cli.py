@@ -88,10 +88,24 @@ def test_instruction_payload_keeps_the_existing_cli_shape() -> None:
         "input": {"key": "value"},
         "input_files": [],
         "sandbox": "reverse",
+        "unlimited": False,
         "timeout_seconds": 120,
         "max_steps": 4,
         "job_id": "job-1",
     }
+
+
+def test_instruction_payload_can_enable_unlimited_mode() -> None:
+    payload = _job_payload(_args("Do the job", "--unlimited"))
+
+    assert payload["unlimited"] is True
+
+
+def test_job_json_rejects_the_unlimited_flag(tmp_path: Path) -> None:
+    path = _write_job(tmp_path / "job.json", {"instruction": "Build it"})
+
+    with pytest.raises(ValueError, match="do not combine"):
+        _job_payload(_args("--job-json", str(path), "--unlimited"))
 
 
 def test_schema_parser_defaults_to_the_job_model() -> None:

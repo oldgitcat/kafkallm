@@ -150,6 +150,10 @@ def test_gui_submits_a_job_and_serves_state() -> None:
         assert status == 200
         assert {"instruction", "sandbox", "agents"} <= set(schema["properties"])
 
+        status, features = _request(f"{base}/api/features")
+        assert status == 200
+        assert features["unlimited_jobs"] is False
+
         status, job = _request(
             f"{base}/api/jobs",
             {
@@ -186,6 +190,38 @@ def test_gui_submits_a_job_and_serves_state() -> None:
         )
         assert status == 400
         assert "Invalid job" in error["error"]
+
+        status, error = _request(
+            f"{base}/api/jobs",
+            {"instruction": "Run forever", "unlimited": True},
+        )
+        assert status == 400
+        assert "Unlimited jobs are disabled" in error["error"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_gui_accepts_unlimited_jobs_when_enabled() -> None:
+    settings = replace(_settings(), allow_unlimited_jobs=True)
+    producer = RecordingProducer()
+    server = JobServer(("127.0.0.1", 0), JobStore(settings), producer, settings)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        status, features = _request(f"{base}/api/features")
+        assert status == 200
+        assert features["unlimited_jobs"] is True
+
+        status, job = _request(
+            f"{base}/api/jobs",
+            {"instruction": "Run forever", "unlimited": True},
+        )
+        assert status == 201
+        assert job["unlimited"] is True
+        assert producer.messages[0][2].unlimited is True
     finally:
         server.shutdown()
         server.server_close()

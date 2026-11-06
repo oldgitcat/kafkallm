@@ -91,10 +91,11 @@ class S3Storage:
         job_id: str,
         run_id: str,
         deadline: float,
+        max_files: int = 100,
     ) -> list[FileRef]:
         paths = [path for path in sorted(outputs.rglob("*")) if path.is_file()]
-        if len(paths) > 100:
-            raise RuntimeError("A job may produce at most 100 result files.")
+        if max_files > 0 and len(paths) > max_files:
+            raise RuntimeError(f"A job may produce at most {max_files} result files.")
 
         artifacts: list[FileRef] = []
         try:

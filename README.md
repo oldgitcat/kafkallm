@@ -75,6 +75,8 @@ GUI ──→ jobs.in, jobs.state, agents.state, sandboxes.state, agent.events
 - A browser GUI for submitting jobs, uploading input files or binaries,
   watching state, results, and audit events, and downloading result text and
   artifacts
+- An opt-in unlimited job mode without a wall-clock timeout or Goose turn cap;
+  oversized results are preserved as downloadable S3 artifacts
 - **MLflow** observability with OTLP traces, token usage, durations, and errors
   (Phoenix remains available as an optional second backend)
 - An editable sandbox: host-mounted tools, goose/MCP config, persistent skills,
@@ -462,6 +464,7 @@ with a review prompt. It may update one reusable skill under
   "sandbox": "default",
   "multi_agent": true,
   "agents": [],
+  "unlimited": false,
   "timeout_seconds": 300,
   "max_steps": 6
 }
@@ -471,6 +474,36 @@ with a review prompt. It may update one reusable skill under
 as the Kafka key. `sandbox` is a registry ID such as `default`, `reverse`, or a
 custom environment added in the GUI. `max_steps` is advisory; goose is bounded
 by `GOOSE_JOB_MAX_TURNS` and the job timeout.
+
+### Unlimited jobs
+
+Unlimited jobs are opt-in and must be enabled on both the GUI and worker:
+
+```dotenv
+ALLOW_UNLIMITED_JOBS=true
+```
+
+Then use **Unlimited runtime and result size** in the GUI, add `--unlimited` to
+the CLI, or set `"unlimited": true` in a job document. In that mode:
+
+- the job timeout is ignored
+- `GOOSE_MAX_TURNS` and `GOOSE_SUBAGENT_MAX_TURNS` use the much higher
+  `UNLIMITED_MAX_TURNS` values (default `100000`)
+- the output-file count cap is disabled
+- if the result text exceeds `MAX_RESULT_BYTES`, the full text is written to
+  `result-full.md` and uploaded as an artifact; the Kafka state gets a bounded
+  truncated copy so Kafka cannot reject the message
+
+Kafka still has a transport limit, so a huge result is never placed wholesale
+in `jobs.state`. It lives in S3/RustFS and is downloadable from the GUI. Upload
+limits (`UPLOAD_MAX_*`) remain separately configurable.
+
+The worker raises `max.poll.interval.ms` to
+`UNLIMITED_MAX_POLL_INTERVAL_MS` (default 24 hours, the librdkafka maximum)
+when unlimited jobs are enabled. It also polls the consumer while the microVM
+runs, so the consumer group membership stays alive during long jobs. An
+unlimited job can still occupy a worker and consume provider budget
+indefinitely; supervise it or split truly enormous work.
 
 The exact schema is available from the CLI and the HTTP API:
 

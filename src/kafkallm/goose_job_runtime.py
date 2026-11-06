@@ -8,6 +8,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -434,6 +435,7 @@ class GooseJobRunner:
         deadline: float,
         max_steps: int,
         audit: JobAudit | None = None,
+        heartbeat: Callable[[], None] | None = None,
     ) -> AgentResult:
         del max_steps
         workspace = Path(workspace)
@@ -453,6 +455,7 @@ class GooseJobRunner:
             sandbox=sandbox,
             multi_agent=job.multi_agent,
             agent_count=len(job.agents),
+            unlimited=job.unlimited,
         )
         created_at = int(time.time())
         workdir = self._workdir(job)
@@ -517,7 +520,9 @@ class GooseJobRunner:
                         },
                     )
 
-                exit_code, timed_out = self._wait(container, deadline)
+                exit_code, timed_out = self._wait(
+                    container, deadline, heartbeat=heartbeat
+                )
                 raw = self._read_text(workdir, "main.json")
                 main_error = self._read_text(workdir, "main.err")
                 if not raw.strip():
@@ -542,7 +547,10 @@ class GooseJobRunner:
                     )
                 if not output.strip():
                     raise GooseJobRuntimeError("goose returned an empty response.")
-                if len(output.encode("utf-8")) > _MAX_RESULT_BYTES:
+                if (
+                    not job.unlimited
+                    and len(output.encode("utf-8")) > _MAX_RESULT_BYTES
+                ):
                     raise GooseJobRuntimeError(
                         "goose response is too large for jobs.out."
                     )
@@ -985,8 +993,15 @@ class GooseJobRunner:
             return 0
         return _parse_bytes(limit)
 
-    def _wait(self, container: Any, deadline: float) -> tuple[int | None, bool]:
+    def _wait(
+        self,
+        container: Any,
+        deadline: float,
+        heartbeat: Callable[[], None] | None = None,
+    ) -> tuple[int | None, bool]:
         while time.monotonic() < deadline:
+            if heartbeat is not None:
+                heartbeat()
             container.reload()
             if container.status not in {"created", "running", "restarting"}:
                 wait_result = container.wait(timeout=10)
@@ -1108,6 +1123,7 @@ class GooseJobRunner:
         sandbox: SandboxSpec,
         multi_agent: bool,
         agent_count: int,
+        unlimited: bool,
     ) -> dict[str, str]:
         if not self.settings.gateway_configured:
             raise GooseJobRuntimeError(
@@ -1129,6 +1145,7 @@ class GooseJobRunner:
             "KAFKALLM_SANDBOX": sandbox.sandbox_id,
             "KAFKALLM_MULTI_AGENT": "1" if multi_agent else "0",
             "KAFKALLM_AGENT_COUNT": str(agent_count),
+            "KAFKALLM_JOB_UNLIMITED": "1" if unlimited else "0",
             "GOOSE_PATH_ROOT": "/opt/data/goose",
             "GOOSE_MODE": "auto",
             "GOOSE_DISABLE_KEYRING": "1",
@@ -1139,14 +1156,22 @@ class GooseJobRunner:
             "OPENAI_HOST": gateway_url,
             # The gateway replaces this virtual key with the provider key.
             "OPENAI_API_KEY": self.settings.llm_gateway_virtual_key,
-            "GOOSE_MAX_TURNS": str(self.settings.goose_job_max_turns),
-            "GOOSE_SUBAGENT_MAX_TURNS": str(self.settings.goose_job_subagent_max_turns),
+            "GOOSE_MAX_TURNS": str(
+                self.settings.unlimited_max_turns
+                if unlimited
+                else self.settings.goose_job_max_turns
+            ),
+            "GOOSE_SUBAGENT_MAX_TURNS": str(
+                self.settings.unlimited_max_subagent_turns
+                if unlimited
+                else self.settings.goose_job_subagent_max_turns
+            ),
             "GOOSE_MAX_CONCURRENT_SUBAGENTS": str(
                 max(1, min(5, agent_count)) if agent_count else 5
             ),
             "GOOSE_REFLECT_MAX_TURNS": "20",
             "KAFKALLM_JOB_BUDGET_SECONDS": str(max(0, budget)),
-            "KAFKALLM_JOB_MAIN_TIMEOUT": str(main_budget + 10),
+            "KAFKALLM_JOB_MAIN_TIMEOUT": "0" if unlimited else str(main_budget + 10),
             "KAFKALLM_JOB_REFLECT_ENABLED": "1" if reflect_reserve else "0",
             "KAFKALLM_JOB_REFLECT_TIMEOUT": str(
                 self.settings.goose_job_reflect_timeout_seconds

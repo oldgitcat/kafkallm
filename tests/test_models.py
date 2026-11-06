@@ -11,8 +11,17 @@ def test_job_defaults_and_serialization() -> None:
 
     assert job.type == "llm_task"
     assert job.sandbox == "default"
+    assert job.unlimited is False
     assert job.job_id != job.run_id
     assert json.loads(to_json_bytes(job))["instruction"] == "Hello"
+
+
+def test_job_and_state_keep_the_unlimited_flag() -> None:
+    job = Job(instruction="Run for as long as needed", unlimited=True)
+    state = JobState.queued(job)
+
+    assert job.unlimited is True
+    assert state.unlimited is True
 
 
 def test_job_accepts_a_registry_sandbox_id() -> None:

@@ -34,6 +34,7 @@ class Worker:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.running = True
+        self._pending_messages: list[Message] = []
         logger.info(
             "Waiting up to %ss for Redpanda at %s",
             settings.kafka_startup_timeout_seconds,
@@ -47,6 +48,11 @@ class Worker:
         self.sandboxes.start()
         self.harness = Harness(settings, audit=self.audit, sandboxes=self.sandboxes)
         self.harness.wait_ready()
+        max_poll_ms = (settings.max_job_timeout_seconds + 120) * 1000
+        if settings.allow_unlimited_jobs:
+            max_poll_ms = max(max_poll_ms, settings.unlimited_max_poll_interval_ms)
+        # librdkafka rejects values above 24 hours.
+        max_poll_ms = min(max_poll_ms, 86_400_000)
         self.consumer = Consumer(
             {
                 "bootstrap.servers": settings.kafka_bootstrap_servers,
@@ -57,7 +63,7 @@ class Worker:
                 "session.timeout.ms": 15000,
                 "heartbeat.interval.ms": 3000,
                 "partition.assignment.strategy": "cooperative-sticky",
-                "max.poll.interval.ms": (settings.max_job_timeout_seconds + 120) * 1000,
+                "max.poll.interval.ms": max_poll_ms,
             }
         )
 
@@ -79,6 +85,23 @@ class Worker:
             if isinstance(trace_id, str) and 0 < len(trace_id) <= 128:
                 updates["trace_id"] = trace_id
         return result.model_copy(update=updates)
+
+    def _heartbeat(self) -> None:
+        """Poll the consumer while a long job runs so the group membership stays alive."""
+        if not self.running:
+            return
+        try:
+            message = self.consumer.poll(0)
+        except KafkaException as exc:
+            logger.warning("Kafka heartbeat poll failed: %s", exc)
+            return
+        if message is None:
+            return
+        if message.error():
+            if message.error().code() != KafkaError._PARTITION_EOF:
+                logger.warning("Kafka heartbeat poll returned: %s", message.error())
+            return
+        self._pending_messages.append(message)
 
     def handle_message(self, message: Message) -> None:
         parent_context = extract_trace_context(message.headers())
@@ -120,7 +143,11 @@ class Worker:
                     },
                 )
                 logger.info("Starting job %s / run %s", job.job_id, job.run_id)
-                result = self.harness.process(job, job_audit=job_audit)
+                result = self.harness.process(
+                    job,
+                    job_audit=job_audit,
+                    heartbeat=self._heartbeat,
+                )
                 self.state.completed(state, result)
                 job_audit.emit(
                     "job.completed",
@@ -174,14 +201,25 @@ class Worker:
         )
         try:
             while self.running:
-                message = self.consumer.poll(timeout=1.0)
+                if self._pending_messages:
+                    message = self._pending_messages.pop(0)
+                else:
+                    message = self.consumer.poll(timeout=1.0)
                 if message is None:
                     continue
                 if message.error():
                     if message.error().code() == KafkaError._PARTITION_EOF:
                         continue
                     raise KafkaException(message.error())
-                self.handle_message(message)
+                assignment = self.consumer.assignment()
+                if assignment:
+                    self.consumer.pause(assignment)
+                try:
+                    self.handle_message(message)
+                finally:
+                    current = self.consumer.assignment()
+                    if current:
+                        self.consumer.resume(current)
         finally:
             self.consumer.close()
             self.sandboxes.stop()

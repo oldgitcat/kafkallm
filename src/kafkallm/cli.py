@@ -106,6 +106,14 @@ def build_parser() -> argparse.ArgumentParser:
     submit.add_argument("--run-id")
     submit.add_argument("--timeout", type=int, default=300)
     submit.add_argument("--max-steps", type=int, default=6)
+    submit.add_argument(
+        "--unlimited",
+        action="store_true",
+        help=(
+            "Ignore the job timeout and turn cap and preserve oversized results "
+            "as a result-full.md artifact."
+        ),
+    )
 
     schema = subparsers.add_parser(
         "schema",
@@ -143,6 +151,7 @@ def _job_payload(args: argparse.Namespace) -> dict:
                 ("--run-id", args.run_id, None),
                 ("--timeout", args.timeout, 300),
                 ("--max-steps", args.max_steps, 6),
+                ("--unlimited", args.unlimited, False),
             )
             if value != default
         ]
@@ -174,6 +183,7 @@ def _job_payload(args: argparse.Namespace) -> dict:
         "input": input_data,
         "input_files": list(args.input_file),
         "sandbox": args.sandbox,
+        "unlimited": args.unlimited,
         "timeout_seconds": args.timeout,
         "max_steps": args.max_steps,
     }
@@ -214,6 +224,8 @@ def _attach_uploads(
 def submit(settings: Settings, args: argparse.Namespace) -> None:
     payload = _job_payload(args)
     _attach_uploads(settings, args, payload)
+    if payload.get("unlimited") and not settings.allow_unlimited_jobs:
+        raise ValueError("Unlimited jobs are disabled. Set ALLOW_UNLIMITED_JOBS=true.")
     if not payload.get("trace_id"):
         payload["trace_id"] = current_trace_id() or new_trace_id()
     ensure_topics(settings)

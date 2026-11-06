@@ -243,6 +243,10 @@ class JobHandler(BaseHTTPRequestHandler):
             self._send_json(AgentSpec.model_json_schema())
         elif path == "/api/schema/sandbox":
             self._send_json(SandboxSpec.model_json_schema())
+        elif path == "/api/features":
+            self._send_json(
+                {"unlimited_jobs": self.server.settings.allow_unlimited_jobs}
+            )
         elif path.startswith("/api/jobs/"):
             parts = path.strip("/").split("/")
             if len(parts) == 3:
@@ -341,6 +345,13 @@ class JobHandler(BaseHTTPRequestHandler):
                     raise ValueError(f"Unknown sandbox: {sandbox_id}")
             elif not sandbox.enabled:
                 raise ValueError(f"Sandbox {sandbox_id!r} is disabled.")
+            if (
+                payload.get("unlimited")
+                and not self.server.settings.allow_unlimited_jobs
+            ):
+                raise ValueError(
+                    "Unlimited jobs are disabled. Set ALLOW_UNLIMITED_JOBS=true."
+                )
             agent_ids = payload.pop("agent_ids", None)
             multi_agent = bool(payload.get("multi_agent", True))
             if multi_agent and agent_ids is not None:

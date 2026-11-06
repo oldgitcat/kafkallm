@@ -34,6 +34,12 @@ class Settings:
     workspace_root: str
     max_job_timeout_seconds: int
     max_agent_steps: int
+    allow_unlimited_jobs: bool
+    max_result_bytes: int
+    max_output_files: int
+    unlimited_max_turns: int
+    unlimited_max_subagent_turns: int
+    unlimited_max_poll_interval_ms: int
     goose_model: str
     goose_provider: str
     goose_startup_timeout_seconds: int
@@ -109,6 +115,16 @@ class Settings:
             workspace_root=os.getenv("WORKSPACE_ROOT", "/var/lib/kafkallm/staging"),
             max_job_timeout_seconds=_int_env("MAX_JOB_TIMEOUT_SECONDS", 1800),
             max_agent_steps=_int_env("MAX_AGENT_STEPS", 8),
+            allow_unlimited_jobs=_bool_env("ALLOW_UNLIMITED_JOBS", False),
+            max_result_bytes=_int_env("MAX_RESULT_BYTES", 500_000),
+            max_output_files=_int_env("MAX_OUTPUT_FILES", 100),
+            unlimited_max_turns=_int_env("UNLIMITED_MAX_TURNS", 100_000),
+            unlimited_max_subagent_turns=_int_env(
+                "UNLIMITED_MAX_SUBAGENT_TURNS", 100_000
+            ),
+            unlimited_max_poll_interval_ms=_int_env(
+                "UNLIMITED_MAX_POLL_INTERVAL_MS", 86_400_000
+            ),
             goose_model=os.getenv("GOOSE_MODEL", ""),
             goose_provider=os.getenv("GOOSE_PROVIDER", ""),
             goose_startup_timeout_seconds=_int_env(
