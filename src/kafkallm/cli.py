@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -11,7 +12,7 @@ from confluent_kafka import Consumer, KafkaError, KafkaException
 
 from kafkallm.dotenv import load_dotenv
 from kafkallm.kafka import KafkaProducer, ensure_topics
-from kafkallm.models import FileRef, Job
+from kafkallm.models import AgentSpec, FileRef, Job, SandboxSpec
 from kafkallm.settings import Settings
 from kafkallm.state import StatePublisher
 from kafkallm.telemetry import (
@@ -72,7 +73,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     submit = subparsers.add_parser("submit", help="Send a job to jobs.in")
-    submit.add_argument("instruction", help="Task for the agent")
+    submit.add_argument("instruction", nargs="?", help="Task for the agent")
+    submit.add_argument(
+        "--job-json",
+        metavar="FILE",
+        help=(
+            "Read a complete Job JSON payload from FILE, or '-' for stdin. "
+            "The payload defines the whole job."
+        ),
+    )
     submit.add_argument("--input", default="{}", help="JSON object with input data")
     submit.add_argument(
         "--input-file",
@@ -98,6 +107,18 @@ def build_parser() -> argparse.ArgumentParser:
     submit.add_argument("--timeout", type=int, default=300)
     submit.add_argument("--max-steps", type=int, default=6)
 
+    schema = subparsers.add_parser(
+        "schema",
+        help="Print the JSON schema for a job, agent, or sandbox record",
+    )
+    schema.add_argument(
+        "model",
+        nargs="?",
+        choices=("job", "agent", "sandbox"),
+        default="job",
+        help="Model to describe (default: job)",
+    )
+
     results = subparsers.add_parser("results", help="Read results from jobs.out")
     _add_consumer_arguments(results)
     events = subparsers.add_parser("events", help="Read audit events from agent.events")
@@ -107,28 +128,94 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def submit(settings: Settings, args: argparse.Namespace) -> None:
+def _job_payload(args: argparse.Namespace) -> dict:
+    if args.job_json:
+        if args.instruction is not None:
+            raise ValueError("Provide either an instruction or --job-json, not both.")
+        conflicts = [
+            name
+            for name, value, default in (
+                ("--input", args.input, "{}"),
+                ("--input-file", args.input_file, []),
+                ("--upload", args.upload, []),
+                ("--sandbox", args.sandbox, "default"),
+                ("--job-id", args.job_id, None),
+                ("--run-id", args.run_id, None),
+                ("--timeout", args.timeout, 300),
+                ("--max-steps", args.max_steps, 6),
+            )
+            if value != default
+        ]
+        if conflicts:
+            raise ValueError(
+                "--job-json defines the complete job; do not combine it with "
+                + ", ".join(conflicts)
+                + "."
+            )
+        try:
+            if args.job_json == "-":
+                raw = sys.stdin.read()
+            else:
+                raw = Path(args.job_json).read_text(encoding="utf-8")
+        except OSError as exc:
+            raise ValueError(f"Could not read --job-json: {exc}") from exc
+        payload = json.loads(raw)
+        if not isinstance(payload, dict):
+            raise ValueError("--job-json must contain a JSON object.")
+        return payload
+
+    if args.instruction is None:
+        raise ValueError("Provide an instruction or --job-json.")
     input_data = json.loads(args.input)
     if not isinstance(input_data, dict):
         raise ValueError("--input must be a JSON object.")
-    input_files = list(args.input_file)
-    if args.upload:
-        from kafkallm.storage import S3Storage
+    payload = {
+        "instruction": args.instruction,
+        "input": input_data,
+        "input_files": list(args.input_file),
+        "sandbox": args.sandbox,
+        "timeout_seconds": args.timeout,
+        "max_steps": args.max_steps,
+    }
+    if args.job_id:
+        payload["job_id"] = args.job_id
+    if args.run_id:
+        payload["run_id"] = args.run_id
+    return payload
 
-        if len(input_files) + len(args.upload) > settings.upload_max_files:
-            raise ValueError(
-                f"At most {settings.upload_max_files} input files are allowed."
-            )
-        storage = S3Storage(settings)
-        total = 0
-        for path in args.upload:
-            data = path.read_bytes()
-            if len(data) > settings.upload_max_file_bytes:
-                raise ValueError(f"{path} exceeds the per-file upload size limit.")
-            total += len(data)
-            if total > settings.upload_max_total_bytes:
-                raise ValueError("The uploads exceed the total size limit.")
-            input_files.append(storage.upload_input(path.name, data))
+
+def _attach_uploads(
+    settings: Settings,
+    args: argparse.Namespace,
+    payload: dict,
+) -> None:
+    if not args.upload:
+        return
+    from kafkallm.storage import S3Storage
+
+    input_files = list(payload.get("input_files") or [])
+    if len(input_files) + len(args.upload) > settings.upload_max_files:
+        raise ValueError(
+            f"At most {settings.upload_max_files} input files are allowed."
+        )
+    storage = S3Storage(settings)
+    total = 0
+    for path in args.upload:
+        data = path.read_bytes()
+        if len(data) > settings.upload_max_file_bytes:
+            raise ValueError(f"{path} exceeds the per-file upload size limit.")
+        total += len(data)
+        if total > settings.upload_max_total_bytes:
+            raise ValueError("The uploads exceed the total size limit.")
+        input_files.append(storage.upload_input(path.name, data))
+    payload["input_files"] = input_files
+
+
+def submit(settings: Settings, args: argparse.Namespace) -> None:
+    payload = _job_payload(args)
+    _attach_uploads(settings, args, payload)
+    if not payload.get("trace_id"):
+        payload["trace_id"] = current_trace_id() or new_trace_id()
     ensure_topics(settings)
     producer = KafkaProducer(settings)
     state = StatePublisher(settings, producer)
@@ -137,20 +224,7 @@ def submit(settings: Settings, args: argparse.Namespace) -> None:
             "job.submit",
             attributes={"openinference.span.kind": "CHAIN"},
         ) as span:
-            values = {
-                "instruction": args.instruction,
-                "input": input_data,
-                "input_files": input_files,
-                "sandbox": args.sandbox,
-                "timeout_seconds": args.timeout,
-                "max_steps": args.max_steps,
-                "trace_id": current_trace_id() or new_trace_id(),
-            }
-            if args.job_id:
-                values["job_id"] = args.job_id
-            if args.run_id:
-                values["run_id"] = args.run_id
-            job = Job.model_validate(values)
+            job = Job.model_validate(payload)
             span.set_attribute("job.id", job.job_id)
             span.set_attribute("job.run_id", job.run_id)
             set_content(span, "input.value", job.instruction)
@@ -164,6 +238,17 @@ def submit(settings: Settings, args: argparse.Namespace) -> None:
     finally:
         producer.close()
     print(job.model_dump_json(indent=2))
+
+
+_SCHEMA_MODELS = {
+    "job": Job,
+    "agent": AgentSpec,
+    "sandbox": SandboxSpec,
+}
+
+
+def print_schema(model: str) -> None:
+    print(json.dumps(_SCHEMA_MODELS[model].model_json_schema(), indent=2))
 
 
 def consume(settings: Settings, args: argparse.Namespace, topic: str) -> None:
@@ -221,6 +306,8 @@ def main() -> None:
             Worker(settings).run()
         elif args.command == "submit":
             submit(settings, args)
+        elif args.command == "schema":
+            print_schema(args.model)
         elif args.command == "results":
             consume(settings, args, settings.results_topic)
         elif args.command == "events":

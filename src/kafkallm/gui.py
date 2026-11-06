@@ -234,6 +234,12 @@ class JobHandler(BaseHTTPRequestHandler):
                     ]
                 }
             )
+        elif self.path == "/api/schema/job":
+            self._send_json(Job.model_json_schema())
+        elif self.path == "/api/schema/agent":
+            self._send_json(AgentSpec.model_json_schema())
+        elif self.path == "/api/schema/sandbox":
+            self._send_json(SandboxSpec.model_json_schema())
         elif self.path.startswith("/api/jobs/"):
             job_id = self.path.rsplit("/", 1)[-1]
             job = self.server.store.job(job_id)

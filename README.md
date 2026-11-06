@@ -190,6 +190,12 @@ docker compose run --rm -v "$PWD:/data:ro" jobctl submit \
   "Reverse engineer this binary and summarize its behavior" \
   --sandbox reverse --upload /data/tool.bin
 
+# Submit a complete Job JSON payload from a file or stdin
+docker compose run --rm -T jobctl submit --job-json - < job.json
+
+# Print the exact Job JSON schema (job, agent, or sandbox)
+docker compose run --rm jobctl schema job
+
 # Read results
 docker compose run --rm jobctl results --from-beginning --idle-timeout 5
 
@@ -463,6 +469,19 @@ with a review prompt. It may update one reusable skill under
 as the Kafka key. `sandbox` is a registry ID such as `default`, `reverse`, or a
 custom environment added in the GUI. `max_steps` is advisory; goose is bounded
 by `GOOSE_JOB_MAX_TURNS` and the job timeout.
+
+The exact schema is available from the CLI and the HTTP API:
+
+```bash
+kafkallm schema job
+curl -fsS http://localhost:8090/api/schema/job | jq .
+```
+
+`kafkallm submit --job-json job.json` (or `--job-json -` for stdin) accepts the
+same complete document, validates it, publishes it to `jobs.in`, and records
+the initial `queued` state. The JSON defines the whole job, so do not combine
+it with instruction/sandbox flags. `agent_ids` is a GUI-only convenience; raw
+job documents must contain the full `agents` list.
 
 A result includes:
 

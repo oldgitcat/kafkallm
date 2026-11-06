@@ -127,6 +127,10 @@ def test_gui_submits_a_job_and_serves_state() -> None:
     thread.start()
     base = f"http://127.0.0.1:{server.server_address[1]}"
     try:
+        status, schema = _request(f"{base}/api/schema/job")
+        assert status == 200
+        assert {"instruction", "sandbox", "agents"} <= set(schema["properties"])
+
         status, job = _request(
             f"{base}/api/jobs",
             {
