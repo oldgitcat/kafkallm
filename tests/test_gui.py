@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import threading
 import urllib.error
@@ -17,10 +18,20 @@ from kafkallm.settings import Settings
 class FakeStorage:
     def __init__(self) -> None:
         self.uploads: list[tuple[str, bytes]] = []
+        self.downloads: list[FileRef] = []
 
     def upload_input(self, filename: str, data: bytes) -> FileRef:
         self.uploads.append((filename, data))
         return FileRef(bucket="jobs", key=f"uploads/{filename}")
+
+    def download_bytes(self, reference: FileRef) -> bytes:
+        self.downloads.append(reference)
+        return b"artifact-data"
+
+    def open_download(self, reference: FileRef) -> tuple[io.BytesIO, int]:
+        self.downloads.append(reference)
+        data = b"artifact-data"
+        return io.BytesIO(data), len(data)
 
 
 class RecordingProducer:
@@ -65,6 +76,14 @@ def _delete(url: str) -> tuple[int, Any]:
             return response.status, json.loads(response.read())
     except urllib.error.HTTPError as exc:
         return exc.code, json.loads(exc.read())
+
+
+def _download(url: str) -> tuple[int, dict[str, str], bytes]:
+    try:
+        with urllib.request.urlopen(url, timeout=5) as response:
+            return response.status, dict(response.headers), response.read()
+    except urllib.error.HTTPError as exc:
+        return exc.code, dict(exc.headers), exc.read()
 
 
 def _post_multipart(
@@ -363,6 +382,65 @@ def test_gui_manages_sandboxes_and_validates_job_environments() -> None:
         status, error = _delete(f"{base}/api/sandboxes/default")
         assert status == 400
         assert "cannot be disabled" in error["error"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_gui_downloads_results_and_artifacts() -> None:
+    settings = _settings()
+    store = JobStore(settings)
+    storage = FakeStorage()
+    job = Job(instruction="Produce a report", sandbox="default")
+    artifact = FileRef(
+        bucket="jobs",
+        key=f"{job.job_id}/{job.run_id}/report.md",
+    )
+    store.put_state(
+        JobState.queued(job)
+        .model_copy(
+            update={
+                "status": "succeeded",
+                "result": "# Report\n\nAll good.",
+                "artifacts": [artifact],
+            }
+        )
+        .model_dump(mode="json")
+    )
+    running = Job(instruction="Still running")
+    store.put_state(JobState.queued(running).model_dump(mode="json"))
+    server = JobServer(
+        ("127.0.0.1", 0),
+        store,
+        RecordingProducer(),
+        settings,
+        storage_factory=lambda _settings: storage,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        status, headers, body = _download(f"{base}/api/jobs/{job.job_id}/result")
+        assert status == 200
+        assert body == b"# Report\n\nAll good."
+        assert headers["Content-Type"].startswith("text/markdown")
+        assert "attachment" in headers["Content-Disposition"]
+        assert f"{job.job_id}-result.md" in headers["Content-Disposition"]
+
+        status, headers, body = _download(f"{base}/api/jobs/{job.job_id}/artifacts/0")
+        assert status == 200
+        assert body == b"artifact-data"
+        assert storage.downloads == [artifact]
+        assert headers["Content-Type"] == "text/markdown"
+        assert "report.md" in headers["Content-Disposition"]
+
+        status, _, _ = _download(f"{base}/api/jobs/{job.job_id}/artifacts/1")
+        assert status == 404
+        status, _, _ = _download(f"{base}/api/jobs/{job.job_id}/artifacts/not-a-number")
+        assert status == 404
+        status, _, _ = _download(f"{base}/api/jobs/{running.job_id}/result")
+        assert status == 404
     finally:
         server.shutdown()
         server.server_close()

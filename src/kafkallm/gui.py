@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import mimetypes
 import signal
 import threading
 import uuid
@@ -12,6 +13,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, urlsplit
 
 from confluent_kafka import Consumer, KafkaError, KafkaException
 from pydantic import ValidationError
@@ -23,7 +25,7 @@ from kafkallm.agents import (
     seed_default_agents,
 )
 from kafkallm.kafka import KafkaProducer, ensure_topics, wait_for_kafka
-from kafkallm.models import AgentSpec, Job, SandboxSpec, utc_now
+from kafkallm.models import AgentSpec, FileRef, Job, SandboxSpec, utc_now
 from kafkallm.sandboxes import (
     SandboxPublisher,
     SandboxStore,
@@ -210,13 +212,14 @@ class JobHandler(BaseHTTPRequestHandler):
         logger.info("%s - %s", self.address_string(), format % args)
 
     def do_GET(self) -> None:
-        if self.path in {"/", "/index.html"}:
+        path = urlsplit(self.path).path
+        if path in {"/", "/index.html"}:
             self._send_file()
-        elif self.path == "/healthz":
+        elif path == "/healthz":
             self._send_json({"status": "ok"})
-        elif self.path == "/api/jobs":
+        elif path == "/api/jobs":
             self._send_json({"jobs": self.server.store.jobs()})
-        elif self.path == "/api/agents":
+        elif path == "/api/agents":
             self._send_json(
                 {
                     "agents": [
@@ -225,7 +228,7 @@ class JobHandler(BaseHTTPRequestHandler):
                     ]
                 }
             )
-        elif self.path == "/api/sandboxes":
+        elif path == "/api/sandboxes":
             self._send_json(
                 {
                     "sandboxes": [
@@ -234,21 +237,82 @@ class JobHandler(BaseHTTPRequestHandler):
                     ]
                 }
             )
-        elif self.path == "/api/schema/job":
+        elif path == "/api/schema/job":
             self._send_json(Job.model_json_schema())
-        elif self.path == "/api/schema/agent":
+        elif path == "/api/schema/agent":
             self._send_json(AgentSpec.model_json_schema())
-        elif self.path == "/api/schema/sandbox":
+        elif path == "/api/schema/sandbox":
             self._send_json(SandboxSpec.model_json_schema())
-        elif self.path.startswith("/api/jobs/"):
-            job_id = self.path.rsplit("/", 1)[-1]
-            job = self.server.store.job(job_id)
-            if job is None:
-                self._send_json({"error": "job not found"}, status=HTTPStatus.NOT_FOUND)
+        elif path.startswith("/api/jobs/"):
+            parts = path.strip("/").split("/")
+            if len(parts) == 3:
+                self._send_job(parts[2])
+            elif len(parts) == 4 and parts[3] == "result":
+                self._send_job_result(parts[2])
+            elif len(parts) == 5 and parts[3] == "artifacts":
+                self._send_job_artifact(parts[2], parts[4])
             else:
-                self._send_json(job)
+                self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
         else:
             self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
+
+    def _send_job(self, job_id: str) -> None:
+        job = self.server.store.job(job_id)
+        if job is None:
+            self._send_json({"error": "job not found"}, status=HTTPStatus.NOT_FOUND)
+        else:
+            self._send_json(job)
+
+    def _send_job_result(self, job_id: str) -> None:
+        job = self.server.store.job(job_id)
+        if job is None:
+            self._send_json({"error": "job not found"}, status=HTTPStatus.NOT_FOUND)
+            return
+        result = job.get("result")
+        if not isinstance(result, str) or not result:
+            self._send_json(
+                {"error": "result not available"},
+                status=HTTPStatus.NOT_FOUND,
+            )
+            return
+        self._send_download(
+            result.encode("utf-8"),
+            f"{job_id}-result.md",
+            "text/markdown; charset=utf-8",
+        )
+
+    def _send_job_artifact(self, job_id: str, index_raw: str) -> None:
+        job = self.server.store.job(job_id)
+        if job is None:
+            self._send_json({"error": "job not found"}, status=HTTPStatus.NOT_FOUND)
+            return
+        artifacts = job.get("artifacts") or []
+        try:
+            index = int(index_raw)
+        except (TypeError, ValueError):
+            index = -1
+        if index < 0 or index >= len(artifacts):
+            self._send_json(
+                {"error": "artifact not found"},
+                status=HTTPStatus.NOT_FOUND,
+            )
+            return
+        try:
+            reference = FileRef.model_validate(artifacts[index])
+            body, length = self.server.get_storage().open_download(reference)
+        except Exception as exc:
+            logger.exception("Could not download artifact")
+            self._send_json(
+                {"error": f"Could not download artifact: {exc}"},
+                status=HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+            return
+        filename = Path(reference.key).name or "artifact"
+        content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        try:
+            self._send_download_stream(body, length, filename, content_type)
+        finally:
+            body.close()
 
     def do_POST(self) -> None:
         if self.path == "/api/uploads":
@@ -585,6 +649,47 @@ class JobHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_download(
+        self,
+        body: bytes,
+        filename: str,
+        content_type: str,
+    ) -> None:
+        self._send_download_headers(filename, content_type, len(body))
+        self.wfile.write(body)
+
+    def _send_download_stream(
+        self,
+        body: Any,
+        length: int,
+        filename: str,
+        content_type: str,
+    ) -> None:
+        self._send_download_headers(filename, content_type, length)
+        while True:
+            chunk = body.read(64 * 1024)
+            if not chunk:
+                break
+            self.wfile.write(chunk)
+
+    def _send_download_headers(
+        self,
+        filename: str,
+        content_type: str,
+        length: int,
+    ) -> None:
+        quoted = quote(filename, safe="")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(length))
+        self.send_header(
+            "Content-Disposition",
+            f"attachment; filename=\"{quoted}\"; filename*=UTF-8''{quoted}",
+        )
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
 
     def _send_json(
         self,

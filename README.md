@@ -72,8 +72,9 @@ GUI ──→ jobs.in, jobs.state, agents.state, sandboxes.state, agent.events
   OpenRouter key and accepts only a rotatable virtual key from jobs
 - An IPv6-only internal Podman network where the allowlisting proxy is the only
   reachable peer; it forwards only to agentgateway
-- A browser GUI for submitting jobs, uploading input files or binaries, and
-  watching state, results, and audit events
+- A browser GUI for submitting jobs, uploading input files or binaries,
+  watching state, results, and audit events, and downloading result text and
+  artifacts
 - **MLflow** observability with OTLP traces, token usage, durations, and errors
   (Phoenix remains available as an optional second backend)
 - An editable sandbox: host-mounted tools, goose/MCP config, persistent skills,
@@ -759,6 +760,22 @@ deletes the job directory.
 Artifacts are uploaded only from `outputs/`. A missing or unreachable artifact
 store does not turn a successful run into a failed job; the job remains
 `succeeded` with an `artifact_error`. Uploads are retried three times.
+
+### Downloading results and artifacts
+
+The job detail in the GUI has **Download result** for the text result and a
+**Download** link for every uploaded artifact. Downloads are proxied through
+the GUI, so the browser does not need S3 credentials.
+
+The same files are available over HTTP:
+
+```bash
+# Result text as Markdown
+curl -fL "http://localhost:8090/api/jobs/<job_id>/result" -o result.md
+
+# Artifact by index, in the same order as the artifacts list
+curl -fL "http://localhost:8090/api/jobs/<job_id>/artifacts/0" -o artifact.bin
+```
 
 ## RustFS and input files
 

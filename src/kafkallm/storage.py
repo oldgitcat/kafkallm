@@ -59,6 +59,25 @@ class S3Storage:
         destination.parent.mkdir(parents=True, exist_ok=True)
         self.client.download_file(reference.bucket, reference.key, str(destination))
 
+    def download_bytes(self, reference: FileRef) -> bytes:
+        response = self.client.get_object(
+            Bucket=reference.bucket,
+            Key=reference.key,
+        )
+        body = response["Body"]
+        try:
+            return body.read()
+        finally:
+            body.close()
+
+    def open_download(self, reference: FileRef) -> tuple[object, int]:
+        """Return a streaming body and its length for an S3 object."""
+        response = self.client.get_object(
+            Bucket=reference.bucket,
+            Key=reference.key,
+        )
+        return response["Body"], int(response.get("ContentLength", 0))
+
     def upload_input(self, filename: str, data: bytes) -> FileRef:
         """Store an uploaded input file and return its bucket/key reference."""
         name = _safe_filename(filename)

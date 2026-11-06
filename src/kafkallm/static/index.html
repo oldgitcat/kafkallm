@@ -430,6 +430,32 @@
       font-size: 11px;
       font-weight: 600;
     }
+    .block-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 7px;
+    }
+    .block-head h3 { margin: 0; }
+    .download-link {
+      color: var(--info);
+      font-size: 12px;
+      font-weight: 600;
+      white-space: nowrap;
+      text-decoration: none;
+    }
+    .download-link:hover { text-decoration: underline; }
+    .artifact-line {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 5px 0;
+      border-bottom: 1px solid var(--border-soft);
+    }
+    .artifact-line:last-child { border-bottom: 0; }
+    .artifact-line .mono { word-break: break-all; }
     pre {
       margin: 0;
       padding: 12px;
@@ -972,7 +998,11 @@
         ? `<div class="events">${job.input_files.map((a) => `<div class="mono">${esc(a.bucket)}/${esc(a.key)}</div>`).join("")}</div>`
         : `<span class="muted">none</span>`;
       const artifacts = (job.artifacts || []).length
-        ? `<div class="events">${job.artifacts.map((a) => `<div class="mono">${esc(a.bucket)}/${esc(a.key)}</div>`).join("")}</div>`
+        ? `<div class="events">${job.artifacts.map((a, index) => `
+            <div class="artifact-line">
+              <span class="mono">${esc(a.bucket)}/${esc(a.key)}</span>
+              <a class="download-link" href="/api/jobs/${encodeURIComponent(job.job_id)}/artifacts/${index}" download>Download</a>
+            </div>`).join("")}</div>`
         : `<span class="muted">none</span>`;
       const events = (job.events || []).length
         ? `<div class="events">${job.events.map((event) => `
@@ -1002,7 +1032,13 @@
           <div class="field"><div class="k">Usage</div><div class="v mono">${usage}</div></div>
         </div>
         <div class="block"><h3>Instruction</h3><pre>${esc(job.instruction)}</pre></div>
-        ${job.result ? `<div class="block"><h3>Result</h3><pre>${esc(job.result)}</pre></div>` : ""}
+        ${job.result ? `<div class="block">
+          <div class="block-head">
+            <h3>Result</h3>
+            <a class="download-link" href="/api/jobs/${encodeURIComponent(job.job_id)}/result" download>Download result</a>
+          </div>
+          <pre>${esc(job.result)}</pre>
+        </div>` : ""}
         ${job.error ? `<div class="block"><h3>Error</h3><pre>${esc(job.error)}</pre></div>` : ""}
         ${job.artifact_error ? `<div class="block"><h3>Artifact error</h3><pre>${esc(job.artifact_error)}</pre></div>` : ""}
         <div class="block"><h3>Input files</h3>${inputFiles}</div>
