@@ -17,7 +17,8 @@ from kafkallm.goose_job_runtime import (
     parse_goose_output,
 )
 from kafkallm.harness import Harness
-from kafkallm.models import AgentSpec, Job
+from kafkallm.models import AgentSpec, Job, SandboxSpec
+from kafkallm.sandboxes import SandboxStore
 from kafkallm.settings import Settings
 
 
@@ -548,6 +549,71 @@ def test_default_sandbox_uses_the_goose_image(tmp_path: Path) -> None:
     assert "REA_GHIDRA_STARTUP_TIMEOUT_MS" not in environment
 
 
+def test_registered_sandbox_supplies_image_env_extensions_and_prompt(
+    tmp_path: Path,
+) -> None:
+    client = FakeDockerClient()
+    client.results = {"main.json": _goose_result(text="Analyzed")}
+    settings = _settings_for(tmp_path)
+    sandboxes = SandboxStore(settings)
+    sandboxes.put(
+        SandboxSpec(
+            sandbox_id="malware",
+            name="Malware analysis",
+            image="malware:test",
+            instructions="Malware sandbox: use YARA before disassembly.",
+            env={"YARA_RULES": "/opt/rules"},
+            extensions=["rea:/opt/kafkallm/rea-mcp"],
+        )
+    )
+    runner = GooseJobRunner(settings, client=client, sandboxes=sandboxes)
+    job = Job(instruction="Analyze the sample", sandbox="malware")
+
+    runner.run(
+        job=job,
+        workspace=_workspace(tmp_path),
+        deadline=time.monotonic() + 120,
+        max_steps=5,
+    )
+
+    body = client.create_body
+    assert body["Image"] == "malware:test"
+    environment = dict(item.split("=", 1) for item in body["Env"])
+    assert environment["KAFKALLM_SANDBOX"] == "malware"
+    assert environment["YARA_RULES"] == "/opt/rules"
+    assert environment["KAFKALLM_SANDBOX_EXTENSIONS"] == "rea:/opt/kafkallm/rea-mcp"
+    assert "Malware sandbox" in runner._build_prompt(job)
+
+
+def test_disabled_registered_sandbox_is_rejected(tmp_path: Path) -> None:
+    settings = _settings_for(tmp_path)
+    sandboxes = SandboxStore(settings)
+    sandboxes.put(
+        SandboxSpec(
+            sandbox_id="malware",
+            name="Malware analysis",
+            image="malware:test",
+            enabled=False,
+        )
+    )
+    runner = GooseJobRunner(settings, client=FakeDockerClient(), sandboxes=sandboxes)
+
+    with pytest.raises(GooseJobRuntimeError, match="disabled"):
+        runner.run(
+            job=Job(instruction="Analyze", sandbox="malware"),
+            workspace=_workspace(tmp_path),
+            deadline=time.monotonic() + 120,
+            max_steps=5,
+        )
+
+
+def test_unknown_sandbox_is_rejected(tmp_path: Path) -> None:
+    runner = GooseJobRunner(_settings_for(tmp_path))
+
+    with pytest.raises(GooseJobRuntimeError, match="Unknown sandbox"):
+        runner._sandbox_for("missing")
+
+
 def test_reverse_prompt_mentions_rea(tmp_path: Path) -> None:
     runner = GooseJobRunner(_settings_for(tmp_path))
 
@@ -558,16 +624,19 @@ def test_reverse_prompt_mentions_rea(tmp_path: Path) -> None:
     assert "REA MCP server" not in runner._build_prompt(Job(instruction="Plain"))
 
 
-def test_run_script_enables_rea_only_for_reverse_sandbox() -> None:
-    assert '--with-extension "rea:/opt/kafkallm/rea-mcp"' in _VM_RUN_SCRIPT
+def test_run_script_enables_registered_sandbox_extensions() -> None:
+    assert "KAFKALLM_SANDBOX_EXTENSIONS" in _VM_RUN_SCRIPT
+    assert '--with-extension "$extension"' in _VM_RUN_SCRIPT
+    assert "extension_path=${extension#*:}" in _VM_RUN_SCRIPT
     assert "TMPDIR=/workspace/.scratch/tmp" in _VM_RUN_SCRIPT
     assert "chmod -R a+rwX /workspace/.scratch" in _VM_RUN_SCRIPT
-    assert "KAFKALLM_SANDBOX:-default" in _VM_RUN_SCRIPT
     # Multi-agent runs need goose's summon and skills builtins.
     assert 'builtins="$builtins,summon,skills"' in _VM_RUN_SCRIPT
     assert '--with-builtin "$builtins"' in _VM_RUN_SCRIPT
-    # The learning pass does not need REA and must not start Ghidra again.
-    assert _VM_RUN_SCRIPT.count('"$@"') == 1
+    # Extensions are only passed to the main run; the learning pass has none.
+    assert _VM_RUN_SCRIPT.count('--with-extension "$extension"') == 1
+    reflect = _VM_RUN_SCRIPT.split("reflect_timeout")[1].split("reflect-prompt.txt")[0]
+    assert '"$@"' not in reflect
 
 
 def test_vm_does_not_pass_provider_credentials(

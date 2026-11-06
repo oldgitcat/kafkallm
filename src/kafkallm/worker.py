@@ -15,6 +15,7 @@ from kafkallm.audit import AuditLogger
 from kafkallm.harness import Harness
 from kafkallm.kafka import KafkaProducer, wait_for_kafka
 from kafkallm.models import ID_PATTERN, Job, JobResult
+from kafkallm.sandboxes import SandboxStore
 from kafkallm.settings import Settings
 from kafkallm.state import StatePublisher
 from kafkallm.telemetry import (
@@ -42,7 +43,9 @@ class Worker:
         self.producer = KafkaProducer(settings)
         self.audit = AuditLogger(settings, self.producer)
         self.state = StatePublisher(settings, self.producer)
-        self.harness = Harness(settings, audit=self.audit)
+        self.sandboxes = SandboxStore(settings)
+        self.sandboxes.start()
+        self.harness = Harness(settings, audit=self.audit, sandboxes=self.sandboxes)
         self.harness.wait_ready()
         self.consumer = Consumer(
             {
@@ -181,6 +184,7 @@ class Worker:
                 self.handle_message(message)
         finally:
             self.consumer.close()
+            self.sandboxes.stop()
             self.producer.close()
             self.harness.close()
             logger.info("Worker stopped")

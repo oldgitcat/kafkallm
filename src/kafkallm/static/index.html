@@ -317,6 +317,54 @@
     }
     .agent-actions { display: flex; gap: 8px; }
     .agent-actions button { margin-top: 14px; }
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .panel-head h2 { margin: 0; }
+    .compact {
+      width: auto;
+      margin: 0;
+      padding: 5px 10px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    button.link-button {
+      width: auto;
+      margin: 0;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: var(--info);
+      font-size: 12px;
+      font-weight: 600;
+    }
+    button.link-button:hover {
+      background: transparent;
+      color: var(--text);
+      text-decoration: underline;
+    }
+    .flock-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin: 12px 0 6px;
+      font-size: 12px;
+    }
+    .flock-head .muted {
+      font-size: 12px;
+      font-weight: 600;
+    }
+    #sandbox-instructions { min-height: 90px; }
+    #sandbox-env {
+      min-height: 76px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+    }
     button.secondary {
       background: transparent;
       color: var(--muted);
@@ -447,13 +495,16 @@
         <div class="hint">Any file type. Files are uploaded to RustFS and copied into the job at <span class="mono">/workspace/inputs</span>.</div>
 
         <label for="sandbox">Sandbox</label>
-        <select id="sandbox">
-          <option value="default">Default: goose + goosetown</option>
-          <option value="reverse">Reverse engineering: REA + Ghidra</option>
+        <select id="sandbox" disabled>
+          <option value="">Loading sandboxes…</option>
         </select>
-        <div class="hint">The reverse sandbox includes REA as an MCP server, Ghidra, GDB, binwalk, YARA, and Python RE libraries.</div>
+        <div id="sandbox-hint" class="hint">The environment provides the job image and its tools.</div>
 
         <label class="check"><input id="multi_agent" type="checkbox" checked> Use goosetown multi-agent flock</label>
+        <div class="flock-head">
+          <span class="muted">Flock members</span>
+          <button id="agent-new-inline" type="button" class="link-button">+ New agent</button>
+        </div>
         <div id="agent-options" class="agent-options"><span class="muted">Loading agents…</span></div>
 
         <div class="row">
@@ -473,8 +524,44 @@
       </form>
     </section>
 
+    <section id="sandboxes-panel">
+      <div class="panel-head">
+        <h2>Sandboxes</h2>
+        <button id="sandbox-new" type="button" class="compact">+ New sandbox</button>
+      </div>
+      <div id="sandboxes" class="agent-list"><span class="muted">Loading sandboxes…</span></div>
+      <details id="sandbox-details">
+        <summary>Add or edit sandbox</summary>
+        <form id="sandbox-form">
+          <input id="sandbox-id" type="hidden">
+          <label for="sandbox-name">Name</label>
+          <input id="sandbox-name" required placeholder="e.g. Malware analysis">
+          <label for="sandbox-image">Container image</label>
+          <input id="sandbox-image" required placeholder="localhost/kafkallm-malware-job:latest">
+          <div class="hint">Build the image into the rootless Podman storage first. Registry images are pulled when the worker can reach them.</div>
+          <label for="sandbox-description">Description</label>
+          <input id="sandbox-description" placeholder="What this environment is for">
+          <label for="sandbox-instructions">Prompt notes (optional)</label>
+          <textarea id="sandbox-instructions" placeholder="Capabilities or conventions the agent should know about this environment."></textarea>
+          <label for="sandbox-env">Extra environment (JSON, optional)</label>
+          <textarea id="sandbox-env" spellcheck="false" placeholder='{"MY_TOOL_HOME": "/opt/mytool"}'>{}</textarea>
+          <label for="sandbox-extensions">Goose extensions (comma separated, optional)</label>
+          <input id="sandbox-extensions" placeholder="rea:/opt/kafkallm/rea-mcp">
+          <label class="check"><input id="sandbox-enabled" type="checkbox" checked> Enabled</label>
+          <div class="agent-actions">
+            <button id="sandbox-save" type="submit">Save sandbox</button>
+            <button id="sandbox-reset" type="button" class="secondary">New</button>
+          </div>
+          <div id="sandbox-message" class="message"></div>
+        </form>
+      </details>
+    </section>
+
     <section id="agents-panel">
-      <h2>Goosetown agents</h2>
+      <div class="panel-head">
+        <h2>Goosetown agents</h2>
+        <button id="agent-new" type="button" class="compact">+ New agent</button>
+      </div>
       <div id="agents" class="agent-list"><span class="muted">Loading agents…</span></div>
       <details>
         <summary>Add or edit agent</summary>
@@ -482,6 +569,7 @@
           <input id="agent-id" type="hidden">
           <label for="agent-name">Name</label>
           <input id="agent-name" required placeholder="e.g. Security reviewer">
+          <div class="hint">The name is shown in the flock list and can be changed at any time.</div>
           <div class="row">
             <div>
               <label for="agent-role">Role</label>
@@ -501,6 +589,7 @@
             <button id="agent-save" type="submit">Save agent</button>
             <button id="agent-reset" type="button" class="secondary">New</button>
           </div>
+          <div id="agent-message" class="message"></div>
         </form>
       </details>
     </section>
@@ -513,7 +602,7 @@
   </main>
 
   <script>
-    const state = { jobs: [], agents: [], selected: null, selectedAgents: null, detail: null, detailError: null, timer: null };
+    const state = { jobs: [], agents: [], sandboxes: [], selected: null, selectedAgents: null, detail: null, detailError: null, timer: null };
     const $ = (id) => document.getElementById(id);
 
     function esc(value) {
@@ -557,6 +646,125 @@
     }
 
     const enabledAgents = () => state.agents.filter((agent) => agent.enabled);
+    const enabledSandboxes = () => state.sandboxes.filter((sandbox) => sandbox.enabled);
+    const sandboxSpec = (sandboxId) => state.sandboxes.find((sandbox) => sandbox.sandbox_id === sandboxId);
+    const sandboxLabel = (sandboxId) => sandboxSpec(sandboxId)?.name || sandboxId || "default";
+
+    function renderSandboxOptions() {
+      const select = $("sandbox");
+      const sandboxes = enabledSandboxes();
+      if (!sandboxes.length) {
+        select.innerHTML = `<option value="">No enabled sandboxes</option>`;
+        select.disabled = true;
+        $("sandbox-hint").textContent = "Add an environment below before submitting a job.";
+        return;
+      }
+      const previous = select.value || "default";
+      select.disabled = false;
+      select.innerHTML = sandboxes.map((sandbox) => `
+        <option value="${esc(sandbox.sandbox_id)}">${esc(sandbox.name)}</option>`).join("");
+      if (sandboxes.some((sandbox) => sandbox.sandbox_id === previous)) {
+        select.value = previous;
+      } else if (sandboxes.some((sandbox) => sandbox.sandbox_id === "default")) {
+        select.value = "default";
+      } else {
+        select.value = sandboxes[0].sandbox_id;
+      }
+      updateSandboxHint();
+    }
+
+    function updateSandboxHint() {
+      const sandbox = sandboxSpec($("sandbox").value);
+      $("sandbox-hint").textContent = sandbox
+        ? `${sandbox.description || "No description."} Image: ${sandbox.image}.`
+        : "The environment provides the job image and its tools.";
+    }
+
+    function renderSandboxes() {
+      const container = $("sandboxes");
+      if (!state.sandboxes.length) {
+        container.innerHTML = `<span class="muted">No sandboxes yet.</span>`;
+        return;
+      }
+      container.innerHTML = state.sandboxes.map((sandbox) => `
+        <div class="agent-row ${sandbox.enabled ? "" : "disabled"}">
+          <div class="info">
+            <div class="name">${esc(sandbox.name)}</div>
+            <div class="meta mono">${esc(sandbox.sandbox_id)} · ${esc(sandbox.image)}</div>
+            <div class="meta">${esc(sandbox.description || "")}</div>
+          </div>
+          <div class="actions">
+            <button type="button" data-sandbox-edit="${esc(sandbox.sandbox_id)}">Edit</button>
+            ${sandbox.enabled && sandbox.sandbox_id !== "default" ? `<button type="button" data-sandbox-disable="${esc(sandbox.sandbox_id)}">Disable</button>` : ""}
+          </div>
+        </div>`).join("");
+      for (const button of container.querySelectorAll("[data-sandbox-edit]")) {
+        button.addEventListener("click", () => editSandbox(button.dataset.sandboxEdit));
+      }
+      for (const button of container.querySelectorAll("[data-sandbox-disable]")) {
+        button.addEventListener("click", () => disableSandbox(button.dataset.sandboxDisable));
+      }
+    }
+
+    async function loadSandboxes() {
+      try {
+        const data = await api("/api/sandboxes");
+        state.sandboxes = data.sandboxes || [];
+        renderSandboxOptions();
+        renderSandboxes();
+      } catch (error) {
+        $("sandboxes").innerHTML = `<span class="message error">${esc(error.message)}</span>`;
+        $("sandbox").innerHTML = `<option value="">Could not load sandboxes</option>`;
+        $("sandbox").disabled = true;
+        $("sandbox-hint").textContent = error.message;
+      }
+    }
+
+    function resetSandboxForm() {
+      $("sandbox-id").value = "";
+      $("sandbox-name").value = "";
+      $("sandbox-image").value = "";
+      $("sandbox-description").value = "";
+      $("sandbox-instructions").value = "";
+      $("sandbox-env").value = "{}";
+      $("sandbox-extensions").value = "";
+      $("sandbox-enabled").checked = true;
+      $("sandbox-message").className = "message";
+      $("sandbox-message").textContent = "";
+    }
+
+    function openNewSandbox() {
+      resetSandboxForm();
+      $("sandbox-details").open = true;
+      $("sandbox-name").focus();
+    }
+
+    function editSandbox(sandboxId) {
+      const sandbox = sandboxSpec(sandboxId);
+      if (!sandbox) return;
+      $("sandbox-id").value = sandbox.sandbox_id;
+      $("sandbox-name").value = sandbox.name;
+      $("sandbox-image").value = sandbox.image;
+      $("sandbox-description").value = sandbox.description || "";
+      $("sandbox-instructions").value = sandbox.instructions || "";
+      $("sandbox-env").value = JSON.stringify(sandbox.env || {}, null, 2);
+      $("sandbox-extensions").value = (sandbox.extensions || []).join(", ");
+      $("sandbox-enabled").checked = sandbox.enabled;
+      $("sandbox-message").className = "message";
+      $("sandbox-message").textContent = "";
+      $("sandbox-details").open = true;
+      $("sandbox-name").focus();
+    }
+
+    async function disableSandbox(sandboxId) {
+      try {
+        await api(`/api/sandboxes/${encodeURIComponent(sandboxId)}`, { method: "DELETE" });
+        await loadSandboxes();
+      } catch (error) {
+        $("sandbox-message").className = "message error";
+        $("sandbox-message").textContent = error.message;
+      }
+    }
 
     function renderAgentOptions() {
       const container = $("agent-options");
@@ -632,6 +840,14 @@
       $("agent-description").value = "";
       $("agent-instructions").value = "";
       $("agent-enabled").checked = true;
+      $("agent-message").className = "message";
+      $("agent-message").textContent = "";
+    }
+
+    function openNewAgent() {
+      resetAgentForm();
+      $("agents-panel").querySelector("details").open = true;
+      $("agent-name").focus();
     }
 
     function editAgent(agentId) {
@@ -644,6 +860,8 @@
       $("agent-description").value = agent.description || "";
       $("agent-instructions").value = agent.instructions || "";
       $("agent-enabled").checked = agent.enabled;
+      $("agent-message").className = "message";
+      $("agent-message").textContent = "";
       $("agents-panel").querySelector("details").open = true;
       $("agent-name").focus();
     }
@@ -671,7 +889,7 @@
           <td>${badge(job.status)}</td>
           <td class="mono">${esc(job.job_id)}</td>
           <td><div class="snippet" title="${esc(job.instruction)}">${esc(job.instruction)}</div></td>
-          <td class="muted">${job.sandbox === "reverse" ? "REA" : "default"}</td>
+          <td class="muted">${esc(sandboxLabel(job.sandbox))}</td>
           <td class="muted">${esc(fmtTime(job.submitted_at))}</td>
           <td class="muted">${esc(duration(job))}</td>
           <td class="muted">${esc(job.steps ?? 0)}</td>
@@ -778,7 +996,7 @@
           <div class="field"><div class="k">Submitted</div><div class="v">${esc(fmtTime(job.submitted_at))}</div></div>
           <div class="field"><div class="k">Started</div><div class="v">${esc(fmtTime(job.started_at))}</div></div>
           <div class="field"><div class="k">Finished</div><div class="v">${esc(fmtTime(job.finished_at))}</div></div>
-          <div class="field"><div class="k">Sandbox</div><div class="v">${job.sandbox === "reverse" ? "reverse engineering (REA + Ghidra)" : "default"}</div></div>
+          <div class="field"><div class="k">Sandbox</div><div class="v">${esc(sandboxLabel(job.sandbox))}${sandboxSpec(job.sandbox)?.description ? ` <span class="muted">${esc(sandboxSpec(job.sandbox).description)}</span>` : ""}</div></div>
           <div class="field"><div class="k">Mode</div><div class="v">${job.multi_agent === false ? "single agent" : "goosetown flock"}</div></div>
           <div class="field"><div class="k">Flock</div><div class="v">${esc((job.agent_names || []).join(", ") || "built-in roles")}</div></div>
           <div class="field"><div class="k">Usage</div><div class="v mono">${usage}</div></div>
@@ -794,6 +1012,7 @@
     }
 
     $("multi_agent").addEventListener("change", syncAgentOptions);
+    $("sandbox").addEventListener("change", updateSandboxHint);
     syncAgentOptions();
 
     $("job-form").addEventListener("submit", async (event) => {
@@ -805,6 +1024,8 @@
       message.className = "message";
       message.textContent = files.length ? "Uploading files…" : "Submitting…";
       try {
+        const sandbox = $("sandbox").value;
+        if (!sandbox) throw new Error("Select an enabled sandbox first.");
         const input = JSON.parse($("input").value || "{}");
         const inputFiles = files.length ? await uploadFiles(files) : [];
         message.textContent = "Submitting…";
@@ -816,7 +1037,7 @@
           instruction: $("instruction").value.trim(),
           input,
           input_files: inputFiles,
-          sandbox: $("sandbox").value,
+          sandbox,
           multi_agent: multiAgent,
           agent_ids: agentIds,
           timeout_seconds: Number($("timeout").value),
@@ -841,12 +1062,17 @@
       }
     });
 
+    $("agent-new").addEventListener("click", openNewAgent);
+    $("agent-new-inline").addEventListener("click", openNewAgent);
     $("agent-reset").addEventListener("click", resetAgentForm);
 
     $("agent-form").addEventListener("submit", async (event) => {
       event.preventDefault();
       const button = $("agent-save");
+      const message = $("agent-message");
       button.disabled = true;
+      message.className = "message";
+      message.textContent = "";
       try {
         const payload = {
           agent_id: $("agent-id").value || undefined,
@@ -858,15 +1084,67 @@
           enabled: $("agent-enabled").checked,
         };
         if (!payload.agent_id) delete payload.agent_id;
-        await api("/api/agents", {
+        const created = await api("/api/agents", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
+        if (created.enabled && state.selectedAgents !== null) {
+          state.selectedAgents = Array.from(
+            new Set([...state.selectedAgents, created.agent_id])
+          );
+        }
         resetAgentForm();
         await loadAgents();
+        $("agent-message").className = "message ok";
+        $("agent-message").textContent = `Saved ${created.name}.`;
       } catch (error) {
-        $("agents").innerHTML = `<span class="message error">${esc(error.message)}</span>`;
+        $("agent-message").className = "message error";
+        $("agent-message").textContent = error.message;
+      } finally {
+        button.disabled = false;
+      }
+    });
+
+    $("sandbox-new").addEventListener("click", openNewSandbox);
+    $("sandbox-reset").addEventListener("click", resetSandboxForm);
+
+    $("sandbox-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = $("sandbox-save");
+      const message = $("sandbox-message");
+      button.disabled = true;
+      message.className = "message";
+      message.textContent = "";
+      try {
+        const rawEnv = $("sandbox-env").value.trim();
+        const env = rawEnv ? JSON.parse(rawEnv) : {};
+        if (!env || Array.isArray(env) || typeof env !== "object") {
+          throw new Error("Extra environment must be a JSON object.");
+        }
+        const payload = {
+          sandbox_id: $("sandbox-id").value || undefined,
+          name: $("sandbox-name").value.trim(),
+          image: $("sandbox-image").value.trim(),
+          description: $("sandbox-description").value.trim(),
+          instructions: $("sandbox-instructions").value.trim(),
+          env,
+          extensions: $("sandbox-extensions").value.split(",").map((value) => value.trim()).filter(Boolean),
+          enabled: $("sandbox-enabled").checked,
+        };
+        if (!payload.sandbox_id) delete payload.sandbox_id;
+        const saved = await api("/api/sandboxes", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        resetSandboxForm();
+        await loadSandboxes();
+        $("sandbox-message").className = "message ok";
+        $("sandbox-message").textContent = `Saved ${saved.name}.`;
+      } catch (error) {
+        $("sandbox-message").className = "message error";
+        $("sandbox-message").textContent = error.message;
       } finally {
         button.disabled = false;
       }
@@ -874,6 +1152,7 @@
 
     loadJobs();
     loadAgents();
+    loadSandboxes();
     state.timer = setInterval(async () => {
       await loadJobs();
       await loadDetail();

@@ -195,6 +195,10 @@ class AgentStore:
         with self._lock:
             self._agents[agent.agent_id] = agent
 
+    def remove(self, agent_id: str) -> None:
+        with self._lock:
+            self._agents.pop(agent_id, None)
+
     def _consume(self) -> None:
         while not self._stop.is_set():
             consumer = Consumer(
@@ -217,7 +221,10 @@ class AgentStore:
                             continue
                         raise KafkaException(message.error())
                     value = message.value()
+                    key = message.key()
                     if value is None:
+                        if isinstance(key, bytes) and key:
+                            self.remove(key.decode("utf-8"))
                         continue
                     try:
                         payload: Any = json.loads(value.decode("utf-8"))

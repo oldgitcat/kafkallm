@@ -90,9 +90,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     submit.add_argument(
         "--sandbox",
-        choices=("default", "reverse"),
         default="default",
-        help="Job sandbox image: default or reverse (REA + Ghidra)",
+        help="Sandbox ID from the GUI environment registry (default: default)",
     )
     submit.add_argument("--job-id")
     submit.add_argument("--run-id")

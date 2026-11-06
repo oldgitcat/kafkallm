@@ -25,6 +25,7 @@ class Settings:
     state_topic: str
     events_topic: str
     agents_topic: str
+    sandboxes_topic: str
     kafka_group_id: str
     kafka_topic_partitions: int
     kafka_retention_ms: int
@@ -95,6 +96,7 @@ class Settings:
             state_topic=os.getenv("STATE_TOPIC", "jobs.state"),
             events_topic=os.getenv("EVENTS_TOPIC", "agent.events"),
             agents_topic=os.getenv("AGENTS_TOPIC", "agents.state"),
+            sandboxes_topic=os.getenv("SANDBOXES_TOPIC", "sandboxes.state"),
             kafka_group_id=os.getenv("KAFKA_GROUP_ID", "agent-workers"),
             kafka_topic_partitions=_int_env("KAFKA_TOPIC_PARTITIONS", 3),
             kafka_retention_ms=_int_env(

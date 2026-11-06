@@ -13,7 +13,8 @@ from typing import Any
 
 from kafkallm.audit import JobAudit
 from kafkallm.job_network import ensure_job_network
-from kafkallm.models import AgentResult, AgentSpec, Job
+from kafkallm.models import AgentResult, AgentSpec, Job, SandboxSpec
+from kafkallm.sandboxes import SandboxStore, builtin_sandbox
 from kafkallm.settings import Settings
 from kafkallm.telemetry import get_tracer, set_content, set_error
 
@@ -90,22 +91,29 @@ if [ "${KAFKALLM_MULTI_AGENT:-0}" = "1" ]; then
   builtins="$builtins,summon,skills"
 fi
 
-# The reverse-engineering image ships REA as a local stdio MCP server. Give
-# Ghidra a large scratch area on the host-backed workspace, not the small /tmp
-# tmpfs. The default image does not have the wrapper and never gets the flag.
+# The sandbox image may ship local stdio MCP servers as extensions. Ghidra and
+# other tools also need a large scratch area on the host-backed workspace, not
+# the small /tmp tmpfs.
+mkdir -p /workspace/.scratch/tmp
+# krun maps guest writes to the host user that runs Podman, while the worker
+# collects the workspace as a different UID. Keep the scratch tree writable
+# so the worker can remove it after the job.
+chmod 0777 /workspace/.scratch /workspace/.scratch/tmp 2>/dev/null || true
+export TMPDIR=/workspace/.scratch/tmp
+
 set --
-if [ "${KAFKALLM_SANDBOX:-default}" = "reverse" ]; then
-  mkdir -p /workspace/.scratch/tmp
-  # krun maps guest writes to the host user that runs Podman, while the worker
-  # collects the workspace as a different UID. Keep the scratch tree writable
-  # so the worker can remove it after the job.
-  chmod 0777 /workspace/.scratch /workspace/.scratch/tmp 2>/dev/null || true
-  export TMPDIR=/workspace/.scratch/tmp
-  if [ -x /opt/kafkallm/rea-mcp ]; then
-    set -- --with-extension "rea:/opt/kafkallm/rea-mcp"
-  else
-    echo "Reverse sandbox requested but /opt/kafkallm/rea-mcp is missing." >&2
-  fi
+if [ -n "${KAFKALLM_SANDBOX_EXTENSIONS:-}" ]; then
+  old_ifs=$IFS
+  IFS=,
+  for extension in $KAFKALLM_SANDBOX_EXTENSIONS; do
+    extension_path=${extension#*:}
+    if [ -x "$extension_path" ]; then
+      set -- "$@" --with-extension "$extension"
+    else
+      echo "Sandbox extension $extension is missing at $extension_path." >&2
+    fi
+  done
+  IFS=$old_ifs
 fi
 
 timeout --signal=TERM "$main_timeout" \
@@ -296,10 +304,12 @@ class GooseJobRunner:
         self,
         settings: Settings,
         client: Any | None = None,
+        sandboxes: SandboxStore | None = None,
     ) -> None:
         self.settings = settings
         self._client = client
         self._owns_client = client is None
+        self.sandboxes = sandboxes
         self._active_container: Any | None = None
         self._active_lock = threading.Lock()
         self._proxy_ipv6: str | None = None
@@ -417,8 +427,9 @@ class GooseJobRunner:
     ) -> AgentResult:
         del max_steps
         workspace = Path(workspace)
-        image = self._image_for(job)
-        prompt = self._build_prompt(job)
+        sandbox = self._sandbox_for(job.sandbox)
+        image = sandbox.image
+        prompt = self._build_prompt(job, sandbox=sandbox)
         remaining = max(0.0, deadline - time.monotonic())
         reflect_reserve = self._reflect_reserve(remaining)
         main_budget = max(
@@ -429,7 +440,7 @@ class GooseJobRunner:
             budget=int(remaining),
             main_budget=main_budget,
             reflect_reserve=reflect_reserve,
-            sandbox=job.sandbox,
+            sandbox=sandbox,
             multi_agent=job.multi_agent,
             agent_count=len(job.agents),
         )
@@ -573,11 +584,27 @@ class GooseJobRunner:
                 self._remove_container(container)
                 self._remove_workdir(workdir)
 
+    def _sandbox_for(self, sandbox_id: str) -> SandboxSpec:
+        sandbox = self.sandboxes.get(sandbox_id) if self.sandboxes else None
+        if sandbox is None and self.sandboxes is not None:
+            # The worker can receive a job before its registry consumer has
+            # caught up with a newly added environment.
+            sandbox = self.sandboxes.wait_for(sandbox_id)
+        if sandbox is None:
+            sandbox = builtin_sandbox(sandbox_id, self.settings)
+        if sandbox is None:
+            raise GooseJobRuntimeError(
+                f"Unknown sandbox {sandbox_id!r}. Add it in the GUI sandbox registry."
+            )
+        if not sandbox.enabled:
+            raise GooseJobRuntimeError(
+                f"Sandbox {sandbox_id!r} is disabled. Choose another environment."
+            )
+        return sandbox
+
     def _image_for(self, job: Job) -> str:
-        """Map a job's sandbox name to an allowlisted local image."""
-        if job.sandbox == "reverse":
-            return self.settings.goose_re_image
-        return self.settings.goose_image
+        """Map a job's sandbox name to an image from the registry."""
+        return self._sandbox_for(job.sandbox).image
 
     def _ensure_image(self, image: str | None = None) -> None:
         image = image or self.settings.goose_image
@@ -1068,7 +1095,7 @@ class GooseJobRunner:
         budget: int,
         main_budget: int,
         reflect_reserve: int,
-        sandbox: str,
+        sandbox: SandboxSpec,
         multi_agent: bool,
         agent_count: int,
     ) -> dict[str, str]:
@@ -1089,7 +1116,7 @@ class GooseJobRunner:
             "KAFKALLM_TOOLS_DIR": "/opt/kafkallm/tools",
             "KAFKALLM_CONFIG_DIR": "/opt/kafkallm/config",
             "KAFKALLM_AGENTS_PATH": "/jobboot/agents.json",
-            "KAFKALLM_SANDBOX": sandbox,
+            "KAFKALLM_SANDBOX": sandbox.sandbox_id,
             "KAFKALLM_MULTI_AGENT": "1" if multi_agent else "0",
             "KAFKALLM_AGENT_COUNT": str(agent_count),
             "GOOSE_PATH_ROOT": "/opt/data/goose",
@@ -1116,23 +1143,25 @@ class GooseJobRunner:
             ),
             "NO_PROXY": "127.0.0.1,localhost,host.containers.internal",
         }
-        if sandbox == "reverse":
-            environment.update(
-                {
-                    "GHIDRA_INSTALL_DIR": "/opt/ghidra",
-                    "JAVA_HOME": "/opt/java/openjdk",
-                    # Large binaries can take a while; the job deadline still
-                    # caps the total run.
-                    "REA_GHIDRA_STARTUP_TIMEOUT_MS": "900000",
-                    "REA_MCP_INPUT_SCHEMA_PROFILE": "compact",
-                    "REA_MCP_OUTPUT_SCHEMA_PROFILE": "off",
-                }
-            )
+        if sandbox.extensions:
+            environment["KAFKALLM_SANDBOX_EXTENSIONS"] = ",".join(sandbox.extensions)
+        # SandboxSpec rejects reserved key names and prefixes, so custom values
+        # cannot override the gateway credentials or the runtime controls.
+        environment.update(sandbox.env)
         if self.settings.goose_model:
             environment["GOOSE_MODEL"] = self.settings.goose_model
         return environment
 
-    def _build_prompt(self, job: Job) -> str:
+    def _build_prompt(
+        self,
+        job: Job,
+        sandbox: SandboxSpec | None = None,
+    ) -> str:
+        if sandbox is None:
+            try:
+                sandbox = self._sandbox_for(job.sandbox)
+            except GooseJobRuntimeError:
+                sandbox = None
         if job.multi_agent:
             role = (
                 "You are the goosetown orchestrator for one isolated Kafkallm "
@@ -1178,16 +1207,8 @@ class GooseJobRunner:
                 "Goosetown multi-agent mode is OFF. Do the job yourself; do "
                 "not delegate or spawn subagents.\n"
             )
-        if job.sandbox == "reverse":
-            sandbox_note = (
-                "Reverse-engineering sandbox: the local REA MCP server is "
-                "enabled as 'rea'. Use it to inspect binaries, firmware, "
-                "JavaScript/Electron apps, .NET assemblies, APKs, and other "
-                "artifacts. Ghidra is installed at /opt/ghidra and the `rea` "
-                "CLI is on PATH. Prefer REA's structured tools over ad-hoc "
-                "disassembly, and cite the input paths and evidence in your "
-                "result.\n"
-            )
+        if sandbox is not None and sandbox.instructions.strip():
+            sandbox_note = f"{sandbox.instructions.strip()}\n"
         else:
             sandbox_note = ""
         return (

@@ -23,7 +23,13 @@ from kafkallm.agents import (
     seed_default_agents,
 )
 from kafkallm.kafka import KafkaProducer, ensure_topics, wait_for_kafka
-from kafkallm.models import AgentSpec, Job, utc_now
+from kafkallm.models import AgentSpec, Job, SandboxSpec, utc_now
+from kafkallm.sandboxes import (
+    SandboxPublisher,
+    SandboxStore,
+    new_sandbox_id,
+    seed_default_sandboxes,
+)
 from kafkallm.settings import Settings
 from kafkallm.state import StatePublisher
 from kafkallm.storage import S3Storage
@@ -174,6 +180,7 @@ class JobServer(ThreadingHTTPServer):
         settings: Settings,
         storage_factory: Callable[[Settings], S3Storage] | None = None,
         agents: AgentStore | None = None,
+        sandboxes: SandboxStore | None = None,
     ) -> None:
         super().__init__(address, JobHandler)
         self.store = store
@@ -185,6 +192,8 @@ class JobServer(ThreadingHTTPServer):
         self._storage: S3Storage | None = None
         self.agents = agents or AgentStore(settings)
         self.agent_publisher = AgentPublisher(settings, producer)
+        self.sandboxes = sandboxes or SandboxStore(settings)
+        self.sandbox_publisher = SandboxPublisher(settings, producer)
 
     def get_storage(self) -> S3Storage:
         if self._storage is None:
@@ -216,6 +225,15 @@ class JobHandler(BaseHTTPRequestHandler):
                     ]
                 }
             )
+        elif self.path == "/api/sandboxes":
+            self._send_json(
+                {
+                    "sandboxes": [
+                        sandbox.model_dump(mode="json")
+                        for sandbox in self.server.sandboxes.sandboxes()
+                    ]
+                }
+            )
         elif self.path.startswith("/api/jobs/"):
             job_id = self.path.rsplit("/", 1)[-1]
             job = self.server.store.job(job_id)
@@ -233,6 +251,9 @@ class JobHandler(BaseHTTPRequestHandler):
         if self.path == "/api/agents":
             self._handle_agent_save()
             return
+        if self.path == "/api/sandboxes":
+            self._handle_sandbox_save()
+            return
         if self.path != "/api/jobs":
             self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
             return
@@ -241,6 +262,15 @@ class JobHandler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length) or b"{}")
             if not isinstance(payload, dict):
                 raise ValueError("The request body must be a JSON object.")
+            sandbox_id = str(payload.get("sandbox", "default"))
+            sandbox = self.server.sandboxes.get(sandbox_id)
+            if sandbox is None and sandbox_id not in {"default", "reverse"}:
+                sandbox = self.server.sandboxes.wait_for(sandbox_id, timeout=1.0)
+            if sandbox is None:
+                if sandbox_id not in {"default", "reverse"}:
+                    raise ValueError(f"Unknown sandbox: {sandbox_id}")
+            elif not sandbox.enabled:
+                raise ValueError(f"Sandbox {sandbox_id!r} is disabled.")
             agent_ids = payload.pop("agent_ids", None)
             multi_agent = bool(payload.get("multi_agent", True))
             if multi_agent and agent_ids is not None:
@@ -295,9 +325,15 @@ class JobHandler(BaseHTTPRequestHandler):
         self._send_json(job.model_dump(mode="json"), status=HTTPStatus.CREATED)
 
     def do_DELETE(self) -> None:
-        if not self.path.startswith("/api/agents/"):
-            self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
+        if self.path.startswith("/api/agents/"):
+            self._handle_agent_delete()
             return
+        if self.path.startswith("/api/sandboxes/"):
+            self._handle_sandbox_delete()
+            return
+        self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
+
+    def _handle_agent_delete(self) -> None:
         agent_id = self.path.rsplit("/", 1)[-1]
         agent = self.server.agents.get(agent_id)
         if agent is None:
@@ -315,6 +351,35 @@ class JobHandler(BaseHTTPRequestHandler):
             )
             return
         self.server.agents.put(updated)
+        self._send_json(updated.model_dump(mode="json"))
+
+    def _handle_sandbox_delete(self) -> None:
+        sandbox_id = self.path.rsplit("/", 1)[-1]
+        if sandbox_id == "default":
+            self._send_json(
+                {"error": "The default sandbox cannot be disabled."},
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return
+        sandbox = self.server.sandboxes.get(sandbox_id)
+        if sandbox is None:
+            self._send_json(
+                {"error": "sandbox not found"},
+                status=HTTPStatus.NOT_FOUND,
+            )
+            return
+        updated = sandbox.model_copy(update={"enabled": False, "updated_at": utc_now()})
+        try:
+            with self.server.producer_lock:
+                self.server.sandbox_publisher.save(updated)
+        except Exception as exc:
+            logger.exception("Could not disable sandbox")
+            self._send_json(
+                {"error": f"Could not disable sandbox: {exc}"},
+                status=HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+            return
+        self.server.sandboxes.put(updated)
         self._send_json(updated.model_dump(mode="json"))
 
     def _handle_agent_save(self) -> None:
@@ -352,6 +417,56 @@ class JobHandler(BaseHTTPRequestHandler):
             return
         self.server.agents.put(agent)
         self._send_json(agent.model_dump(mode="json"), status=HTTPStatus.CREATED)
+
+    def _handle_sandbox_save(self) -> None:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            payload = json.loads(self.rfile.read(length) or b"{}")
+            if not isinstance(payload, dict):
+                raise ValueError("The sandbox must be a JSON object.")
+            name = str(payload.get("name", "")).strip()
+            if not name:
+                raise ValueError("The sandbox name is required.")
+            image = str(payload.get("image", "")).strip()
+            if not image:
+                raise ValueError("The container image is required.")
+            env = payload.get("env") or {}
+            if not isinstance(env, dict):
+                raise ValueError("env must be a JSON object.")
+            extensions = payload.get("extensions") or []
+            if not isinstance(extensions, list):
+                raise ValueError("extensions must be a list.")
+            sandbox = SandboxSpec.model_validate(
+                {
+                    **payload,
+                    "sandbox_id": payload.get("sandbox_id") or new_sandbox_id(name),
+                    "name": name,
+                    "image": image,
+                    "env": {str(key): str(value) for key, value in env.items()},
+                    "extensions": [
+                        str(item).strip() for item in extensions if str(item).strip()
+                    ],
+                    "updated_at": utc_now().isoformat(),
+                }
+            )
+        except (ValueError, ValidationError) as exc:
+            self._send_json(
+                {"error": f"Invalid sandbox: {exc}"},
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return
+        try:
+            with self.server.producer_lock:
+                self.server.sandbox_publisher.save(sandbox)
+        except Exception as exc:
+            logger.exception("Could not save sandbox")
+            self._send_json(
+                {"error": f"Could not save sandbox: {exc}"},
+                status=HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+            return
+        self.server.sandboxes.put(sandbox)
+        self._send_json(sandbox.model_dump(mode="json"), status=HTTPStatus.CREATED)
 
     def _handle_upload(self) -> None:
         settings = self.server.settings
@@ -488,12 +603,16 @@ def run_gui(settings: Settings) -> None:
     agents = AgentStore(settings)
     seed_default_agents(settings, producer)
     agents.start()
+    sandboxes = SandboxStore(settings)
+    seed_default_sandboxes(settings, producer)
+    sandboxes.start()
     server = JobServer(
         (settings.gui_host, settings.gui_port),
         store,
         producer,
         settings,
         agents=agents,
+        sandboxes=sandboxes,
     )
 
     def shutdown(signum: int, frame: Any) -> None:
@@ -513,5 +632,6 @@ def run_gui(settings: Settings) -> None:
     finally:
         server.server_close()
         agents.stop()
+        sandboxes.stop()
         store.stop()
         producer.close()

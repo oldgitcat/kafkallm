@@ -51,11 +51,12 @@ Browser / CLI ──→ jobs.in ──→ worker ──→ rootless Podman (krun
                                   ├─→ jobs.out      (results)
                                   ├─→ jobs.state    (compacted GUI state)
                                   ├─→ agents.state  (compacted goosetown flock)
+                                  ├─→ sandboxes.state (compacted environments)
                                   ├─→ agent.events  (audit)
                                   ├─→ MLflow        (OTLP traces)
                                   └─→ RustFS        (optional artifacts)
 
-GUI ──→ jobs.in, jobs.state, agents.state, agent.events
+GUI ──→ jobs.in, jobs.state, agents.state, sandboxes.state, agent.events
 ```
 
 ## Included
@@ -63,7 +64,10 @@ GUI ──→ jobs.in, jobs.state, agents.state, agent.events
 - One-command setup and host diagnostics through `make` and `kafkallm doctor`
 - A disposable **goose** microVM per job with the **goosetown** orchestrator,
   worker, writer, reviewer, and local-researcher skills
-- GUI-managed goosetown agent profiles stored in compacted Kafka state
+- GUI-managed goosetown agent profiles stored in compacted Kafka state, with
+  “+ New agent” controls and editable display names
+- GUI-managed sandbox/environment registry stored in compacted Kafka state, so
+  new images appear in the job dropdown without a code change
 - An **[agentgateway](https://agentgateway.dev/)** LLM gateway that holds the
   OpenRouter key and accepts only a rotatable virtual key from jobs
 - An IPv6-only internal Podman network where the allowlisting proxy is the only
@@ -73,13 +77,13 @@ GUI ──→ jobs.in, jobs.state, agents.state, agent.events
 - **MLflow** observability with OTLP traces, token usage, durations, and errors
   (Phoenix remains available as an optional second backend)
 - An editable sandbox: host-mounted tools, goose/MCP config, persistent skills,
-  extra build packages, plus a selectable **REA + Ghidra** reverse-engineering
-  image
+  extra build packages, plus seeded **Default** and **REA + Ghidra**
+  reverse-engineering environments
 - A compacted `jobs.state` topic that acts as the GUI database; the GUI rebuilds
   its view from Kafka after a restart
-- A compacted `agents.state` topic with editable goosetown agent profiles
-- Redpanda topics `jobs.in`, `jobs.out`, `jobs.state`, `agents.state`, and
-  `agent.events`
+- Compacted `agents.state` and `sandboxes.state` registries
+- Redpanda topics `jobs.in`, `jobs.out`, `jobs.state`, `agents.state`,
+  `sandboxes.state`, and `agent.events`
 - A Kafka worker with manual offset commits and a bounded startup wait
 - A persistent skills directory that goose and goosetown improve across jobs
 - Correlated traces for submission, worker, and the goose run
@@ -322,13 +326,14 @@ The worker polls agentgateway's readiness endpoint over the Compose network at
 | `jobs.out` | delete, 7 days | Final `JobResult` records |
 | `jobs.state` | **compact** | Latest materialized `JobState` per `job_id`; the GUI's database |
 | `agents.state` | **compact** | Latest goosetown `AgentSpec` per `agent_id` |
+| `sandboxes.state` | **compact** | Latest `SandboxSpec` per `sandbox_id`; the environment registry |
 | `agent.events` | delete, 7 days | Audit events for each job |
 
-The GUI consumes `jobs.state`, `agents.state`, and `agent.events` from the
-beginning with unique consumer groups. Compaction keeps the latest state per
-key, so a restart rebuilds the view without a local store. State transitions
-are published by both the GUI/CLI (`queued`) and the worker (`running`,
-`succeeded`/`failed`).
+The GUI consumes `jobs.state`, `agents.state`, `sandboxes.state`, and
+`agent.events` from the beginning with unique consumer groups. Compaction keeps
+the latest state per key, so a restart rebuilds the view without a local store.
+State transitions are published by both the GUI/CLI (`queued`) and the worker
+(`running`, `succeeded`/`failed`).
 
 ## goosetown and skills
 
@@ -366,7 +371,9 @@ On the first GUI start the standard flock is seeded:
 - `Reviewer` — reviews against explicit acceptance criteria
 
 You can add, edit, enable, or disable agents in the GUI. Each profile has a
-name, role, description, instructions, and a list of skills.
+name, role, description, instructions, and a list of skills. Use **+ New agent**
+next to the flock list or in the panel header to create one; it is selected
+automatically, and its display name can be changed later with **Edit**.
 
 The job form has **Use goosetown multi-agent flock**. When it is enabled, the
 selected agents are embedded in the job as a snapshot. The worker writes them
@@ -377,6 +384,45 @@ extension discovers those files, so the orchestrator can call
 enables the `skills` builtin so the role skills are discoverable. When the
 flock is disabled, the prompt runs a single goose agent without `summon` or
 delegation.
+
+### Sandbox management
+
+The GUI has a **Sandboxes** panel and the job form's sandbox dropdown is built
+from it. The registry is the compacted `sandboxes.state` topic, so there is no
+separate database and the worker resolves the selected image from Kafka before
+starting a microVM. On the first GUI start two environments are seeded:
+
+- `Default` — `GOOSE_IMAGE`, the normal goose + goosetown image
+- `Reverse engineering` — `GOOSE_RE_IMAGE`, with REA as a local MCP server,
+  Ghidra, and the RE-specific toolchain
+
+After the first start the registry is the source of truth. Changing
+`GOOSE_IMAGE` or `GOOSE_RE_IMAGE` in `.env` does not rewrite existing entries;
+edit the image in the GUI instead.
+
+Use **+ New sandbox** to register another image. A sandbox entry has:
+
+| Field | Purpose |
+|---|---|
+| `name` | Label shown in the dropdown and job detail |
+| `image` | OCI image reference, for example `localhost/kafkallm-malware:latest` |
+| `description` | Short explanation shown below the dropdown |
+| `instructions` | Optional prompt note about the environment's capabilities |
+| `env` | Optional non-reserved environment variables for the microVM |
+| `extensions` | Optional local goose extensions in `name:/absolute/path` form |
+| `enabled` | Disabled environments stay in history but leave the dropdown |
+
+Build or pull the image into the worker's rootless Podman storage first. The
+worker verifies the image at job start and gives a clear error if it is
+unavailable. `KAFKALLM_*`, `GOOSE_*`, `OPENAI_*`, and process-critical variables
+such as `PATH` and `HOME` are reserved and rejected in the GUI, so registry
+entries cannot override gateway credentials or runtime controls.
+
+The CLI accepts the same registry IDs:
+
+```bash
+docker compose run --rm jobctl submit "Analyze the sample" --sandbox malware-analysis
+```
 
 A separate persistent goosetown container is not used: the actual multi-agent
 flock runs inside each disposable job microVM. This keeps the jobs isolated and
@@ -414,8 +460,9 @@ with a review prompt. It may update one reusable skill under
 ```
 
 `job_id` and `run_id` are generated as UUIDs if omitted. Messages use `job_id`
-as the Kafka key. `max_steps` is advisory; goose is bounded by
-`GOOSE_JOB_MAX_TURNS` and the job timeout.
+as the Kafka key. `sandbox` is a registry ID such as `default`, `reverse`, or a
+custom environment added in the GUI. `max_steps` is advisory; goose is bounded
+by `GOOSE_JOB_MAX_TURNS` and the job timeout.
 
 A result includes:
 
@@ -475,14 +522,16 @@ docker compose run --rm -v "$PWD:/data:ro" jobctl submit \
   --sandbox reverse --upload /data/tool.bin
 ```
 
-The job image is selected by an allowlisted enum, not an arbitrary image name.
-The worker still mounts only `/workspace`, `/jobboot`, the tools/config
-directories, and the persistent skills. The microVM still has no internet
-access; REA and Ghidra run fully offline against uploaded files. Ghidra is
-JVM-heavy, so set `GOOSE_JOB_RAM_MIB=4096` (or more) and raise
-`GOOSE_JOB_MEMORY_LIMIT` to leave room for the hypervisor overhead (for
-example `6g`) when using reverse jobs. The per-job reservation is the same for
-both sandboxes, so a larger value applies to all jobs on that worker.
+The job image is selected from the GUI-managed sandbox registry, not supplied
+in the job payload. Job submissions carry only a sandbox ID, and the worker
+resolves that ID to the image stored in the registry. The worker still mounts
+only `/workspace`, `/jobboot`, the tools/config directories, and the persistent
+skills. The microVM still has no internet access; REA and Ghidra run fully
+offline against uploaded files. Ghidra is JVM-heavy, so set
+`GOOSE_JOB_RAM_MIB=4096` (or more) and raise `GOOSE_JOB_MEMORY_LIMIT` to leave
+room for the hypervisor overhead (for example `6g`) when using reverse jobs.
+The per-job reservation is the same for all sandboxes, so a larger value
+applies to all jobs on that worker.
 
 REA is MIT-licensed. Ghidra is Apache 2.0. The image also installs the Debian
 packages above under their respective licenses. REA's optional Frida
@@ -843,7 +892,7 @@ docker compose logs -f llm-gateway
 ## Repository layout
 
 ```text
-src/kafkallm/       worker, GUI, doctor, Kafka, state, agents, goose runtime, models
+src/kafkallm/       worker, GUI, doctor, Kafka, state, agents, sandboxes, goose runtime, models
 goose_job/          job image, goosetown template, skills, config and tool examples
 agentgateway/       LLM gateway policy
 scripts/            setup, doctor, image builds, network init, sandbox helpers

@@ -10,6 +10,7 @@ from pathlib import Path
 from kafkallm.audit import AuditLogger, JobAudit
 from kafkallm.goose_job_runtime import GooseJobRunner
 from kafkallm.models import AgentResult, FileRef, Job, JobResult, utc_now
+from kafkallm.sandboxes import SandboxStore
 from kafkallm.settings import Settings
 from kafkallm.storage import S3Storage
 from kafkallm.telemetry import (
@@ -38,10 +39,11 @@ class Harness:
         self,
         settings: Settings,
         audit: AuditLogger | None = None,
+        sandboxes: SandboxStore | None = None,
     ) -> None:
         self.settings = settings
         self.audit = audit
-        self.goose = GooseJobRunner(settings)
+        self.goose = GooseJobRunner(settings, sandboxes=sandboxes)
         self._storage: S3Storage | None = None
 
     def wait_ready(self) -> None:

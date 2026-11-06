@@ -33,7 +33,11 @@ def ensure_topics(settings: Settings) -> None:
             settings.events_topic,
         }
     }
-    for name in {settings.state_topic, settings.agents_topic}:
+    for name in {
+        settings.state_topic,
+        settings.agents_topic,
+        settings.sandboxes_topic,
+    }:
         topics[name] = NewTopic(
             name,
             num_partitions=settings.kafka_topic_partitions,

@@ -1,14 +1,32 @@
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
-Sandbox = Literal["default", "reverse"]
+
+_ENV_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_EXTENSION_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+_RESERVED_ENV_NAMES = {
+    "BASH_ENV",
+    "ENV",
+    "HOME",
+    "LD_LIBRARY_PATH",
+    "LD_PRELOAD",
+    "NODE_OPTIONS",
+    "PATH",
+    "PYTHONHOME",
+    "PYTHONPATH",
+    "SHELL",
+    "TMPDIR",
+    "USER",
+}
+_RESERVED_ENV_PREFIXES = ("GOOSE_", "KAFKALLM_", "OPENAI_")
 
 
 def utc_now() -> datetime:
@@ -44,6 +62,50 @@ class AgentSpec(BaseModel):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class SandboxSpec(BaseModel):
+    """A selectable job environment backed by an OCI image.
+
+    The registry is stored in a compacted Kafka topic and managed by the GUI.
+    Operators can add new environments without changing the worker image or
+    redeploying the control plane.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    sandbox_id: str = Field(pattern=ID_PATTERN)
+    name: str = Field(min_length=1, max_length=80)
+    description: str = Field(default="", max_length=4_000)
+    image: str = Field(min_length=1, max_length=255, pattern=r"^\S+$")
+    instructions: str = Field(default="", max_length=20_000)
+    env: dict[str, str] = Field(default_factory=dict, max_length=64)
+    extensions: list[str] = Field(default_factory=list, max_length=20)
+    enabled: bool = True
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("env")
+    @classmethod
+    def _validate_env(cls, value: dict[str, str]) -> dict[str, str]:
+        for key, item in value.items():
+            if not _ENV_NAME_PATTERN.fullmatch(key):
+                raise ValueError(f"Invalid environment variable name: {key!r}")
+            if key in _RESERVED_ENV_NAMES or key.startswith(_RESERVED_ENV_PREFIXES):
+                raise ValueError(f"Environment variable {key!r} is reserved.")
+            if len(item) > 8_000:
+                raise ValueError(f"Environment variable {key!r} is too long.")
+        return value
+
+    @field_validator("extensions")
+    @classmethod
+    def _validate_extensions(cls, value: list[str]) -> list[str]:
+        for extension in value:
+            name, separator, path = extension.partition(":")
+            if not separator or not _EXTENSION_NAME_PATTERN.fullmatch(name):
+                raise ValueError(f"Invalid goose extension: {extension!r}")
+            if not path.startswith("/") or any(char in path for char in ", \t\r\n"):
+                raise ValueError(f"Invalid goose extension path: {extension!r}")
+        return value
+
+
 class Job(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -54,7 +116,7 @@ class Job(BaseModel):
     instruction: str = Field(min_length=1, max_length=100_000)
     input: dict = Field(default_factory=dict)
     input_files: list[FileRef] = Field(default_factory=list, max_length=32)
-    sandbox: Sandbox = "default"
+    sandbox: str = Field(default="default", pattern=ID_PATTERN)
     multi_agent: bool = True
     agents: list[AgentSpec] = Field(default_factory=list, max_length=20)
     timeout_seconds: int = Field(default=300, ge=1, le=3600)
@@ -107,7 +169,7 @@ class JobState(BaseModel):
     status: Literal["queued", "running", "succeeded", "failed", "invalid"]
     trace_id: str | None = Field(default=None, min_length=1, max_length=128)
     input_files: list[FileRef] = Field(default_factory=list, max_length=32)
-    sandbox: Sandbox = "default"
+    sandbox: str = Field(default="default", pattern=ID_PATTERN)
     multi_agent: bool = True
     agent_names: list[str] = Field(default_factory=list, max_length=20)
     timeout_seconds: int = Field(default=300, ge=1, le=3600)

@@ -10,6 +10,7 @@ from typing import Any
 from kafkallm.agents import AgentStore, default_agents
 from kafkallm.gui import JobServer, JobStore
 from kafkallm.models import FileRef, Job, JobState
+from kafkallm.sandboxes import SandboxStore, default_sandboxes
 from kafkallm.settings import Settings
 
 
@@ -282,6 +283,82 @@ def test_gui_manages_agents_and_attaches_the_selected_flock() -> None:
         status, disabled = _delete(f"{base}/api/agents/security-reviewer")
         assert status == 200
         assert disabled["enabled"] is False
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_gui_manages_sandboxes_and_validates_job_environments() -> None:
+    settings = _settings()
+    producer = RecordingProducer()
+    sandboxes = SandboxStore(settings)
+    for sandbox in default_sandboxes(settings):
+        sandboxes.put(sandbox)
+    server = JobServer(
+        ("127.0.0.1", 0),
+        JobStore(settings),
+        producer,
+        settings,
+        sandboxes=sandboxes,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        status, data = _request(f"{base}/api/sandboxes")
+        assert status == 200
+        assert {sandbox["sandbox_id"] for sandbox in data["sandboxes"]} >= {
+            "default",
+            "reverse",
+        }
+
+        status, created = _request(
+            f"{base}/api/sandboxes",
+            {
+                "name": "Malware analysis",
+                "image": "localhost/kafkallm-malware:latest",
+                "description": "YARA and Python RE tooling.",
+                "env": {"YARA_RULES": "/opt/rules"},
+                "extensions": ["rea:/opt/kafkallm/rea-mcp"],
+            },
+        )
+        assert status == 201
+        assert created["sandbox_id"] == "malware-analysis"
+        assert created["env"] == {"YARA_RULES": "/opt/rules"}
+        assert any(topic == "sandboxes.state" for topic, _, _ in producer.messages)
+
+        status, job = _request(
+            f"{base}/api/jobs",
+            {"instruction": "Analyze the sample", "sandbox": "malware-analysis"},
+        )
+        assert status == 201
+        assert job["sandbox"] == "malware-analysis"
+
+        status, error = _request(
+            f"{base}/api/jobs",
+            {"instruction": "Use a missing environment", "sandbox": "missing"},
+        )
+        assert status == 400
+        assert "Unknown sandbox" in error["error"]
+
+        status, disabled = _delete(f"{base}/api/sandboxes/malware-analysis")
+        assert status == 200
+        assert disabled["enabled"] is False
+
+        status, error = _request(
+            f"{base}/api/jobs",
+            {
+                "instruction": "Use a disabled environment",
+                "sandbox": "malware-analysis",
+            },
+        )
+        assert status == 400
+        assert "disabled" in error["error"]
+
+        status, error = _delete(f"{base}/api/sandboxes/default")
+        assert status == 400
+        assert "cannot be disabled" in error["error"]
     finally:
         server.shutdown()
         server.server_close()

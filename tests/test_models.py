@@ -3,7 +3,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from kafkallm.models import Job, JobState, to_json_bytes
+from kafkallm.models import Job, JobState, SandboxSpec, to_json_bytes
 
 
 def test_job_defaults_and_serialization() -> None:
@@ -15,9 +15,53 @@ def test_job_defaults_and_serialization() -> None:
     assert json.loads(to_json_bytes(job))["instruction"] == "Hello"
 
 
-def test_job_rejects_unknown_sandbox() -> None:
+def test_job_accepts_a_registry_sandbox_id() -> None:
+    job = Job.model_validate({"instruction": "Hello", "sandbox": "malware-analysis"})
+
+    assert job.sandbox == "malware-analysis"
+
+
+def test_job_rejects_an_unsafe_sandbox_id() -> None:
     with pytest.raises(ValidationError):
-        Job.model_validate({"instruction": "Hello", "sandbox": "windows"})
+        Job.model_validate({"instruction": "Hello", "sandbox": "../escape"})
+
+
+def test_sandbox_spec_accepts_custom_environment_settings() -> None:
+    sandbox = SandboxSpec(
+        sandbox_id="malware",
+        name="Malware analysis",
+        image="localhost/kafkallm-malware:latest",
+        env={"YARA_RULES": "/opt/rules"},
+        extensions=["rea:/opt/kafkallm/rea-mcp"],
+    )
+
+    assert sandbox.enabled
+    assert sandbox.env["YARA_RULES"] == "/opt/rules"
+    assert sandbox.extensions == ["rea:/opt/kafkallm/rea-mcp"]
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["OPENAI_API_KEY", "GOOSE_MODEL", "KAFKALLM_SANDBOX", "PATH"],
+)
+def test_sandbox_spec_rejects_reserved_environment_names(key: str) -> None:
+    with pytest.raises(ValidationError):
+        SandboxSpec(
+            sandbox_id="custom",
+            name="Custom",
+            image="custom:latest",
+            env={key: "value"},
+        )
+
+
+def test_sandbox_spec_rejects_unsafe_extensions() -> None:
+    with pytest.raises(ValidationError):
+        SandboxSpec(
+            sandbox_id="custom",
+            name="Custom",
+            image="custom:latest",
+            extensions=["rea:/opt/tool,other"],
+        )
 
 
 def test_job_rejects_unknown_fields() -> None:
