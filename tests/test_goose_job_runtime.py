@@ -15,6 +15,7 @@ from kafkallm.goose_job_runtime import (
     GooseJobRuntimeError,
     JobCancelledError,
     _parse_bytes,
+    _stream_event_log_records,
     parse_goose_output,
 )
 from kafkallm.harness import Harness
@@ -632,6 +633,8 @@ def test_run_script_enables_registered_sandbox_extensions() -> None:
     assert "TMPDIR=/workspace/.scratch/tmp" in _VM_RUN_SCRIPT
     assert "chmod -R a+rwX /workspace/.scratch" in _VM_RUN_SCRIPT
     assert "seed_skills /opt/kafkallm/sandbox-skills" in _VM_RUN_SCRIPT
+    assert "--output-format stream-json" in _VM_RUN_SCRIPT
+    assert "stdbuf -oL -eL ./goose" in _VM_RUN_SCRIPT
     # Multi-agent runs need goose's summon and skills builtins.
     assert 'builtins="$builtins,summon,skills"' in _VM_RUN_SCRIPT
     assert '--with-builtin "$builtins"' in _VM_RUN_SCRIPT
@@ -904,6 +907,125 @@ def test_parse_goose_output_accepts_a_leading_banner() -> None:
 
     assert text == "PONG"
     assert error is None
+
+
+def test_parse_goose_output_accepts_stream_json() -> None:
+    raw = "\n".join(
+        [
+            json.dumps(
+                {
+                    "type": "message",
+                    "message": {
+                        "id": "m1",
+                        "role": "assistant",
+                        "content": [{"type": "thinking", "thinking": "think"}],
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "message",
+                    "message": {
+                        "id": "m1",
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "stream"}],
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "message",
+                    "message": {
+                        "id": "m1",
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "-ok"}],
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "complete",
+                    "total_tokens": 10,
+                    "input_tokens": 8,
+                    "output_tokens": 2,
+                }
+            ),
+        ]
+    )
+
+    text, usage, steps, error = parse_goose_output(raw)
+
+    assert text == "stream-ok"
+    assert usage == {
+        "input_tokens": 8,
+        "output_tokens": 2,
+        "total_tokens": 10,
+    }
+    assert steps == 1
+    assert error is None
+
+
+def test_stream_event_log_records_extract_tool_activity() -> None:
+    event = {
+        "type": "message",
+        "message": {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "name": "shell", "input": {"command": "ls"}}
+            ],
+        },
+    }
+
+    records = _stream_event_log_records(event, "goose")
+
+    assert records == [("goose.tool", '{"name": "shell", "input": {"command": "ls"}}')]
+
+
+def test_stream_event_log_records_extract_goose_tool_request_and_response() -> None:
+    request = {
+        "type": "message",
+        "message": {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "toolRequest",
+                    "toolCall": {
+                        "value": {
+                            "name": "shell",
+                            "arguments": {"command": "echo hello"},
+                        }
+                    },
+                }
+            ],
+        },
+    }
+    response = {
+        "type": "message",
+        "message": {
+            "role": "user",
+            "content": [
+                {
+                    "type": "toolResponse",
+                    "toolResult": {
+                        "value": {
+                            "content": [{"type": "text", "text": "hello"}],
+                            "structuredContent": {"stdout": "hello"},
+                        }
+                    },
+                }
+            ],
+        },
+    }
+
+    assert _stream_event_log_records(request, "goose") == [
+        (
+            "goose.tool",
+            '{"name": "shell", "input": {"command": "echo hello"}}',
+        )
+    ]
+    assert _stream_event_log_records(response, "goose") == [
+        ("goose.tool_result", "hello")
+    ]
 
 
 def test_parse_goose_output_reports_error_blocks() -> None:

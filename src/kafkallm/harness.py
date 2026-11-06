@@ -99,6 +99,7 @@ class Harness:
         job: Job,
         job_audit: JobAudit | None = None,
         heartbeat: Callable[[], bool] | None = None,
+        log: Callable[[str, str], None] | None = None,
     ) -> JobResult:
         trace_id = job.trace_id or current_trace_id() or new_trace_id()
         job = job.model_copy(update={"trace_id": trace_id})
@@ -165,6 +166,7 @@ class Harness:
                         max_steps=max_steps,
                         audit=job_audit,
                         heartbeat=heartbeat,
+                        log=log,
                     )
                     agent_result = self._limit_result(agent_result, outputs, job)
                     steps = agent_result.steps

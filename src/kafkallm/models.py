@@ -115,6 +115,18 @@ class JobCancel(BaseModel):
     requested_at: datetime = Field(default_factory=utc_now)
 
 
+class JobLog(BaseModel):
+    """One live activity record from a job's microVM."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: str = Field(pattern=ID_PATTERN)
+    sequence: int = Field(ge=0)
+    timestamp: datetime = Field(default_factory=utc_now)
+    kind: str = Field(min_length=1, max_length=40)
+    text: str = Field(max_length=20_000)
+
+
 class Job(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

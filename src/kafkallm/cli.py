@@ -131,6 +131,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_consumer_arguments(results)
     events = subparsers.add_parser("events", help="Read audit events from agent.events")
     _add_consumer_arguments(events)
+    logs = subparsers.add_parser("logs", help="Read live activity from jobs.logs")
+    _add_consumer_arguments(logs)
     states = subparsers.add_parser("states", help="Read job state from jobs.state")
     _add_consumer_arguments(states)
     return parser
@@ -324,6 +326,8 @@ def main() -> None:
             consume(settings, args, settings.results_topic)
         elif args.command == "events":
             consume(settings, args, settings.events_topic)
+        elif args.command == "logs":
+            consume(settings, args, settings.logs_topic)
         elif args.command == "states":
             consume(settings, args, settings.state_topic)
         elif args.command == "gui":

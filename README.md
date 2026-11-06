@@ -78,6 +78,8 @@ GUI ──→ jobs.in, jobs.state, agents.state, sandboxes.state, agent.events
 - An opt-in unlimited job mode without a wall-clock timeout or Goose turn cap;
   oversized results are preserved as downloadable S3 artifacts
 - Stop buttons for queued/running jobs and configurable parallel worker slots
+- A live activity panel with goose thinking, tool calls, tool results, stderr,
+  and token usage streamed from the microVM through Kafka
 - **MLflow** observability with OTLP traces, token usage, durations, and errors
   (Phoenix remains available as an optional second backend)
 - An editable sandbox: host-mounted tools, goose/MCP config, persistent skills,
@@ -209,6 +211,9 @@ docker compose run --rm jobctl states --from-beginning --idle-timeout 5
 
 # Read audit events
 docker compose run --rm jobctl events --from-beginning --idle-timeout 5
+
+# Read live activity (thinking, tool calls, stderr)
+docker compose run --rm jobctl logs --from-beginning --idle-timeout 5
 ```
 
 Worker and GUI logs:
@@ -243,7 +248,7 @@ Redpanda Console runs at <http://localhost:8080>. MLflow runs at
    (`AGENTS.md`, the `goose` wrapper, `gtwall`, and the role skills) and runs:
 
    ```bash
-   ./goose run --no-session -q --output-format json \
+   stdbuf -oL -eL ./goose run --no-session -q --output-format stream-json \
      --with-builtin developer --max-turns "$GOOSE_MAX_TURNS" \
      -i /jobboot/main-prompt.txt
    ```
@@ -251,6 +256,9 @@ Redpanda Console runs at <http://localhost:8080>. MLflow runs at
    In multi-agent mode the worker additionally enables the `summon` and
    `skills` builtins and writes the selected flock to `.claude/agents/*.md`,
    so `delegate(source: "...")` can resolve the role names.
+
+   The worker tails the line-delimited stream-json file and publishes live
+   activity to `jobs.logs` for the GUI.
 
 6. goose talks the OpenAI protocol to `http://host.containers.internal:8091`,
    which resolves to the proxy. The proxy forwards only to agentgateway on the
@@ -339,10 +347,11 @@ The worker polls agentgateway's readiness endpoint over the Compose network at
 | `agents.state` | **compact** | Latest goosetown `AgentSpec` per `agent_id` |
 | `sandboxes.state` | **compact** | Latest `SandboxSpec` per `sandbox_id`; the environment registry |
 | `jobs.cancel` | delete, 7 days | Cancellation requests published by the GUI |
+| `jobs.logs` | delete, 7 days | Live job activity from goose stream-json and stderr |
 | `agent.events` | delete, 7 days | Audit events for each job |
 
-The GUI consumes `jobs.state`, `agents.state`, `sandboxes.state`, and
-`agent.events` from the beginning with unique consumer groups. Compaction keeps
+The GUI consumes `jobs.state`, `agents.state`, `sandboxes.state`, `jobs.logs`,
+and `agent.events` from the beginning with unique consumer groups. Compaction keeps
 the latest state per key, so a restart rebuilds the view without a local store.
 State transitions are published by both the GUI/CLI (`queued`) and the worker
 (`running`, `succeeded`/`failed`).
@@ -915,14 +924,32 @@ The final `JobResult` has `cancelled: true` and a user-facing cancellation
 message. Cancellation is best-effort; a job that has just finished may still
 publish its normal result.
 
+### Live activity
+
+The job detail has a **Live activity** panel. The worker tails goose's
+`stream-json` output and the stderr files in the job workspace, then publishes
+small `JobLog` records to the non-compacted `jobs.logs` topic. The GUI shows:
+
+- assistant text as it streams
+- model thinking chunks
+- tool calls and tool results
+- stderr from the main and reflect runs
+- token usage when goose completes
+
+The panel polls the `GET /api/jobs/<job_id>/logs?after=<sequence>` endpoint
+every two seconds and keeps a bounded ring buffer per job. Raw log records are
+also available with `kafkallm logs`. Job logs expire with the normal topic
+retention (`KAFKA_TOPIC_RETENTION_MS`, seven days by default).
+
 ## Multiple workers
 
 ```bash
 docker compose up -d --scale agent-worker=2
 ```
 
-Workers share the `agent-workers` consumer group and process one job each at a
-time. The shared skills directory uses last-writer-wins semantics.
+Workers share the `agent-workers` consumer group. Each worker can run
+`WORKER_CONCURRENCY` jobs in parallel, and multiple worker containers add more
+slots. The shared skills directory uses last-writer-wins semantics.
 
 ## Operations and guarantees
 

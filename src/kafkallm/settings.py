@@ -27,6 +27,7 @@ class Settings:
     agents_topic: str
     sandboxes_topic: str
     cancels_topic: str
+    logs_topic: str
     kafka_group_id: str
     kafka_topic_partitions: int
     kafka_retention_ms: int
@@ -106,6 +107,7 @@ class Settings:
             agents_topic=os.getenv("AGENTS_TOPIC", "agents.state"),
             sandboxes_topic=os.getenv("SANDBOXES_TOPIC", "sandboxes.state"),
             cancels_topic=os.getenv("CANCELS_TOPIC", "jobs.cancel"),
+            logs_topic=os.getenv("LOGS_TOPIC", "jobs.logs"),
             kafka_group_id=os.getenv("KAFKA_GROUP_ID", "agent-workers"),
             kafka_topic_partitions=_int_env("KAFKA_TOPIC_PARTITIONS", 3),
             kafka_retention_ms=_int_env(

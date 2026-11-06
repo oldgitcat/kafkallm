@@ -128,6 +128,24 @@ def test_store_keeps_latest_state_and_events() -> None:
             "timestamp": "2026-01-01T00:00:00Z",
         }
     )
+    store.put_log(
+        {
+            "job_id": job.job_id,
+            "sequence": 0,
+            "kind": "system",
+            "text": "started",
+            "timestamp": "2026-01-01T00:00:00Z",
+        }
+    )
+    store.put_log(
+        {
+            "job_id": job.job_id,
+            "sequence": 1,
+            "kind": "goose.tool",
+            "text": '{"name": "shell"}',
+            "timestamp": "2026-01-01T00:00:01Z",
+        }
+    )
 
     detail = store.job(job.job_id)
 
@@ -135,6 +153,7 @@ def test_store_keeps_latest_state_and_events() -> None:
     assert detail["status"] == "succeeded"
     assert detail["result"] == "done"
     assert detail["events"][0]["type"] == "job.received"
+    assert [record["sequence"] for record in store.logs(job.job_id, after=0)] == [1]
 
 
 def test_gui_submits_a_job_and_serves_state() -> None:
@@ -184,6 +203,20 @@ def test_gui_submits_a_job_and_serves_state() -> None:
         status, detail = _request(f"{base}/api/jobs/{job['job_id']}")
         assert status == 200
         assert detail["job_id"] == job["job_id"]
+
+        store.put_log(
+            {
+                "job_id": job["job_id"],
+                "sequence": 0,
+                "kind": "goose.tool",
+                "text": '{"name": "shell"}',
+                "timestamp": "2026-01-01T00:00:00Z",
+            }
+        )
+        status, logs = _request(f"{base}/api/jobs/{job['job_id']}/logs?after=-1")
+        assert status == 200
+        assert logs["logs"][0]["kind"] == "goose.tool"
+        assert logs["next"] == 0
 
         status, error = _request(
             f"{base}/api/jobs", {"instruction": "", "unexpected": True}

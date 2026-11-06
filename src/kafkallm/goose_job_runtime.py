@@ -128,17 +128,17 @@ if [ -n "${KAFKALLM_SANDBOX_EXTENSIONS:-}" ]; then
 fi
 
 timeout --signal=TERM "$main_timeout" \
-  ./goose run --no-session -q --output-format json \
+  stdbuf -oL -eL ./goose run --no-session -q --output-format stream-json \
     --with-builtin "$builtins" \
     --max-turns "${GOOSE_MAX_TURNS:-60}" \
     "$@" \
     -i /jobboot/main-prompt.txt \
-  > "$RESULT_DIR/main.json" 2> "$RESULT_DIR/main.err"
+  > "$RESULT_DIR/main.jsonl" 2> "$RESULT_DIR/main.err"
 echo "$?" > "$RESULT_DIR/main.exit"
 if [ "$(cat "$RESULT_DIR/main.exit")" = "124" ] \
-   && [ ! -s "$RESULT_DIR/main.json" ]; then
-  cat > "$RESULT_DIR/main.json" <<'JSON'
-{"messages":[{"role":"assistant","content":[{"type":"error","message":"goose exceeded the main time budget."}]}],"metadata":{"status":"error"}}
+   && [ ! -s "$RESULT_DIR/main.jsonl" ]; then
+  cat > "$RESULT_DIR/main.jsonl" <<'JSON'
+{"type":"error","message":"goose exceeded the main time budget."}
 JSON
 fi
 
@@ -152,11 +152,11 @@ if [ "${KAFKALLM_JOB_REFLECT_ENABLED:-0}" = "1" ]; then
       reflect_timeout=$left
     fi
     timeout --signal=TERM "$reflect_timeout" \
-      ./goose run --no-session -q --output-format json \
+      stdbuf -oL -eL ./goose run --no-session -q --output-format stream-json \
         --with-builtin developer \
         --max-turns "${GOOSE_REFLECT_MAX_TURNS:-20}" \
         -i /jobboot/reflect-prompt.txt \
-      > "$RESULT_DIR/reflect.json" 2> "$RESULT_DIR/reflect.err"
+      > "$RESULT_DIR/reflect.jsonl" 2> "$RESULT_DIR/reflect.err"
     echo "$?" > "$RESULT_DIR/reflect.exit"
   fi
 fi
@@ -167,6 +167,11 @@ chmod -R a+rwX /workspace/.scratch 2>/dev/null || true
 """
 
 _REFLECT_PROMPT = """Review the job that just completed and improve the reusable goosetown skills for this class of job.
+
+Never read or parse `/workspace/.kafkallm/main.jsonl`; it is a verbose streaming
+transcript. Use the workspace outputs, the git diff, and the existing skills.
+This pass has only the developer builtin: use shell and file tools, not
+`load_skill` or `read_resource`.
 
 1. Inspect the most relevant skill in /workspace/.claude/skills with the file tools.
 2. Update the best match, or create one class-level skill if none fits. Never name a skill after this job, run, error, or one-off artifact.
@@ -234,18 +239,19 @@ class WorkerShutdown(GooseJobRuntimeError):
 
 
 def parse_goose_output(raw: str) -> tuple[str, dict[str, int], int, str | None]:
-    """Parse `goose run --output-format json` into text, usage, steps, error.
+    """Parse goose output from either the legacy JSON or stream-json format.
 
-    The normal output is one JSON document. Older builds print the session
-    banner before the document even with `-q`, so the parser falls back to the
-    first opening brace.
+    The runtime now requests line-delimited `stream-json` events, but old job
+    bundles and fixtures still contain one JSON document. Both are accepted.
     """
     if not raw.strip():
         return "", {}, 0, "goose produced no output."
-    document: Any
     try:
         document = json.loads(raw)
     except ValueError:
+        stream = _parse_stream_events(raw)
+        if stream is not None:
+            return stream
         start = raw.find("{")
         if start < 0:
             return "", {}, 0, "goose output is not JSON."
@@ -255,7 +261,16 @@ def parse_goose_output(raw: str) -> tuple[str, dict[str, int], int, str | None]:
             return "", {}, 0, f"goose output is not valid JSON: {exc}"
     if not isinstance(document, dict):
         return "", {}, 0, "goose output is not a JSON object."
+    if document.get("type") in {"message", "complete", "error"}:
+        stream = _parse_stream_events(raw)
+        if stream is not None:
+            return stream
+    return _parse_legacy_document(document)
 
+
+def _parse_legacy_document(
+    document: dict[str, Any],
+) -> tuple[str, dict[str, int], int, str | None]:
     metadata = document.get("metadata") or {}
     usage = _usage(metadata)
     messages = document.get("messages") or []
@@ -268,6 +283,73 @@ def parse_goose_output(raw: str) -> tuple[str, dict[str, int], int, str | None]:
     if metadata.get("status") == "error" and not error:
         error = text.strip() or "goose reported an error."
     return text, usage, steps, error
+
+
+def _parse_stream_events(
+    raw: str,
+) -> tuple[str, dict[str, int], int, str | None] | None:
+    events: list[dict[str, Any]] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict):
+            events.append(event)
+    if not events:
+        return None
+    if not any(
+        event.get("type") in {"message", "complete", "error"} for event in events
+    ):
+        return None
+    return _parse_stream_event_list(events)
+
+
+def _parse_stream_event_list(
+    events: list[dict[str, Any]],
+) -> tuple[str, dict[str, int], int, str | None]:
+    texts: dict[str, list[str]] = {}
+    order: list[str] = []
+    usage: dict[str, int] = {}
+    error: str | None = None
+    message_ids: set[str] = set()
+    fallback_id = 0
+    for event in events:
+        event_type = event.get("type")
+        if event_type == "message":
+            message = event.get("message")
+            if not isinstance(message, dict) or message.get("role") != "assistant":
+                continue
+            message_id = message.get("id")
+            if not isinstance(message_id, str) or not message_id:
+                fallback_id += 1
+                message_id = f"message-{fallback_id}"
+            if message_id not in message_ids:
+                message_ids.add(message_id)
+                order.append(message_id)
+            for block in message.get("content") or []:
+                if not isinstance(block, dict):
+                    continue
+                block_type = block.get("type")
+                if block_type == "text" and isinstance(block.get("text"), str):
+                    texts.setdefault(message_id, []).append(block["text"])
+                elif block_type == "error" and isinstance(block.get("message"), str):
+                    error = block["message"]
+        elif event_type == "complete":
+            usage = _usage(event)
+        elif event_type == "error":
+            message = event.get("message") or event.get("error")
+            if isinstance(message, str):
+                error = message
+    text = ""
+    for message_id in reversed(order):
+        if texts.get(message_id):
+            text = "".join(texts[message_id]).strip()
+            break
+    return text, usage, len(message_ids), error
 
 
 def _message_content(messages: Any) -> tuple[str, str | None]:
@@ -308,6 +390,190 @@ def _usage(metadata: Any) -> dict[str, int]:
         if isinstance(metadata.get(source), int)
         and not isinstance(metadata.get(source), bool)
     }
+
+
+def _stream_event_log_records(
+    event: dict[str, Any],
+    prefix: str,
+) -> list[tuple[str, str]]:
+    """Turn one stream-json event into human-readable live activity records."""
+    event_type = event.get("type")
+    if event_type == "message":
+        message = event.get("message")
+        if not isinstance(message, dict):
+            return []
+        role = message.get("role")
+        records: list[tuple[str, str]] = []
+        for block in message.get("content") or []:
+            if not isinstance(block, dict):
+                continue
+            block_type = block.get("type")
+            if block_type in {"tool_result", "toolResponse"}:
+                if block_type == "toolResponse":
+                    result = block.get("toolResult") or {}
+                    value = result.get("value") or {}
+                    content = value.get("content")
+                    if isinstance(content, list):
+                        content = "\n".join(
+                            item.get("text", "")
+                            for item in content
+                            if isinstance(item, dict) and item.get("type") == "text"
+                        )
+                    if not isinstance(content, str):
+                        content = json.dumps(content, ensure_ascii=False)
+                    if not content:
+                        content = json.dumps(value, ensure_ascii=False)
+                else:
+                    content = block.get("content")
+                    if not isinstance(content, str):
+                        content = json.dumps(content, ensure_ascii=False)
+                records.append((f"{prefix}.tool_result", content))
+                continue
+            if role != "assistant":
+                continue
+            if block_type == "thinking" and isinstance(block.get("thinking"), str):
+                records.append((f"{prefix}.thinking", block["thinking"]))
+            elif block_type == "text" and isinstance(block.get("text"), str):
+                records.append((f"{prefix}.assistant", block["text"]))
+            elif block_type in {"tool_use", "tool_call", "toolRequest"}:
+                if block_type == "toolRequest":
+                    call = block.get("toolCall") or {}
+                    value = call.get("value") or {}
+                    name = value.get("name")
+                    tool_input = value.get("arguments")
+                else:
+                    name = block.get("name")
+                    tool_input = block.get("input")
+                records.append(
+                    (
+                        f"{prefix}.tool",
+                        json.dumps(
+                            {"name": name, "input": tool_input},
+                            ensure_ascii=False,
+                        ),
+                    )
+                )
+            elif block_type == "error" and isinstance(block.get("message"), str):
+                records.append((f"{prefix}.error", block["message"]))
+        return records
+    if event_type == "complete":
+        usage = _usage(event)
+        total = usage.get("total_tokens")
+        summary = (
+            f"tokens total={total} input={usage.get('input_tokens', 0)} "
+            f"output={usage.get('output_tokens', 0)} "
+            f"cache_read={usage.get('cache_read_tokens', 0)}"
+            if total is not None
+            else "goose run complete"
+        )
+        return [(f"{prefix}.usage", summary)]
+    if event_type == "error":
+        message = event.get("message") or event.get("error")
+        if isinstance(message, str):
+            return [(f"{prefix}.error", message)]
+    return []
+
+
+class _LogCollector:
+    """Tail the job workspace and turn goose stream-json into live activity."""
+
+    def __init__(self, workdir: Path, log: Callable[[str, str], None]) -> None:
+        self.workdir = workdir
+        self.log = log
+        self._stop = threading.Event()
+        self._threads: list[threading.Thread] = []
+
+    def start(self) -> None:
+        jobs = (
+            ("main.err", "stderr", False, ""),
+            ("reflect.err", "reflect.stderr", False, ""),
+            ("main.jsonl", "goose", True, "goose"),
+            ("reflect.jsonl", "reflect", True, "reflect"),
+        )
+        for name, kind, parse_json, prefix in jobs:
+            thread = threading.Thread(
+                target=self._tail,
+                args=(self.workdir / ".kafkallm" / name, kind, parse_json, prefix),
+                name=f"kafkallm-log-{name}",
+                daemon=True,
+            )
+            thread.start()
+            self._threads.append(thread)
+
+    def stop(self) -> None:
+        self._stop.set()
+        for thread in self._threads:
+            thread.join(timeout=2)
+
+    def _tail(
+        self,
+        path: Path,
+        kind: str,
+        parse_json: bool,
+        prefix: str,
+    ) -> None:
+        pending: dict[str, str] = {}
+
+        def flush(kind_name: str | None = None) -> None:
+            if kind_name is None:
+                for name in list(pending):
+                    flush(name)
+                return
+            text = pending.pop(kind_name, "").strip()
+            if text:
+                self.log(kind_name, text)
+
+        def emit(record_kind: str, text: str) -> None:
+            if record_kind.endswith(
+                (".tool", ".tool_result", ".usage", ".error", ".raw")
+            ):
+                flush()
+                self.log(record_kind, text)
+                return
+            if record_kind not in pending:
+                flush()
+                pending[record_kind] = ""
+            pending[record_kind] += text
+            if len(pending[record_kind]) >= 400 or "\n" in pending[record_kind]:
+                flush(record_kind)
+
+        while not self._stop.is_set():
+            try:
+                stream = path.open("r", encoding="utf-8", errors="replace")
+            except OSError:
+                self._stop.wait(0.5)
+                continue
+            idle_since = time.monotonic()
+            try:
+                while not self._stop.is_set():
+                    line = stream.readline()
+                    if line == "":
+                        if pending and time.monotonic() - idle_since >= 1.0:
+                            flush()
+                        self._stop.wait(0.5)
+                        continue
+                    idle_since = time.monotonic()
+                    line = line.rstrip("\r\n")
+                    if not line:
+                        continue
+                    if not parse_json:
+                        self.log(kind, line)
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except ValueError:
+                        emit(f"{prefix}.raw", line)
+                        continue
+                    if isinstance(event, dict):
+                        for record_kind, text in _stream_event_log_records(
+                            event, prefix
+                        ):
+                            emit(record_kind, text)
+                    else:
+                        emit(f"{prefix}.raw", line)
+            finally:
+                flush()
+                stream.close()
 
 
 class GooseJobRunner:
@@ -444,6 +710,7 @@ class GooseJobRunner:
         max_steps: int,
         audit: JobAudit | None = None,
         heartbeat: Callable[[], bool] | None = None,
+        log: Callable[[str, str], None] | None = None,
     ) -> AgentResult:
         del max_steps
         workspace = Path(workspace)
@@ -489,6 +756,7 @@ class GooseJobRunner:
             "job.run_id": job.run_id,
         }
         container: Any | None = None
+        collector: _LogCollector | None = None
         run_started = time.perf_counter()
 
         with get_tracer().start_as_current_span(
@@ -511,6 +779,14 @@ class GooseJobRunner:
                     self._active_container = container
                 container.start()
                 span.set_attribute("goose.container_id", container.id)
+                if log is not None:
+                    log(
+                        "system",
+                        f"container {container.id[:12]} started "
+                        f"(image={image}, sandbox={job.sandbox})",
+                    )
+                    collector = _LogCollector(workdir, log)
+                    collector.start()
                 if audit:
                     audit.emit(
                         "goose.started",
@@ -533,7 +809,9 @@ class GooseJobRunner:
                 exit_code, timed_out = self._wait(
                     container, deadline, heartbeat=heartbeat
                 )
-                raw = self._read_text(workdir, "main.json")
+                raw = self._read_text(workdir, "main.jsonl")
+                if not raw.strip():
+                    raw = self._read_text(workdir, "main.json")
                 main_error = self._read_text(workdir, "main.err")
                 if not raw.strip():
                     if timed_out:
@@ -606,6 +884,8 @@ class GooseJobRunner:
                     )
                 raise
             finally:
+                if collector is not None:
+                    collector.stop()
                 with self._active_lock:
                     if self._active_container is container:
                         self._active_container = None
@@ -1083,7 +1363,9 @@ class GooseJobRunner:
                 attributes={"status": "skipped", "reason": "no time budget"},
             )
             return
-        raw = self._read_text(workdir, "reflect.json")
+        raw = self._read_text(workdir, "reflect.jsonl")
+        if not raw.strip():
+            raw = self._read_text(workdir, "reflect.json")
         exit_raw = self._read_text(workdir, "reflect.exit").strip()
         if not raw.strip():
             stderr = self._read_text(workdir, "reflect.err").strip()

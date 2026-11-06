@@ -18,6 +18,7 @@ from kafkallm.cancels import CancelStore
 from kafkallm.goose_job_runtime import WorkerShutdown
 from kafkallm.harness import Harness
 from kafkallm.kafka import KafkaProducer, wait_for_kafka
+from kafkallm.logs import LogPublisher
 from kafkallm.models import ID_PATTERN, Job, JobResult
 from kafkallm.sandboxes import SandboxStore
 from kafkallm.settings import Settings
@@ -48,6 +49,7 @@ class Worker:
         self.producer = KafkaProducer(settings)
         self.audit = AuditLogger(settings, self.producer)
         self.state = StatePublisher(settings, self.producer)
+        self.logs = LogPublisher(settings, self.producer)
         self.sandboxes = SandboxStore(settings)
         self.sandboxes.start()
         self.cancels = CancelStore(settings)
@@ -155,6 +157,7 @@ class Worker:
                     job,
                     job_audit=job_audit,
                     heartbeat=lambda: self._heartbeat(job.job_id),
+                    log=lambda kind, text: self.logs.publish(job.job_id, kind, text),
                 )
                 self.state.completed(state, result)
                 job_audit.emit(

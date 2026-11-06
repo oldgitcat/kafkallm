@@ -13,7 +13,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 from confluent_kafka import Consumer, KafkaError, KafkaException
 from pydantic import ValidationError
@@ -52,6 +52,8 @@ from kafkallm.telemetry import (
 logger = logging.getLogger(__name__)
 
 _MAX_EVENTS_PER_JOB = 200
+_MAX_LOGS_PER_JOB = 3000
+_MAX_LOG_JOBS = 200
 _MULTIPART_OVERHEAD_BYTES = 1024 * 1024
 
 
@@ -86,6 +88,7 @@ class JobStore:
         self.settings = settings
         self._states: dict[str, dict[str, Any]] = {}
         self._events: dict[str, list[dict[str, Any]]] = {}
+        self._logs: dict[str, list[dict[str, Any]]] = {}
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
@@ -94,6 +97,7 @@ class JobStore:
         for target, name in (
             (self._consume_states, "kafkallm-gui-state"),
             (self._consume_events, "kafkallm-gui-events"),
+            (self._consume_logs, "kafkallm-gui-logs"),
         ):
             thread = threading.Thread(target=target, name=name, daemon=True)
             thread.start()
@@ -135,11 +139,35 @@ class JobStore:
             if len(events) > _MAX_EVENTS_PER_JOB:
                 del events[: len(events) - _MAX_EVENTS_PER_JOB]
 
+    def put_log(self, record: dict[str, Any]) -> None:
+        job_id = record.get("job_id")
+        if not isinstance(job_id, str):
+            return
+        with self._lock:
+            if job_id not in self._logs and len(self._logs) >= _MAX_LOG_JOBS:
+                self._logs.pop(next(iter(self._logs)), None)
+            records = self._logs.setdefault(job_id, [])
+            records.append(record)
+            if len(records) > _MAX_LOGS_PER_JOB:
+                del records[: len(records) - _MAX_LOGS_PER_JOB]
+
+    def logs(self, job_id: str, after: int = 0) -> list[dict[str, Any]]:
+        with self._lock:
+            records = list(self._logs.get(job_id, []))
+        return [
+            record
+            for record in records
+            if isinstance(record.get("sequence"), int) and record["sequence"] > after
+        ]
+
     def _consume_states(self) -> None:
         self._consume_topic(self.settings.state_topic, self.put_state)
 
     def _consume_events(self) -> None:
         self._consume_topic(self.settings.events_topic, self.put_event)
+
+    def _consume_logs(self) -> None:
+        self._consume_topic(self.settings.logs_topic, self.put_log)
 
     def _consume_topic(self, topic: str, handler: Any) -> None:
         while not self._stop.is_set():
@@ -261,6 +289,8 @@ class JobHandler(BaseHTTPRequestHandler):
                 self._send_job(parts[2])
             elif len(parts) == 4 and parts[3] == "result":
                 self._send_job_result(parts[2])
+            elif len(parts) == 4 and parts[3] == "logs":
+                self._send_job_logs(parts[2])
             elif len(parts) == 5 and parts[3] == "artifacts":
                 self._send_job_artifact(parts[2], parts[4])
             else:
@@ -292,6 +322,24 @@ class JobHandler(BaseHTTPRequestHandler):
             f"{job_id}-result.md",
             "text/markdown; charset=utf-8",
         )
+
+    def _send_job_logs(self, job_id: str) -> None:
+        job = self.server.store.job(job_id)
+        if job is None:
+            self._send_json({"error": "job not found"}, status=HTTPStatus.NOT_FOUND)
+            return
+        query = parse_qs(urlsplit(self.path).query)
+        try:
+            after = int(query.get("after", ["0"])[0])
+        except (TypeError, ValueError):
+            after = 0
+        records = self.server.store.logs(job_id, after)
+        next_sequence = (
+            records[-1]["sequence"]
+            if records and isinstance(records[-1].get("sequence"), int)
+            else after
+        )
+        self._send_json({"logs": records, "next": next_sequence})
 
     def _send_job_artifact(self, job_id: str, index_raw: str) -> None:
         job = self.server.store.job(job_id)

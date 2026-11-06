@@ -32,6 +32,7 @@ def ensure_topics(settings: Settings) -> None:
             settings.results_topic,
             settings.events_topic,
             settings.cancels_topic,
+            settings.logs_topic,
         }
     }
     for name in {
