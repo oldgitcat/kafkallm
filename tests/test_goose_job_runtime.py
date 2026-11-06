@@ -630,6 +630,7 @@ def test_run_script_enables_registered_sandbox_extensions() -> None:
     assert "extension_path=${extension#*:}" in _VM_RUN_SCRIPT
     assert "TMPDIR=/workspace/.scratch/tmp" in _VM_RUN_SCRIPT
     assert "chmod -R a+rwX /workspace/.scratch" in _VM_RUN_SCRIPT
+    assert "seed_skills /opt/kafkallm/sandbox-skills" in _VM_RUN_SCRIPT
     # Multi-agent runs need goose's summon and skills builtins.
     assert 'builtins="$builtins,summon,skills"' in _VM_RUN_SCRIPT
     assert '--with-builtin "$builtins"' in _VM_RUN_SCRIPT

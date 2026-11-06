@@ -41,13 +41,17 @@ def default_sandboxes(settings: Settings) -> list[SandboxSpec]:
                 "enabled as 'rea'. Use it to inspect binaries, firmware, "
                 "JavaScript/Electron apps, .NET assemblies, APKs, and other "
                 "artifacts. Ghidra is installed at /opt/ghidra and the `rea` "
-                "CLI is on PATH. Prefer REA's structured tools over ad-hoc "
-                "disassembly, and cite the input paths and evidence in your "
-                "result."
+                "CLI is on PATH. Kuna is available as an alternative "
+                "decompiler through REA, JADX handles Android APKs, and Frida "
+                "is available for local dynamic instrumentation. Prefer REA's "
+                "structured tools over ad-hoc disassembly, and cite the input "
+                "paths and evidence in your result."
             ),
             env={
                 "GHIDRA_INSTALL_DIR": "/opt/ghidra",
                 "JAVA_HOME": "/opt/java/openjdk",
+                "REA_KUNA_COMMAND": "/usr/local/bin/kuna",
+                "REA_JADX_MCP_JAR": ("/opt/kafkallm/jadx-headless-mcp-all.jar"),
                 # Large binaries can take a while; the job deadline still caps
                 # the total run.
                 "REA_GHIDRA_STARTUP_TIMEOUT_MS": "900000",

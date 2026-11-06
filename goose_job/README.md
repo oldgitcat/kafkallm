@@ -6,6 +6,8 @@ This directory builds the microVM image used for every job.
 
 - `Dockerfile` — Debian bookworm, the pinned goose CLI, and the goosetown
   template and skills
+- `Dockerfile.rea` — the reverse-engineering image with REA, Ghidra, Kuna,
+  JADX, Frida, apktool/apksigner, and common RE tooling
 - `Dockerfile.example` — an example Ghidra/Java extension image
 - `config/config.example.yaml` — example goose/MCP configuration
 - `template/` — copied into `/workspace` at job start (`AGENTS.md`, `goose`,

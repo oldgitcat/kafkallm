@@ -28,6 +28,11 @@ def test_default_sandboxes_describe_both_images() -> None:
     assert sandboxes[1].image == "rea:test"
     assert sandboxes[1].extensions == ["rea:/opt/kafkallm/rea-mcp"]
     assert sandboxes[1].env["GHIDRA_INSTALL_DIR"] == "/opt/ghidra"
+    assert sandboxes[1].env["REA_KUNA_COMMAND"] == "/usr/local/bin/kuna"
+    assert (
+        sandboxes[1].env["REA_JADX_MCP_JAR"]
+        == "/opt/kafkallm/jadx-headless-mcp-all.jar"
+    )
     assert "REA" in sandboxes[1].instructions
 
 

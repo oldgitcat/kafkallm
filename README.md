@@ -79,7 +79,8 @@ GUI ──→ jobs.in, jobs.state, agents.state, sandboxes.state, agent.events
   (Phoenix remains available as an optional second backend)
 - An editable sandbox: host-mounted tools, goose/MCP config, persistent skills,
   extra build packages, plus seeded **Default** and **REA + Ghidra**
-  reverse-engineering environments
+  reverse-engineering environments with Kuna, JADX, Frida, apktool, and
+  apksigner
 - A compacted `jobs.state` topic that acts as the GUI database; the GUI rebuilds
   its view from Kafka after a restart
 - Compacted `agents.state` and `sandboxes.state` registries
@@ -519,6 +520,15 @@ image if `GOOSE_IMAGE` points to one).
   small (`full` is the other valid output profile).
 - **Ghidra** `12.1.4` with **Temurin JDK 21.0.13+9**, the combination verified
   by REA.
+- **Kuna** `1.833`, pinned to the release REA verifies, as an alternative
+  decompiler provider (`REA_KUNA_COMMAND`). The static musl build avoids glibc
+  compatibility warnings on Debian bookworm. Kuna's bundled skill is seeded
+  into reverse jobs.
+- **JADX** via `jadx-headless-mcp` `0.7.1` (`REA_JADX_MCP_JAR`) for Android
+  APK/DEX analysis, plus `apktool` and `apksigner` for packaging and signing.
+- **Frida** `17.26.1` with `frida-tools` for local dynamic instrumentation.
+  REA's bundled Frida bindings expose the full session/script tool set; the
+  standalone `frida`, `frida-ps`, and `frida-trace` CLIs are also on `PATH`.
 - Static RE tools: GDB, binutils, binwalk, YARA, strace, ltrace, nasm,
   patchelf, 7-Zip, and Python libraries for Capstone, pyelftools, pefile, and
   pwntools. REA can also use the bundled objdump and GDB.
@@ -526,13 +536,17 @@ image if `GOOSE_IMAGE` points to one).
 The reverse image starts from `kafkallm-goose-job:latest`, so build the normal
 image first. `scripts/build-rea-image.sh` does that automatically if the base
 image is missing. Both images are pinned and verified with SHA-256 at build
-time. The reverse image is roughly 3.3 GiB on disk. Verify the REA/Ghidra
-integration offline with:
+time. The reverse image is roughly 4.1 GiB on disk. Verify the REA integration
+offline with:
 
 ```bash
 podman run --rm --network none localhost/kafkallm-rea-job:latest \
-  rea doctor --provider ghidra --json
+  rea doctor --json
 ```
+
+REA's `doctor` still reports Hopper and IDA as missing because those are
+proprietary engines that cannot be redistributed. All open-source providers
+shipped in the image are available.
 
 Use it from the GUI (sandbox selector) or the CLI:
 
@@ -553,10 +567,11 @@ room for the hypervisor overhead (for example `6g`) when using reverse jobs.
 The per-job reservation is the same for all sandboxes, so a larger value
 applies to all jobs on that worker.
 
-REA is MIT-licensed. Ghidra is Apache 2.0. The image also installs the Debian
-packages above under their respective licenses. REA's optional Frida
-integration is not installed, so dynamic instrumentation with Frida is not
-available out of the box.
+REA is MIT-licensed. Ghidra and Kuna are Apache 2.0. Frida is LGPL-2.1.
+`jadx-headless-mcp` and `apktool`/`apksigner` are Apache 2.0. The image also
+installs the Debian packages above under their respective licenses. Frida is
+included for local instrumentation; a remote Frida server for physical Android
+devices is not bundled.
 
 Per-job layout:
 
@@ -947,5 +962,7 @@ reported privately as described in [SECURITY.md](SECURITY.md).
 
 Kafkallm is licensed under the [Apache License 2.0](LICENSE). The vendored
 goosetown files under `goose_job/` are also Apache 2.0; see
-[goose_job/LICENSE-goosetown](goose_job/LICENSE-goosetown). REA and Ghidra are
-installed as separate upstream components under their own licenses.
+[goose_job/LICENSE-goosetown](goose_job/LICENSE-goosetown). REA, Ghidra, Kuna,
+`jadx-headless-mcp`, apktool, and apksigner are installed as separate upstream
+components under their own licenses. Frida is installed as a separate
+LGPL-2.1 component.

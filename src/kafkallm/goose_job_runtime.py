@@ -54,15 +54,25 @@ if [ -d /opt/goosetown/template ]; then
   cp -an /opt/goosetown/template/. /workspace/ 2>/dev/null || true
 fi
 mkdir -p /workspace/.claude/skills
-if [ -d /opt/goosetown/skills ]; then
-  for skill in /opt/goosetown/skills/*; do
+seed_skills() {
+  source_dir=$1
+  target_dir=$2
+  [ -d "$source_dir" ] || return 0
+  mkdir -p "$target_dir"
+  for skill in "$source_dir"/*; do
     [ -e "$skill" ] || continue
     name=$(basename "$skill")
-    if [ ! -e "/workspace/.claude/skills/$name" ]; then
-      cp -a "$skill" /workspace/.claude/skills/ 2>/dev/null || true
+    if [ ! -e "$target_dir/$name" ]; then
+      cp -a "$skill" "$target_dir/" 2>/dev/null || true
     fi
   done
-fi
+}
+seed_skills /opt/goosetown/skills /workspace/.claude/skills
+# Sandbox-specific skills are baked into the image (for example Kuna and REA
+# guidance in the reverse image) and are not visible to other sandboxes.
+seed_skills /opt/kafkallm/sandbox-skills /workspace/.claude/skills
+# REA's own doctor looks for its skill under HOME as well.
+seed_skills /opt/kafkallm/sandbox-skills /opt/data/.claude/skills
 chmod +x /workspace/goose /workspace/gtwall 2>/dev/null || true
 
 # Seed goose's user config from the host-mounted sandbox config. This is how
