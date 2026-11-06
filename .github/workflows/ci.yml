@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install the package
+        run: pip install -e '.[dev]'
+
+      - name: Check formatting and lint
+        run: |
+          ruff check src tests
+          ruff format --check src tests
+
+      - name: Run unit tests
+        run: pytest
+
+      - name: Validate Compose configuration
+        run: |
+          cp .env.example .env
+          docker compose config --quiet

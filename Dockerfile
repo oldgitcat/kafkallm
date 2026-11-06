@@ -1,4 +1,9 @@
-FROM python:3.12-slim
+FROM python:3.12-slim-bookworm
+
+LABEL org.opencontainers.image.title="Kafkallm" \
+      org.opencontainers.image.description="Kafka-backed goose jobs in isolated microVMs" \
+      org.opencontainers.image.source="https://github.com/oldgitcat/kafkallm" \
+      org.opencontainers.image.licenses="Apache-2.0"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1

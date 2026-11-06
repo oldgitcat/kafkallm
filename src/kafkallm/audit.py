@@ -9,7 +9,6 @@ from kafkallm.models import AgentEvent, Job
 from kafkallm.settings import Settings
 from kafkallm.telemetry import inject_trace_headers, new_trace_id
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -18,7 +17,7 @@ class AuditLogger:
         self.settings = settings
         self.producer = producer
 
-    def for_job(self, job: Job) -> "JobAudit":
+    def for_job(self, job: Job) -> JobAudit:
         return JobAudit(
             producer=self.producer,
             topic=self.settings.events_topic,

@@ -10,7 +10,6 @@ from pydantic import BaseModel
 from kafkallm.models import to_json_bytes
 from kafkallm.settings import Settings
 
-
 logger = logging.getLogger(__name__)
 
 

@@ -1,10 +1,38 @@
 # Kafkallm
 
+[![CI](https://github.com/oldgitcat/kafkallm/actions/workflows/ci.yml/badge.svg)](https://github.com/oldgitcat/kafkallm/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](pyproject.toml)
+[![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)](#project-status)
+
 Kafkallm is a small Kafka/Redpanda job queue where every job is executed by a
 disposable [goose](https://github.com/aaif-goose/goose) microVM running the
 [goosetown](https://github.com/aaif-goose/goosetown) multi-agent workflow.
 Kafka is the queue, the materialized state store, the scheduler, and the audit
 log. There is no PostgreSQL and no separate scheduler service.
+
+> [!IMPORTANT]
+> Kafkallm is a local development stack, not a hardened multi-tenant service.
+> The GUI has no authentication, the LLM gateway speaks plain HTTP, and jobs
+> share a writable skills directory. Keep the stack on localhost or a trusted
+> network. See [SECURITY.md](SECURITY.md) and the
+> [isolation model](#isolation-model) before exposing it.
+
+## Project status
+
+Kafkallm is pre-1.0 (`0.1.0`). The core job flow and sandbox isolation are
+usable, but configuration and APIs may change between minor releases.
+
+## Contents
+
+- [Quick start](#quick-start)
+- [How a job runs](#how-a-job-runs)
+- [Configuration](#configuration)
+- [Isolation model](#isolation-model)
+- [Operations](#operations-and-guarantees)
+- [Development](#local-tests)
+- [Troubleshooting](#troubleshooting)
+- [License](#license)
 
 ```text
 Browser / CLI ──→ jobs.in ──→ worker ──→ rootless Podman (krun)
@@ -32,6 +60,7 @@ GUI ──→ jobs.in, jobs.state, agents.state, agent.events
 
 ## Included
 
+- One-command setup and host diagnostics through `make` and `kafkallm doctor`
 - A disposable **goose** microVM per job with the **goosetown** orchestrator,
   worker, writer, reviewer, and local-researcher skills
 - GUI-managed goosetown agent profiles stored in compacted Kafka state
@@ -57,83 +86,90 @@ GUI ──→ jobs.in, jobs.state, agents.state, agent.events
 - Optional S3-compatible RustFS for input files and result artifacts
 - Redpanda Console and a CLI for scripting
 
-## Requirements
-
-- Docker and Docker Compose for the control plane
-- KVM (`/dev/kvm`) and Podman with the `krun` runtime (`crun-krun`) for the job
-  microVMs
-- A rootless Podman API socket:
-  `systemctl --user enable --now podman.socket`
-- An OpenRouter API key for agentgateway (`OPENROUTER_API_KEY`)
-- Network access while building the job images (they download pinned goose,
-  Node, JDK, Ghidra, and REA releases)
-- About 4 GiB of disk and several minutes for the optional reverse image
-
-goosetown relies on goose subagents and tool calling. Use a model with
-reliable tool calling; small free models may ignore the delegation workflow and
-answer directly.
-
 ## Quick start
 
-1. Copy the environment template and set a provider:
+### Prerequisites
 
-   ```bash
-   cp .env.example .env
-   ```
+- Linux with KVM (`/dev/kvm`) and virtualization enabled in the BIOS
+- Docker with the Compose plugin for the control plane
+- Rootless Podman with the `krun` runtime (`crun-krun`)
+- Python 3.12+ and `make` for the host-side scripts
+- An OpenRouter API key
+- Network access while building the job images
+- About 4 GiB of disk for the default image, more for the optional reverse image
 
-   ```dotenv
-   GOOSE_MODEL=nvidia/nemotron-3.5-lightning:free
-   LLM_GATEWAY_VIRTUAL_KEY=replace-with-openssl-rand-hex-32
-   OPENROUTER_API_KEY=your-openrouter-key
-   ```
+goosetown relies on goose subagents and tool calling. Use a model with reliable
+tool calling; small free models may ignore the delegation workflow and answer
+directly.
 
-2. Install the microVM runtime and start the rootless Podman API:
+### 1. Configure
 
-   ```bash
-   dnf install crun-krun
-   systemctl --user enable --now podman.socket
-   ```
+```bash
+make setup
+```
 
-   Rootful Podman breaks libkrun's TSI networking on this setup. Use the rootless
-   socket.
+This creates `.env` from `.env.example`, generates
+`LLM_GATEWAY_VIRTUAL_KEY`, and checks the required values. If it reports a
+missing key, add your `OPENROUTER_API_KEY` to `.env`, choose a `GOOSE_MODEL`,
+and run `make setup` again. Then check the host:
 
-3. Create the isolated job network. Run this as the Podman user, on the host,
-   once per network definition:
+```bash
+make doctor
+```
 
-   ```bash
-   ./scripts/init-job-network.sh
-   ```
+### 2. Prepare the host
 
-   The worker only verifies this network; it cannot create it because it runs in
-   a container.
+```bash
+make network   # once per host: create the isolated IPv6-only Podman network
+make images    # build the goose job image into rootless Podman storage
+```
 
-4. Build the goose job image into the **Podman** storage. This is separate from
-   the Docker build of the worker and GUI:
+If `make doctor` reports a missing Podman socket, enable the rootless API:
 
-   ```bash
-   ./scripts/build-goose-image.sh
-   ```
+```bash
+systemctl --user enable --now podman.socket
+```
 
-   For the optional reverse-engineering sandbox (REA + Ghidra), build the
-   second image as well:
+For the optional reverse-engineering sandbox (REA + Ghidra), also run:
 
-   ```bash
-   ./scripts/build-rea-image.sh
-   ```
+```bash
+make rea-image
+```
 
-5. Start the stack:
+### 3. Start the stack
 
-   ```bash
-   docker compose --profile storage up -d --build
-   ```
+```bash
+make up
+```
 
-6. Open the GUI and the MLflow UI:
+Open:
 
-   - GUI: <http://localhost:8090>
-   - MLflow traces: <http://localhost:5000>
+- GUI: <http://localhost:8090>
+- MLflow traces: <http://localhost:5000>
+- Redpanda Console: <http://localhost:8080>
+
+Once `.env` is valid and the prerequisites are installed, `make bootstrap` runs
+setup, network creation, the default image build, and `make up` in one command.
 
 The GUI is published on `127.0.0.1` only. It submits to `jobs.in` and reads the
 state and audit topics. It has no local database.
+
+<details>
+<summary>Manual setup without make</summary>
+
+The Make targets wrap the scripts in this repository:
+
+```bash
+./scripts/setup.sh             # creates .env, generates the gateway key
+./scripts/init-job-network.sh
+./scripts/build-goose-image.sh
+./scripts/build-rea-image.sh   # optional
+docker compose --profile storage up -d --build
+./scripts/doctor.sh
+```
+
+`make help` lists every target.
+</details>
 
 ### Command line
 
@@ -216,6 +252,30 @@ Redpanda Console runs at <http://localhost:8080>. MLflow runs at
    Phoenix.
 
 The microVM never talks to Kafka. The worker is the only Kafka participant.
+
+## Configuration
+
+All runtime settings live in `.env`, created from `.env.example`. The file is
+gitignored. `make setup` generates the virtual gateway key and validates the
+required values; `OPENROUTER_API_KEY` is the only required secret.
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `GOOSE_MODEL` | `nvidia/nemotron-3.5-lightning:free` | Model used inside the job |
+| `OPENROUTER_API_KEY` | — | Provider credential; only agentgateway sees it |
+| `LLM_GATEWAY_VIRTUAL_KEY` | generated | Rotatable key used by jobs |
+| `KAFKALLM_JOB_ROOT` | `/var/lib/kafkallm` | Host directory for workspaces, skills, tools, and config |
+| `GOOSE_IMAGE` | `kafkallm-goose-job:latest` | Default job microVM image |
+| `GOOSE_RE_IMAGE` | `kafkallm-rea-job:latest` | Reverse-engineering image |
+| `GOOSE_JOB_RAM_MIB` / `GOOSE_JOB_CPUS` | `2048` / `2` | Per-job resources |
+| `GOOSE_JOB_REFLECT_ENABLED` | `true` | Skill-improvement pass after a job |
+| `GUI_PORT` | `8090` | GUI listener |
+| `LLM_GATEWAY_PORT` | `8091` | LLM gateway listener |
+| `S3_ENDPOINT_URL` | `http://rustfs:9000` (storage profile) | Uploads and artifacts |
+| `MLFLOW_ENABLED` | `true` | OTLP traces to MLflow |
+
+See `.env.example` for every setting and `agentgateway/config.yaml` for the
+gateway policy.
 
 ## agentgateway and provider keys
 
@@ -513,14 +573,16 @@ The control plane runs under Docker Compose; the job microVMs run under Podman.
   Docker's runc has no krun handler.
 - **Docker runs the control plane.** The worker, GUI, Redpanda, RustFS, MLflow,
   Phoenix (optional), and the socket proxy are ordinary containers.
-- **Rootless Podman is required.** Rootful Podman breaks libkrun's TSI
-  networking here, so the microVMs would have no outbound network and every job
-  would stall on the LLM provider.
+- **Rootless Podman is required.** Rootful Podman can break libkrun's TSI
+  networking, leaving the microVMs without an outbound path and stalling every
+  job on the LLM provider. Use the rootless socket.
 
-The whole stack was also tried under `podman-compose`, but this host's Wi-Fi
-interface advertises a `/0` netmask (typical for a mobile hotspot), so netavark
-refuses to create any bridge subnet. Docker's bridges already exist, so the
-stack stays on Docker while the job microVMs use Podman.
+The control plane stays on Docker Compose because some host interfaces expose
+unusual netmasks (for example a `/0` netmask from a mobile hotspot) that make
+netavark reject every IPv4 bridge subnet. Kafkallm therefore writes an
+IPv6-only internal job network directly into rootless Podman's network store
+instead of asking netavark to derive one. Docker's existing bridges are
+unaffected.
 
 The worker reaches the rootless Podman API through the internal `podman-proxy`,
 which shares the worker's network namespace and listens on loopback only. The
@@ -726,19 +788,79 @@ docker compose down
 ## Local tests
 
 ```bash
+make test
+make lint
+```
+
+`make venv` creates `.venv` and installs the package with its development
+dependencies. The equivalent manual commands are:
+
+```bash
 python3 -m venv .venv
 .venv/bin/pip install -e '.[dev]'
 .venv/bin/pytest
+.venv/bin/ruff check src tests
+.venv/bin/ruff format --check src tests
 ```
 
 The unit tests use a fake Podman client, a fake Kafka producer, and the real GUI
 HTTP handler. They require neither a Podman daemon nor Redpanda.
 
+## Troubleshooting
+
+Start with:
+
+```bash
+make doctor
+```
+
+It checks Python, Docker Compose, Podman, the rootless socket, KVM, the job
+network, the job image, the required `.env` values, the gateway, the GUI, and
+OpenRouter connectivity. Use `./scripts/doctor.sh --offline` to skip network
+checks.
+
+Common failures:
+
+| Symptom | Fix |
+|---|---|
+| `KVM` fails | Enable virtualization in the BIOS and make `/dev/kvm` writable |
+| `Podman socket` fails | `systemctl --user enable --now podman.socket` |
+| `Job network` warns | Run `make network` on the host, not inside a container |
+| `Goose job image` warns | Run `make images` |
+| Worker waits for the gateway | Check `OPENROUTER_API_KEY` in `.env`, then `make restart` |
+| Gateway rejects the virtual key | Rerun `make setup`, then `make restart` |
+| `docker compose config` fails | Fix the reported `.env` or `compose.yaml` value |
+
+Logs:
+
+```bash
+make logs
+docker compose logs -f agent-worker
+docker compose logs -f gui
+docker compose logs -f llm-gateway
+```
+
 ## Repository layout
 
 ```text
-src/kafkallm/       worker, GUI, Kafka, state, agents, goose runtime, models
+src/kafkallm/       worker, GUI, doctor, Kafka, state, agents, goose runtime, models
 goose_job/          job image, goosetown template, skills, config and tool examples
-scripts/            build-goose-image.sh, build-rea-image.sh, init-job-network.sh, sandbox-shell.sh, poc-krun.sh
+agentgateway/       LLM gateway policy
+scripts/            setup, doctor, image builds, network init, sandbox helpers
 tests/              unit tests
+.github/workflows/  CI (lint, tests, Compose validation)
+Makefile            one-command setup, diagnostics, build, and run targets
 ```
+
+## Contributing
+
+Issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md)
+for the development setup and review checklist. Security issues should be
+reported privately as described in [SECURITY.md](SECURITY.md).
+
+## License
+
+Kafkallm is licensed under the [Apache License 2.0](LICENSE). The vendored
+goosetown files under `goose_job/` are also Apache 2.0; see
+[goose_job/LICENSE-goosetown](goose_job/LICENSE-goosetown). REA and Ghidra are
+installed as separate upstream components under their own licenses.

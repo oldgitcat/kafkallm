@@ -6,7 +6,6 @@ from kafkallm.kafka import KafkaProducer
 from kafkallm.models import Job, JobResult, JobState, utc_now
 from kafkallm.settings import Settings
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -35,9 +34,7 @@ class StatePublisher:
         self._send(
             state.model_copy(
                 update={
-                    "status": "succeeded"
-                    if result.status == "succeeded"
-                    else "failed",
+                    "status": "succeeded" if result.status == "succeeded" else "failed",
                     "finished_at": result.finished_at,
                     "worker_id": result.worker_id,
                     "result": result.result,

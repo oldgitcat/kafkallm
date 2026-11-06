@@ -55,6 +55,4 @@ def test_refuses_a_conflicting_subnet(tmp_path: Path) -> None:
 
 def test_requires_an_ipv6_subnet(tmp_path: Path) -> None:
     with pytest.raises(JobNetworkError, match="IPv6"):
-        ensure_job_network(
-            name="test-jobs", subnet="10.99.0.0/24", directory=tmp_path
-        )
+        ensure_job_network(name="test-jobs", subnet="10.99.0.0/24", directory=tmp_path)

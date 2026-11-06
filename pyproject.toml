@@ -7,7 +7,15 @@ name = "kafkallm"
 version = "0.1.0"
 description = "Kafkallm: Kafka-based goose/goosetown job processing in isolated microVMs"
 readme = "README.md"
+license = { text = "Apache-2.0" }
 requires-python = ">=3.12"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Distributed Computing",
+]
 dependencies = [
     "boto3>=1.35,<2",
     "confluent-kafka>=2.6,<3",
@@ -21,7 +29,13 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8,<10",
+    "ruff>=0.17,<0.18",
 ]
+
+[project.urls]
+Homepage = "https://github.com/oldgitcat/kafkallm"
+Repository = "https://github.com/oldgitcat/kafkallm"
+Issues = "https://github.com/oldgitcat/kafkallm/issues"
 
 [project.scripts]
 kafkallm = "kafkallm.cli:main"
@@ -35,3 +49,15 @@ kafkallm = ["static/*.html"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+# The formatter wraps code but cannot split long prompt strings.
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"

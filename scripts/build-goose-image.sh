@@ -2,7 +2,11 @@
 # Build the goose job image into the rootless Podman storage.
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$ROOT_DIR"
+# shellcheck disable=SC1091
+. scripts/common.sh
+load_env "$ROOT_DIR"
 
 IMAGE="${GOOSE_IMAGE:-kafkallm-goose-job:latest}"
 DOCKERFILE="${GOOSE_JOB_DOCKERFILE:-goose_job/Dockerfile}"

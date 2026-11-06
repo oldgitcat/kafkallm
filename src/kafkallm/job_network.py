@@ -1,10 +1,11 @@
 """Create the isolated, IPv6-only Podman network used by goose jobs.
 
-Rootless Podman normally creates an IPv4 subnet for every new network. This
-host has a Wi-Fi interface with an ``inet 10.0.10.167/0`` address, so netavark
-correctly rejects every IPv4 subnet as conflicting. An IPv6-only network avoids
-the conflict and is a better fit for the job sandbox: the job has no IPv4
-address and no default route, so the only reachable peer is the gateway proxy.
+Rootless Podman normally creates an IPv4 subnet for every new network. Some
+hosts expose an interface with an unusually broad netmask (for example a ``/0``
+address from a mobile hotspot), so netavark correctly rejects every IPv4 subnet
+as conflicting. An IPv6-only network avoids the conflict and is a better fit for
+the job sandbox: the job has no IPv4 address and no default route, so the only
+reachable peer is the gateway proxy.
 
 Podman's CLI and API always add an IPv4 subnet, even with ``--ipv6``, so the
 network definition is written directly to the rootless network storage. Podman

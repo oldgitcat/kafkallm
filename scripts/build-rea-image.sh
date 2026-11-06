@@ -3,7 +3,11 @@
 # Podman storage. The normal goose image is built first if it is missing.
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$ROOT_DIR"
+# shellcheck disable=SC1091
+. scripts/common.sh
+load_env "$ROOT_DIR"
 
 BASE_IMAGE="${GOOSE_JOB_BASE_IMAGE:-kafkallm-goose-job:latest}"
 IMAGE="${GOOSE_RE_IMAGE:-kafkallm-rea-job:latest}"

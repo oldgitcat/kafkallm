@@ -5,7 +5,11 @@
 # submitting a job. It has no network access.
 set -eu
 
-cd "$(dirname "$0")/.."
+ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$ROOT_DIR"
+# shellcheck disable=SC1091
+. scripts/common.sh
+load_env "$ROOT_DIR"
 
 IMAGE="${GOOSE_IMAGE:-kafkallm-goose-job:latest}"
 ROOT="${KAFKALLM_JOB_ROOT:-/var/lib/kafkallm}"

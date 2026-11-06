@@ -9,6 +9,7 @@ from pathlib import Path
 
 from confluent_kafka import Consumer, KafkaError, KafkaException
 
+from kafkallm.dotenv import load_dotenv
 from kafkallm.kafka import KafkaProducer, ensure_topics
 from kafkallm.models import FileRef, Job
 from kafkallm.settings import Settings
@@ -54,6 +55,20 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "init-job-network",
         help="Create the isolated IPv6-only Podman network for jobs",
+    )
+    doctor = subparsers.add_parser(
+        "doctor",
+        help="Check prerequisites, configuration, and running services",
+    )
+    doctor.add_argument(
+        "--offline",
+        action="store_true",
+        help="Skip network checks against the gateway and OpenRouter",
+    )
+    doctor.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable JSON",
     )
 
     submit = subparsers.add_parser("submit", help="Send a job to jobs.in")
@@ -198,8 +213,10 @@ def main() -> None:
     )
     parser = build_parser()
     args = parser.parse_args()
+    load_dotenv()
     settings = Settings.from_env()
     configure_telemetry(settings)
+    exit_code = 0
     try:
         if args.command == "worker":
             Worker(settings).run()
@@ -215,6 +232,10 @@ def main() -> None:
             from kafkallm.gui import run_gui
 
             run_gui(settings)
+        elif args.command == "doctor":
+            from kafkallm.doctor import run_doctor
+
+            exit_code = run_doctor(settings, offline=args.offline, as_json=args.json)
         elif args.command == "init-job-network":
             from kafkallm.job_network import ensure_job_network
 
@@ -234,6 +255,8 @@ def main() -> None:
         parser.exit(1, f"Error: {exc}\n")
     finally:
         shutdown_telemetry()
+    if exit_code:
+        raise SystemExit(exit_code)
 
 
 if __name__ == "__main__":

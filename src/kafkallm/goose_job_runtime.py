@@ -1138,9 +1138,7 @@ class GooseJobRunner:
                 "You are the goosetown orchestrator for one isolated Kafkallm "
                 "job. Follow the goosetown-orchestrator skill.\n"
             )
-            delegates = [
-                agent for agent in job.agents if agent.role != "orchestrator"
-            ]
+            delegates = [agent for agent in job.agents if agent.role != "orchestrator"]
             if delegates:
                 flock = "\n".join(
                     f"- {agent.name} ({agent.role}): {agent.description}"

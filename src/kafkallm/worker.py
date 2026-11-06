@@ -26,7 +26,6 @@ from kafkallm.telemetry import (
     set_content,
 )
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -55,10 +54,7 @@ class Worker:
                 "session.timeout.ms": 15000,
                 "heartbeat.interval.ms": 3000,
                 "partition.assignment.strategy": "cooperative-sticky",
-                "max.poll.interval.ms": (
-                    settings.max_job_timeout_seconds + 120
-                )
-                * 1000,
+                "max.poll.interval.ms": (settings.max_job_timeout_seconds + 120) * 1000,
             }
         )
 
@@ -110,9 +106,7 @@ class Worker:
                 span.set_attribute("kafkallm.trace_id", trace_id)
                 set_content(span, "input.value", job.instruction)
 
-                state = self.state.running(
-                    job, worker_id=self.settings.worker_id
-                )
+                state = self.state.running(job, worker_id=self.settings.worker_id)
                 job_audit = self.audit.for_job(job)
                 job_audit.emit(
                     "job.received",

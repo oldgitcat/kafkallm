@@ -22,7 +22,14 @@ an unattended, offline Kafkallm job.
 ## Build
 
 ```bash
-./scripts/build-goose-image.sh
+make images
+# equivalent: ./scripts/build-goose-image.sh
+```
+
+For the optional REA + Ghidra image:
+
+```bash
+make rea-image
 ```
 
 The image is built into the rootless Podman storage, not Docker. The worker

@@ -437,7 +437,9 @@ class JobHandler(BaseHTTPRequestHandler):
                         "bucket": reference.bucket,
                         "key": reference.key,
                     }
-                    for (filename, data), reference in zip(files, references)
+                    for (filename, data), reference in zip(
+                        files, references, strict=True
+                    )
                 ],
                 "input_files": [
                     reference.model_dump(mode="json") for reference in references

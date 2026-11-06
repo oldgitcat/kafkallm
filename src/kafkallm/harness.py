@@ -3,9 +3,9 @@ from __future__ import annotations
 import logging
 import shutil
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
 
 from kafkallm.audit import AuditLogger, JobAudit
 from kafkallm.goose_job_runtime import GooseJobRunner
@@ -19,7 +19,6 @@ from kafkallm.telemetry import (
     set_content,
     set_error,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -105,9 +104,7 @@ class Harness:
                                 reference, inputs / f"{index:02d}-{filename}"
                             )
 
-                    max_steps = min(
-                        job.max_steps, self.settings.max_agent_steps
-                    )
+                    max_steps = min(job.max_steps, self.settings.max_agent_steps)
                     agent_result: AgentResult = self.goose.run(
                         job=job,
                         workspace=root,
@@ -176,7 +173,9 @@ class Harness:
                     job_audit.emit(
                         "agent.completed",
                         "succeeded",
-                        duration_ms=round((time.perf_counter() - run_started) * 1000, 3),
+                        duration_ms=round(
+                            (time.perf_counter() - run_started) * 1000, 3
+                        ),
                         attributes={
                             "steps": steps,
                             "usage": usage,
@@ -200,14 +199,14 @@ class Harness:
                 )
             except Exception as exc:
                 set_error(span, exc)
-                logger.exception(
-                    "Job %s / run %s failed", job.job_id, job.run_id
-                )
+                logger.exception("Job %s / run %s failed", job.job_id, job.run_id)
                 if job_audit:
                     job_audit.emit(
                         "agent.completed",
                         "failed",
-                        duration_ms=round((time.perf_counter() - run_started) * 1000, 3),
+                        duration_ms=round(
+                            (time.perf_counter() - run_started) * 1000, 3
+                        ),
                         attributes={"steps": steps, "usage": usage},
                         error=str(exc),
                     )
