@@ -203,6 +203,11 @@
     .badge.running { background: #dbeafe; color: var(--info); }
     .badge.succeeded { background: #dcfce7; color: var(--ok); }
     .badge.failed, .badge.invalid { background: #fee2e2; color: var(--err); }
+    .badge.cancelled { background: #f4f4f5; color: var(--muted); }
+    button.danger {
+      background: var(--err);
+    }
+    button.danger:hover { background: #991b1b; }
     .mono {
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       font-size: 12px;
@@ -533,7 +538,7 @@
         </div>
         <div id="agent-options" class="agent-options"><span class="muted">Loading agents…</span></div>
 
-        <div class="row">
+        <div id="limit-fields" class="row">
           <div>
             <label for="timeout">Timeout (seconds)</label>
             <input id="timeout" type="number" min="1" max="3600" value="600">
@@ -660,6 +665,10 @@
       return `<span class="badge ${esc(status)}">${esc(status)}</span>`;
     }
 
+    function jobStatus(job) {
+      return job.cancelled ? "cancelled" : job.status;
+    }
+
     async function api(path, options) {
       const response = await fetch(path, options);
       const data = await response.json().catch(() => ({}));
@@ -766,6 +775,7 @@
 
     function syncUnlimited() {
       const unlimited = $("unlimited").checked;
+      $("limit-fields").style.display = unlimited ? "none" : "";
       $("timeout").disabled = unlimited;
       $("max_steps").disabled = unlimited;
     }
@@ -936,7 +946,7 @@
         const selected = job.job_id === state.selected;
         return `
         <tr data-id="${esc(job.job_id)}" class="${selected ? "selected" : ""}">
-          <td>${badge(job.status)}</td>
+          <td>${badge(jobStatus(job))}</td>
           <td class="mono">${esc(job.job_id)}</td>
           <td><div class="snippet" title="${esc(job.instruction)}">${esc(job.instruction)}</div></td>
           <td class="muted">${esc(sandboxLabel(job.sandbox))}</td>
@@ -960,6 +970,13 @@
       </table>`;
       for (const row of $("jobs").querySelectorAll("tbody tr[data-id]")) {
         row.addEventListener("click", () => selectJob(row.dataset.id));
+      }
+      const stop = $("jobs").querySelector("[data-stop-job]");
+      if (stop) {
+        stop.addEventListener("click", (event) => {
+          event.stopPropagation();
+          cancelJob(stop.dataset.stopJob);
+        });
       }
     }
 
@@ -992,6 +1009,19 @@
       state.detailError = null;
       renderJobs();
       await loadDetail();
+    }
+
+    async function cancelJob(jobId) {
+      try {
+        await api(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, {
+          method: "POST",
+        });
+        await loadJobs();
+        await loadDetail();
+      } catch (error) {
+        state.detailError = error.message;
+        renderJobs();
+      }
     }
 
     async function loadDetail() {
@@ -1043,7 +1073,7 @@
       return `<section>
         <h2>Job detail</h2>
         <div class="grid">
-          <div class="field"><div class="k">Status</div><div class="v">${badge(job.status)}</div></div>
+          <div class="field"><div class="k">Status</div><div class="v">${badge(jobStatus(job))}</div></div>
           <div class="field"><div class="k">Job</div><div class="v mono">${esc(job.job_id)}</div></div>
           <div class="field"><div class="k">Run</div><div class="v mono">${esc(job.run_id)}</div></div>
           <div class="field"><div class="k">Worker</div><div class="v mono">${esc(job.worker_id || "—")}</div></div>
@@ -1057,6 +1087,10 @@
           <div class="field"><div class="k">Flock</div><div class="v">${esc((job.agent_names || []).join(", ") || "built-in roles")}</div></div>
           <div class="field"><div class="k">Usage</div><div class="v mono">${usage}</div></div>
         </div>
+        ${job.status === "queued" || job.status === "running" ? `<div class="block">
+          <button id="stop-job" type="button" class="danger" data-stop-job="${esc(job.job_id)}">Stop job</button>
+          <div class="hint">Requests cancellation. The worker stops the microVM and marks the job as cancelled.</div>
+        </div>` : ""}
         <div class="block"><h3>Instruction</h3><pre>${esc(job.instruction)}</pre></div>
         ${job.result ? `<div class="block">
           <div class="block-head">

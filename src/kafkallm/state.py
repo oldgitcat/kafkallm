@@ -35,6 +35,7 @@ class StatePublisher:
             state.model_copy(
                 update={
                     "status": "succeeded" if result.status == "succeeded" else "failed",
+                    "cancelled": result.cancelled,
                     "finished_at": result.finished_at,
                     "worker_id": result.worker_id,
                     "result": result.result,

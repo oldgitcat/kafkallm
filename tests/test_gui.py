@@ -228,6 +228,54 @@ def test_gui_accepts_unlimited_jobs_when_enabled() -> None:
         thread.join(timeout=5)
 
 
+def test_gui_stops_queued_and_running_jobs() -> None:
+    settings = _settings()
+    producer = RecordingProducer()
+    store = JobStore(settings)
+    job = Job(instruction="Run for a while")
+    store.put_state(JobState.queued(job).model_dump(mode="json"))
+    finished = Job(instruction="Already done")
+    store.put_state(
+        JobState.queued(finished)
+        .model_copy(update={"status": "succeeded"})
+        .model_dump(mode="json")
+    )
+    server = JobServer(("127.0.0.1", 0), store, producer, settings)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        status, data = _request(
+            f"{base}/api/jobs/{job.job_id}/cancel",
+            {},
+        )
+        assert status == 202
+        assert data == {"status": "cancelling", "job_id": job.job_id}
+        assert "jobs.cancel" in [topic for topic, _, _ in producer.messages]
+        detail = store.job(job.job_id)
+        assert detail is not None
+        assert detail["cancelled"] is True
+        assert detail["status"] == "failed"
+
+        status, data = _request(
+            f"{base}/api/jobs/{job.job_id}/cancel",
+            {},
+        )
+        assert status == 200
+        assert data["status"] == "cancelled"
+
+        status, error = _request(
+            f"{base}/api/jobs/{finished.job_id}/cancel",
+            {},
+        )
+        assert status == 400
+        assert "Only queued or running" in error["error"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
 def test_gui_uploads_binary_inputs_and_attaches_them_to_the_job() -> None:
     settings = replace(
         _settings(),

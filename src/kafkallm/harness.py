@@ -8,7 +8,11 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from kafkallm.audit import AuditLogger, JobAudit
-from kafkallm.goose_job_runtime import GooseJobRunner
+from kafkallm.goose_job_runtime import (
+    GooseJobRunner,
+    JobCancelledError,
+    WorkerShutdown,
+)
 from kafkallm.models import AgentResult, FileRef, Job, JobResult, utc_now
 from kafkallm.sandboxes import SandboxStore
 from kafkallm.settings import Settings
@@ -94,7 +98,7 @@ class Harness:
         self,
         job: Job,
         job_audit: JobAudit | None = None,
-        heartbeat: Callable[[], None] | None = None,
+        heartbeat: Callable[[], bool] | None = None,
     ) -> JobResult:
         trace_id = job.trace_id or current_trace_id() or new_trace_id()
         job = job.model_copy(update={"trace_id": trace_id})
@@ -255,7 +259,15 @@ class Harness:
                 )
             except Exception as exc:
                 set_error(span, exc)
-                logger.exception("Job %s / run %s failed", job.job_id, job.run_id)
+                if isinstance(exc, (JobCancelledError, WorkerShutdown)):
+                    logger.info(
+                        "Job %s / run %s stopped: %s",
+                        job.job_id,
+                        job.run_id,
+                        exc,
+                    )
+                else:
+                    logger.exception("Job %s / run %s failed", job.job_id, job.run_id)
                 if job_audit:
                     job_audit.emit(
                         "agent.completed",
@@ -271,6 +283,7 @@ class Harness:
                     run_id=job.run_id,
                     status="failed",
                     trace_id=trace_id,
+                    cancelled=isinstance(exc, JobCancelledError),
                     error=str(exc)[:4000],
                     worker_id=self.settings.worker_id,
                     started_at=started_at,

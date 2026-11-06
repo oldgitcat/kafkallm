@@ -13,6 +13,7 @@ from kafkallm.goose_job_runtime import (
     _VM_RUN_SCRIPT,
     GooseJobRunner,
     GooseJobRuntimeError,
+    JobCancelledError,
     _parse_bytes,
     parse_goose_output,
 )
@@ -698,6 +699,23 @@ def test_unlimited_job_is_rejected_when_disabled(tmp_path: Path) -> None:
     assert "Unlimited jobs are disabled" in result.error
 
 
+def test_harness_marks_cancelled_results(tmp_path: Path) -> None:
+    settings = _settings(workspace_root=str(tmp_path))
+    harness = Harness(settings)
+
+    def cancel(**kwargs: Any) -> AgentResult:
+        del kwargs
+        raise JobCancelledError("Job cancelled by user.")
+
+    harness.goose.run = cancel  # type: ignore[method-assign]
+    result = harness.process(Job(instruction="Do it"))
+
+    harness.close()
+    assert result.status == "failed"
+    assert result.cancelled is True
+    assert result.error == "Job cancelled by user."
+
+
 def test_unlimited_environment_disables_timeout_and_turn_caps(
     tmp_path: Path,
 ) -> None:
@@ -736,10 +754,32 @@ def test_run_polls_the_heartbeat_while_waiting(tmp_path: Path) -> None:
         workspace=_workspace(tmp_path),
         deadline=time.monotonic() + 120,
         max_steps=5,
-        heartbeat=lambda: calls.append(1),
+        heartbeat=lambda: calls.append(1) or False,
     )
 
     assert calls
+
+
+def test_cancelled_job_stops_the_microvm(tmp_path: Path) -> None:
+    client = FakeDockerClient()
+    client.results = {"main.json": _goose_result()}
+    runner = GooseJobRunner(_settings_for(tmp_path), client=client)
+    calls: list[int] = []
+
+    def heartbeat() -> bool:
+        calls.append(1)
+        return len(calls) > 1
+
+    with pytest.raises(JobCancelledError, match="cancelled"):
+        runner.run(
+            job=Job(instruction="Do it"),
+            workspace=_workspace(tmp_path),
+            deadline=time.monotonic() + 120,
+            max_steps=5,
+            heartbeat=heartbeat,
+        )
+
+    assert len(calls) >= 2
 
 
 def test_unlimited_result_is_stored_as_an_artifact(tmp_path: Path) -> None:

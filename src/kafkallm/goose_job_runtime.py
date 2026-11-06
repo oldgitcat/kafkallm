@@ -225,6 +225,14 @@ class GooseJobRuntimeError(RuntimeError):
     pass
 
 
+class JobCancelledError(GooseJobRuntimeError):
+    pass
+
+
+class WorkerShutdown(GooseJobRuntimeError):
+    pass
+
+
 def parse_goose_output(raw: str) -> tuple[str, dict[str, int], int, str | None]:
     """Parse `goose run --output-format json` into text, usage, steps, error.
 
@@ -435,10 +443,12 @@ class GooseJobRunner:
         deadline: float,
         max_steps: int,
         audit: JobAudit | None = None,
-        heartbeat: Callable[[], None] | None = None,
+        heartbeat: Callable[[], bool] | None = None,
     ) -> AgentResult:
         del max_steps
         workspace = Path(workspace)
+        if heartbeat is not None and heartbeat():
+            raise JobCancelledError("Job cancelled by user.")
         sandbox = self._sandbox_for(job.sandbox)
         image = sandbox.image
         prompt = self._build_prompt(job, sandbox=sandbox)
@@ -997,11 +1007,22 @@ class GooseJobRunner:
         self,
         container: Any,
         deadline: float,
-        heartbeat: Callable[[], None] | None = None,
+        heartbeat: Callable[[], bool] | None = None,
     ) -> tuple[int | None, bool]:
         while time.monotonic() < deadline:
-            if heartbeat is not None:
-                heartbeat()
+            if heartbeat is not None and heartbeat():
+                logger.warning(
+                    "Job cancellation requested; stopping microVM container %s",
+                    container.id[:12],
+                )
+                try:
+                    container.stop(timeout=10)
+                except Exception:
+                    logger.warning(
+                        "Could not stop cancelled microVM container %s",
+                        container.id[:12],
+                    )
+                raise JobCancelledError("Job cancelled by user.")
             container.reload()
             if container.status not in {"created", "running", "restarting"}:
                 wait_result = container.wait(timeout=10)

@@ -26,11 +26,13 @@ class Settings:
     events_topic: str
     agents_topic: str
     sandboxes_topic: str
+    cancels_topic: str
     kafka_group_id: str
     kafka_topic_partitions: int
     kafka_retention_ms: int
     kafka_startup_timeout_seconds: int
     worker_id: str
+    worker_concurrency: int
     workspace_root: str
     max_job_timeout_seconds: int
     max_agent_steps: int
@@ -103,6 +105,7 @@ class Settings:
             events_topic=os.getenv("EVENTS_TOPIC", "agent.events"),
             agents_topic=os.getenv("AGENTS_TOPIC", "agents.state"),
             sandboxes_topic=os.getenv("SANDBOXES_TOPIC", "sandboxes.state"),
+            cancels_topic=os.getenv("CANCELS_TOPIC", "jobs.cancel"),
             kafka_group_id=os.getenv("KAFKA_GROUP_ID", "agent-workers"),
             kafka_topic_partitions=_int_env("KAFKA_TOPIC_PARTITIONS", 3),
             kafka_retention_ms=_int_env(
@@ -112,6 +115,7 @@ class Settings:
                 "KAFKA_STARTUP_TIMEOUT_SECONDS", 300
             ),
             worker_id=os.getenv("WORKER_ID", socket.gethostname()),
+            worker_concurrency=max(1, _int_env("WORKER_CONCURRENCY", 1)),
             workspace_root=os.getenv("WORKSPACE_ROOT", "/var/lib/kafkallm/staging"),
             max_job_timeout_seconds=_int_env("MAX_JOB_TIMEOUT_SECONDS", 1800),
             max_agent_steps=_int_env("MAX_AGENT_STEPS", 8),

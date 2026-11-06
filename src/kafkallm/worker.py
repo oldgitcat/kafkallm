@@ -4,7 +4,9 @@ import json
 import logging
 import re
 import signal
+import threading
 import time
+from dataclasses import replace
 from types import FrameType
 
 from confluent_kafka import Consumer, KafkaError, KafkaException, Message
@@ -12,6 +14,8 @@ from opentelemetry.trace import Status, StatusCode
 from pydantic import ValidationError
 
 from kafkallm.audit import AuditLogger
+from kafkallm.cancels import CancelStore
+from kafkallm.goose_job_runtime import WorkerShutdown
 from kafkallm.harness import Harness
 from kafkallm.kafka import KafkaProducer, wait_for_kafka
 from kafkallm.models import ID_PATTERN, Job, JobResult
@@ -46,6 +50,8 @@ class Worker:
         self.state = StatePublisher(settings, self.producer)
         self.sandboxes = SandboxStore(settings)
         self.sandboxes.start()
+        self.cancels = CancelStore(settings)
+        self.cancels.start()
         self.harness = Harness(settings, audit=self.audit, sandboxes=self.sandboxes)
         self.harness.wait_ready()
         max_poll_ms = (settings.max_job_timeout_seconds + 120) * 1000
@@ -86,22 +92,24 @@ class Worker:
                 updates["trace_id"] = trace_id
         return result.model_copy(update=updates)
 
-    def _heartbeat(self) -> None:
-        """Poll the consumer while a long job runs so the group membership stays alive."""
+    def _heartbeat(self, job_id: str) -> bool:
+        """Poll the consumer while a long job runs and report cancellation."""
         if not self.running:
-            return
+            raise WorkerShutdown("Worker is shutting down; job interrupted.")
         try:
             message = self.consumer.poll(0)
         except KafkaException as exc:
             logger.warning("Kafka heartbeat poll failed: %s", exc)
-            return
-        if message is None:
-            return
-        if message.error():
-            if message.error().code() != KafkaError._PARTITION_EOF:
-                logger.warning("Kafka heartbeat poll returned: %s", message.error())
-            return
-        self._pending_messages.append(message)
+        else:
+            if message is not None:
+                if message.error():
+                    if message.error().code() != KafkaError._PARTITION_EOF:
+                        logger.warning(
+                            "Kafka heartbeat poll returned: %s", message.error()
+                        )
+                else:
+                    self._pending_messages.append(message)
+        return self.cancels.is_cancelled(job_id)
 
     def handle_message(self, message: Message) -> None:
         parent_context = extract_trace_context(message.headers())
@@ -146,7 +154,7 @@ class Worker:
                 result = self.harness.process(
                     job,
                     job_audit=job_audit,
-                    heartbeat=self._heartbeat,
+                    heartbeat=lambda: self._heartbeat(job.job_id),
                 )
                 self.state.completed(state, result)
                 job_audit.emit(
@@ -190,9 +198,10 @@ class Worker:
                 result.status,
             )
 
-    def run(self) -> None:
-        signal.signal(signal.SIGTERM, self.stop)
-        signal.signal(signal.SIGINT, self.stop)
+    def run(self, install_signals: bool = True) -> None:
+        if install_signals:
+            signal.signal(signal.SIGTERM, self.stop)
+            signal.signal(signal.SIGINT, self.stop)
         self.consumer.subscribe([self.settings.jobs_topic])
         logger.info(
             "Worker %s is waiting for jobs in %s",
@@ -222,7 +231,68 @@ class Worker:
                         self.consumer.resume(current)
         finally:
             self.consumer.close()
+            self.cancels.stop()
             self.sandboxes.stop()
             self.producer.close()
             self.harness.close()
             logger.info("Worker stopped")
+
+
+class WorkerPool:
+    """Run several workers in one process so jobs can execute in parallel.
+
+    Each worker owns its own Kafka consumer and goose runtime. The Kafka group
+    distributes partitions across them; the effective parallelism is min(
+    WORKER_CONCURRENCY, KAFKA_TOPIC_PARTITIONS).
+    """
+
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self.concurrency = max(1, settings.worker_concurrency)
+        self._shutting_down = False
+        self.workers = [
+            Worker(
+                settings
+                if self.concurrency == 1
+                else replace(settings, worker_id=f"{settings.worker_id}-{index + 1}")
+            )
+            for index in range(self.concurrency)
+        ]
+
+    def run(self) -> None:
+        def shutdown(signum: int, frame: FrameType | None) -> None:
+            self._shutting_down = True
+            logger.info(
+                "Received signal %s; stopping %s workers", signum, len(self.workers)
+            )
+            for worker in self.workers:
+                worker.stop(signum, frame)
+
+        signal.signal(signal.SIGTERM, shutdown)
+        signal.signal(signal.SIGINT, shutdown)
+        threads = []
+        for index, worker in enumerate(self.workers, start=1):
+            thread = threading.Thread(
+                target=worker.run,
+                kwargs={"install_signals": False},
+                name=f"kafkallm-worker-{index}",
+            )
+            thread.start()
+            threads.append(thread)
+        while any(thread.is_alive() for thread in threads):
+            for thread in threads:
+                thread.join(timeout=1.0)
+            if any(not thread.is_alive() for thread in threads):
+                # One worker stopped unexpectedly. Stop the rest and let the
+                # container supervisor restart a clean pool.
+                if not self._shutting_down:
+                    logger.error("A worker thread stopped; shutting down the pool")
+                for worker in self.workers:
+                    worker.stop(signal.SIGTERM, None)
+                break
+        for thread in threads:
+            thread.join()
+
+
+def run_workers(settings: Settings) -> None:
+    WorkerPool(settings).run()

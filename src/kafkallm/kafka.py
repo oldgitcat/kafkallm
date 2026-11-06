@@ -31,6 +31,7 @@ def ensure_topics(settings: Settings) -> None:
             settings.jobs_topic,
             settings.results_topic,
             settings.events_topic,
+            settings.cancels_topic,
         }
     }
     for name in {

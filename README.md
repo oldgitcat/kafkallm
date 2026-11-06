@@ -77,6 +77,7 @@ GUI ──→ jobs.in, jobs.state, agents.state, sandboxes.state, agent.events
   artifacts
 - An opt-in unlimited job mode without a wall-clock timeout or Goose turn cap;
   oversized results are preserved as downloadable S3 artifacts
+- Stop buttons for queued/running jobs and configurable parallel worker slots
 - **MLflow** observability with OTLP traces, token usage, durations, and errors
   (Phoenix remains available as an optional second backend)
 - An editable sandbox: host-mounted tools, goose/MCP config, persistent skills,
@@ -337,6 +338,7 @@ The worker polls agentgateway's readiness endpoint over the Compose network at
 | `jobs.state` | **compact** | Latest materialized `JobState` per `job_id`; the GUI's database |
 | `agents.state` | **compact** | Latest goosetown `AgentSpec` per `agent_id` |
 | `sandboxes.state` | **compact** | Latest `SandboxSpec` per `sandbox_id`; the environment registry |
+| `jobs.cancel` | delete, 7 days | Cancellation requests published by the GUI |
 | `agent.events` | delete, 7 days | Audit events for each job |
 
 The GUI consumes `jobs.state`, `agents.state`, `sandboxes.state`, and
@@ -885,6 +887,33 @@ and workers sets the parallelism. There is no cron or separate scheduler
 process. To run a job at a wall-clock time, write it to `jobs.in` at that time
 (for example from a cron or systemd timer), or add a delayed producer in front
 of the topic.
+
+### Parallel jobs
+
+`WORKER_CONCURRENCY` runs multiple worker consumers inside one process. Each
+slot owns its own Kafka consumer and goose runtime, so jobs execute in
+parallel up to `min(WORKER_CONCURRENCY, KAFKA_TOPIC_PARTITIONS)` (three by
+default). Set it in `.env`:
+
+```dotenv
+WORKER_CONCURRENCY=2
+```
+
+You can also add more worker containers with
+`docker compose up -d --scale agent-worker=2`. Do not set both higher than the
+number of partitions; extra consumers remain idle.
+
+### Stopping jobs
+
+The job detail in the GUI has a **Stop job** button for queued and running
+jobs. It publishes a `JobCancel` record to `jobs.cancel` and marks the job as
+cancelled in the GUI immediately. Workers consume that topic and:
+- stop the active microVM container if the job is running
+- skip the job if it has not started yet
+
+The final `JobResult` has `cancelled: true` and a user-facing cancellation
+message. Cancellation is best-effort; a job that has just finished may still
+publish its normal result.
 
 ## Multiple workers
 

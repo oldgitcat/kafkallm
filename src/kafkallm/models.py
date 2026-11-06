@@ -106,6 +106,15 @@ class SandboxSpec(BaseModel):
         return value
 
 
+class JobCancel(BaseModel):
+    """A request to stop a queued or running job."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: str = Field(pattern=ID_PATTERN)
+    requested_at: datetime = Field(default_factory=utc_now)
+
+
 class Job(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -131,6 +140,7 @@ class JobResult(BaseModel):
     run_id: str = Field(pattern=ID_PATTERN)
     status: Literal["succeeded", "failed"]
     trace_id: str | None = Field(default=None, min_length=1, max_length=128)
+    cancelled: bool = False
     result: str | None = None
     artifacts: list[FileRef] = Field(default_factory=list)
     artifact_error: str | None = None
@@ -169,6 +179,7 @@ class JobState(BaseModel):
     instruction: str
     status: Literal["queued", "running", "succeeded", "failed", "invalid"]
     trace_id: str | None = Field(default=None, min_length=1, max_length=128)
+    cancelled: bool = False
     input_files: list[FileRef] = Field(default_factory=list, max_length=32)
     sandbox: str = Field(default="default", pattern=ID_PATTERN)
     multi_agent: bool = True

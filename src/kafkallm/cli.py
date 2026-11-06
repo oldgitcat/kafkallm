@@ -24,7 +24,7 @@ from kafkallm.telemetry import (
     set_content,
     shutdown_telemetry,
 )
-from kafkallm.worker import Worker
+from kafkallm.worker import WorkerPool
 
 
 def _file_ref(value: str) -> FileRef:
@@ -315,7 +315,7 @@ def main() -> None:
     exit_code = 0
     try:
         if args.command == "worker":
-            Worker(settings).run()
+            WorkerPool(settings).run()
         elif args.command == "submit":
             submit(settings, args)
         elif args.command == "schema":

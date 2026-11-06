@@ -25,7 +25,15 @@ from kafkallm.agents import (
     seed_default_agents,
 )
 from kafkallm.kafka import KafkaProducer, ensure_topics, wait_for_kafka
-from kafkallm.models import AgentSpec, FileRef, Job, SandboxSpec, utc_now
+from kafkallm.models import (
+    AgentSpec,
+    FileRef,
+    Job,
+    JobCancel,
+    JobState,
+    SandboxSpec,
+    utc_now,
+)
 from kafkallm.sandboxes import (
     SandboxPublisher,
     SandboxStore,
@@ -318,6 +326,61 @@ class JobHandler(BaseHTTPRequestHandler):
         finally:
             body.close()
 
+    def _handle_job_cancel(self) -> None:
+        parts = self.path.strip("/").split("/")
+        if len(parts) != 4 or parts[0] != "api" or parts[1] != "jobs":
+            self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
+            return
+        job_id = parts[2]
+        job = self.server.store.job(job_id)
+        if job is None:
+            self._send_json({"error": "job not found"}, status=HTTPStatus.NOT_FOUND)
+            return
+        if job.get("cancelled"):
+            self._send_json({"status": "cancelled", "job_id": job_id})
+            return
+        if job.get("status") not in {"queued", "running"}:
+            self._send_json(
+                {"error": "Only queued or running jobs can be stopped."},
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return
+        state = JobState.model_validate(
+            {key: value for key, value in job.items() if key != "events"}
+        )
+        updated = state.model_copy(
+            update={
+                "status": "failed",
+                "cancelled": True,
+                "error": "Cancellation requested by user.",
+                "finished_at": utc_now(),
+            }
+        )
+        try:
+            with self.server.producer_lock:
+                self.server.producer.send(
+                    self.server.settings.cancels_topic,
+                    job_id,
+                    JobCancel(job_id=job_id),
+                )
+                self.server.producer.send(
+                    self.server.settings.state_topic,
+                    job_id,
+                    updated,
+                )
+        except Exception as exc:
+            logger.exception("Could not request job cancellation")
+            self._send_json(
+                {"error": f"Could not stop job: {exc}"},
+                status=HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+            return
+        self.server.store.put_state(updated.model_dump(mode="json"))
+        self._send_json(
+            {"status": "cancelling", "job_id": job_id},
+            status=HTTPStatus.ACCEPTED,
+        )
+
     def do_POST(self) -> None:
         if self.path == "/api/uploads":
             self._handle_upload()
@@ -327,6 +390,9 @@ class JobHandler(BaseHTTPRequestHandler):
             return
         if self.path == "/api/sandboxes":
             self._handle_sandbox_save()
+            return
+        if self.path.startswith("/api/jobs/") and self.path.endswith("/cancel"):
+            self._handle_job_cancel()
             return
         if self.path != "/api/jobs":
             self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
