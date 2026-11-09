@@ -139,6 +139,12 @@ services:
 
   mlflow:
     image: ghcr.io/mlflow/mlflow:v3.18.0
+    environment:
+      # Enable the in-server AI Gateway used by the MLflow Assistant.
+      MLFLOW_ENABLE_AI_GATEWAY: "true"
+      # The AI Gateway upstream is agentgateway on the Compose network.
+      MLFLOW_GATEWAY_API_BASE_ALLOW_PRIVATE_IPS: "true"
+      MLFLOW_GATEWAY_API_BASE_ALLOWED_SCHEMES: "http,https"
     command:
       - mlflow
       - server
