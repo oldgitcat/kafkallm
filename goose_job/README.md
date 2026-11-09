@@ -12,7 +12,8 @@ This directory builds the microVM image used for every job.
 - `config/config.example.yaml` — example goose/MCP configuration
 - `template/` — copied into `/workspace` at job start (`AGENTS.md`, `goose`,
   `gtwall`)
-- `skills/` — copied into the persistent `.claude/skills` directory on first use
+- `skills/` — built-in role skills baked into the image and seeded into each
+  job's disposable `.claude/skills` copy
 - `LICENSE-goosetown` — upstream goosetown license
 
 The upstream files (`goose`, `gtwall`, the worker/writer/reviewer/local-researcher

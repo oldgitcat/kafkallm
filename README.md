@@ -13,10 +13,10 @@ log. There is no PostgreSQL and no separate scheduler service.
 
 > [!IMPORTANT]
 > Gänsestall is a local development stack, not a hardened multi-tenant service.
-> The GUI has no authentication, the LLM gateway speaks plain HTTP, and jobs
-> share a writable skills directory. Keep the stack on localhost or a trusted
-> network. See [SECURITY.md](SECURITY.md) and the
-> [isolation model](#isolation-model) before exposing it.
+> The GUI has no authentication, the LLM gateway speaks plain HTTP, and skill
+> updates from the isolated learning pass are validated only structurally. Keep
+> the stack on localhost or a trusted network. See [SECURITY.md](SECURITY.md)
+> and the [isolation model](#isolation-model) before exposing it.
 
 ## Project status
 
@@ -103,8 +103,9 @@ compacted; the other topics expire after `KAFKA_TOPIC_RETENTION_MS`.
   new images appear in the job dropdown without a code change
 - An **[agentgateway](https://agentgateway.dev/)** LLM gateway that holds the
   OpenRouter key and accepts only a rotatable virtual key from jobs
-- An IPv6-only internal Podman network where the allowlisting proxy is the only
-  reachable peer; it forwards only to agentgateway
+- An IPv6-only internal Podman network where the HTTP allowlisting proxy is the
+  only reachable peer; it accepts only the OpenAI chat-completions and model-list
+  endpoints and forwards them to agentgateway
 - A browser GUI for submitting jobs, uploading input files or binaries,
   watching state, results, and audit events, and downloading result text and
   artifacts; the job list has a text filter and a **Clear finished** action
@@ -117,10 +118,10 @@ compacted; the other topics expire after `KAFKA_TOPIC_RETENTION_MS`.
 - A live activity panel with goose thinking, tool calls, tool results, stderr,
   and token usage streamed from the microVM through Kafka
 - **MLflow** observability with OTLP traces, token usage, durations, and errors
-- An editable sandbox: host-mounted tools, goose/MCP config, persistent skills,
-  extra build packages, plus seeded **Default** and **REA + Ghidra**
-  reverse-engineering environments with Kuna, JADX, Frida, apktool, and
-  apksigner
+- An editable sandbox: host-mounted tools, goose/MCP config, operator-managed
+  persistent skills, extra build packages, plus seeded **Default** and
+  **REA + Ghidra** reverse-engineering environments with Kuna, JADX, Frida,
+  apktool, and apksigner
 - Job messages that name the sandbox entry and carry its OCI image reference
   (local build or registry tag); the worker pulls the image when it is missing
 - A compacted `jobs.state` topic that acts as the GUI database; the GUI rebuilds
@@ -129,7 +130,9 @@ compacted; the other topics expire after `KAFKA_TOPIC_RETENTION_MS`.
 - Apache Kafka topics `jobs.in`, `jobs.out`, `jobs.state`, `agents.state`,
   `sandboxes.state`, and `agent.events`
 - A Kafka worker with manual offset commits and a bounded startup wait
-- A persistent skills directory that goose and goosetown improve across jobs
+- Isolated skill handling: each job edits a disposable copy, and only the
+  worker merges structurally validated learning-pass changes into the persistent
+  store
 - Correlated traces for submission, worker, and the goose run
 - Optional S3-compatible RustFS for input files and result artifacts
 - A Kafka UI (kafbat/kafka-ui, Apache-2.0) and a CLI for scripting
@@ -289,8 +292,10 @@ The Kafka UI runs at <http://localhost:8080>. MLflow runs at
    Podman API. The job is attached only to that internal network, and
    `host.containers.internal` is overridden to the proxy's IPv6 address. The job
    directory is bind mounted at `/workspace`, the prompt at `/jobboot`, and the
-   persistent skills at `/workspace/.claude/skills`. The microVM receives
-   `OPENAI_HOST` and the gateway virtual key, never the provider key.
+   persistent skill store read-only at `/opt/kafkallm/skills-persistent`. Inside
+   the guest, the entrypoint copies the store into a disposable
+   `/workspace/.claude/skills` tree. The microVM receives `OPENAI_HOST` and the
+   gateway virtual key, never the provider key.
 5. Inside the microVM, the entrypoint seeds the workspace with goosetown
    (`AGENTS.md`, the `goose` wrapper, `gtwall`, and the role skills) and runs:
 
@@ -308,16 +313,19 @@ The Kafka UI runs at <http://localhost:8080>. MLflow runs at
    activity to `jobs.logs` for the GUI.
 
 6. goose talks the OpenAI protocol to `http://host.containers.internal:8091`,
-   which resolves to the proxy. The proxy forwards only to agentgateway on the
-   host; the job cannot reach the internet, the LAN, Compose services, or
-   the Podman API. agentgateway verifies the virtual key, replaces it with the
-   OpenRouter key, and streams the upstream response back.
+   which resolves to the proxy. The proxy accepts only
+   `POST /v1/chat/completions`, `GET /v1/models`, and
+   `GET /v1/models/<id>`, allows one request per connection, and forwards to
+   agentgateway on the host; the job cannot reach the internet, the LAN, Compose
+   services, or the Podman API. agentgateway verifies the virtual key, replaces
+   it with the OpenRouter key, and streams the upstream response back.
 7. The goosetown orchestrator decomposes the job, dispatches parallel subagents
    through goose's `delegate`/`load` tools, coordinates them over `gtwall`, and
    writes result files to `outputs/`.
-8. The worker parses the structured goose output, copies `outputs/` back,
-   optionally runs a short skill-improvement pass, publishes `jobs.out` and the
-   final `jobs.state`, uploads artifacts, and commits the Kafka offset.
+8. The worker parses the structured goose output, copies `outputs/` back
+   (skipping symlinks and special files), runs the optional learning pass in a
+   separate microVM, validates and merges any skill changes, publishes `jobs.out`
+   and the final `jobs.state`, uploads artifacts, and commits the Kafka offset.
 9. Audit events go to `agent.events`; traces go to MLflow.
 
 The microVM never talks to Kafka. The worker is the only Kafka participant.
@@ -422,10 +430,17 @@ dashboard. The browser-based goosetown dashboard is not used; Gänsestall has it
 own job GUI.
 
 Skills are stored on the host at `GOOSE_JOB_SKILLS_DIR`
-(`/var/lib/kafkallm/skills` by default) and bind mounted into every job at
-`/workspace/.claude/skills`. A skill improved by one job is available to the
-next. The directory is world-writable because rootless Podman maps the job's
-uid into a subuid range.
+(`/var/lib/kafkallm/skills` by default). The store is mounted read-only into
+each main job at `/opt/kafkallm/skills-persistent`; the guest entrypoint copies
+it into a disposable `/workspace/.claude/skills` tree. A job can edit that copy,
+but it cannot write the shared store. Only the worker writes the store, after a
+separate learning-pass microVM proposes changes and the worker has validated
+them. A skill added by an operator or accepted from a learning pass is available
+to later jobs.
+
+Each skill is a directory with a regular `SKILL.md`. Symlinks, special files,
+invalid names, and oversized trees are rejected by the worker. Merging only adds
+or replaces files, so existing skills are never deleted.
 
 ### Agent management
 
@@ -565,9 +580,21 @@ avoids a second long-lived service that would need host workspace access.
 ### Learning pass
 
 After a successful main run, the worker can run a second, shorter goose session
-with a review prompt. It may update one reusable skill under
-`.claude/skills`. This is best-effort: a failed reflect run is reported as a
-`goose.reflect` audit event and does not fail the job.
+in a **separate microVM**. That VM starts only after the main VM has exited and
+been removed. It gets a fresh random workspace, the already-collected outputs
+read-only, and a disposable copy of the persistent skills. It does not get the
+main job's environment, sandbox extensions, or writable workspace. This prevents
+a compromised main job from forging a success or writing the tree that the
+worker merges.
+
+The learning pass may propose skill changes. The worker accepts them only when
+the reflect run exited successfully, then validates and merges each skill as a
+whole. Validation requires a directory with a regular, UTF-8 `SKILL.md` and only
+regular files below it; symlinks, special files, oversized trees, invalid names,
+and more than three skills per pass are rejected. Merging only adds or replaces
+files, so a proposal can never delete existing guidance. A failed or rejected
+pass is reported as `goose.reflect` or `skills.rejected` and does not fail the
+job; accepted changes produce `skills.persisted`.
 
 The job form has a **Run learning pass** checkbox. It is checked by default
 from the worker setting, and the choice travels in the Job message as
@@ -752,17 +779,29 @@ installs the Debian packages above under their respective licenses. Frida is
 included for local instrumentation; a remote Frida server for physical Android
 devices is not bundled.
 
-Per-job layout:
+Per-job layout. The main job VM:
 
 | Mount | Type | Purpose |
 |---|---|---|
-| `/workspace` | bind mount `goose-vm-<run_id>` | `inputs/`, `outputs/`, `.scratch/`, and the goosetown workspace; removed after collection |
-| `/jobboot` | read-only bind mount | run script, main prompt, reflect prompt |
-| `/workspace/.claude/skills` | bind mount `GOOSE_JOB_SKILLS_DIR` | persistent goosetown skills |
+| `/workspace` | bind mount `goose-vm-<run_id>` | `inputs/`, `outputs/`, `.scratch/`, the goosetown workspace, and a disposable skill copy; removed after collection |
+| `/jobboot` | read-only bind mount | main run script and prompt |
+| `/opt/kafkallm/skills-persistent` | read-only bind mount `GOOSE_JOB_SKILLS_DIR` | shared goosetown skills; never writable by the job |
+| `/opt/kafkallm/tools`, `/opt/kafkallm/config` | read-only bind mounts | tools and goose/MCP config |
 | `/opt/data` | tmpfs | goose config, sessions, and wall state; discarded with the microVM |
 
+The learning pass runs after the main VM exits, in its own microVM with a fresh
+random workspace:
+
+| Mount | Type | Purpose |
+|---|---|---|
+| `/workspace` | bind mount `<job-workdir>/.reflect-<random>` | disposable skill copy and reflect control files |
+| `/workspace/outputs` | read-only bind mount of collected outputs | review material |
+| `/jobboot` | read-only bind mount | reflect run script and prompt |
+| `/opt/data` | tmpfs | goose config and sessions; discarded with the microVM |
+
 The microVM costs more than a container: each job reserves `GOOSE_JOB_RAM_MIB`
-of memory and boots a guest kernel.
+of memory and boots a guest kernel. With the learning pass enabled, the two
+microVMs run sequentially, not at the same time.
 
 ## Editing the sandbox
 
@@ -795,9 +834,11 @@ have no web access, so remote MCP servers and `npx` downloads do not work.
 
 ### 3. Skills
 
-Skills live in `GOOSE_JOB_SKILLS_DIR` (`/var/lib/kafkallm/skills`) and are
-bind-mounted read-write at `/workspace/.claude/skills`. Add a directory with a
-`SKILL.md`; the next job can use it. The learning pass can also update skills.
+Skills live in `GOOSE_JOB_SKILLS_DIR` (`/var/lib/kafkallm/skills`). Add a
+directory with a regular `SKILL.md`; later jobs receive a copy. A job's edits to
+its disposable `.claude/skills` tree do not persist automatically. The isolated
+learning pass may propose changes, and the worker merges only validated,
+non-deleting updates.
 
 ### 4. Build a custom image
 
@@ -868,8 +909,9 @@ Each job runs in its own KVM microVM.
 | Kernel | Its own guest kernel, separate from the host |
 | Privilege escalation | `no-new-privileges:true` |
 | Resources | `GOOSE_JOB_RAM_MIB` (default `2048`), `GOOSE_JOB_CPUS` (default `2`), `GOOSE_JOB_PIDS_LIMIT` (default `512`) |
-| Filesystem | Disposable job directory, tmpfs `/opt/data`, read-only tools/config mounts, writable skills mount |
-| Network | Attached only to the IPv6-only `kafkallm-jobs` internal network. The allowlisting proxy is the only peer, and it forwards only to agentgateway. Internet, LAN, Compose services, other Podman services, and the Podman API are unreachable |
+| Filesystem | Disposable job directory, tmpfs `/opt/data`, read-only tools/config mounts, and a read-only persistent skill store |
+| Skills | Each job edits a disposable copy. The learning pass runs in a separate microVM, and only the worker merges validated changes into the shared store |
+| Network | Attached only to the IPv6-only `kafkallm-jobs` internal network. The HTTP allowlisting proxy is the only peer; it accepts only the chat-completions and model-list endpoints and forwards them to agentgateway. Internet, LAN, Compose services, other Podman services, and the Podman API are unreachable |
 | Credentials | The real provider key stays in agentgateway. The job gets a rotatable virtual key that is valid only through the gateway |
 | Tools | No browser, no `curl`/`wget` in the image; the prompt forbids web and other network use |
 | Lifetime | The microVM and its job directory are removed after the job |
@@ -886,18 +928,19 @@ What the boundary does **not** cover:
 - **Root-equivalent Podman API.** The socket proxy is equivalent to root on the
   host. It listens on the worker's loopback only, so the job microVMs cannot
   reach it, but a compromised worker still means a compromised host.
-- **Shared skills directory.** Every job can write `.claude/skills`. A job can
-  poison skills that later jobs load. Use one skills directory per trust domain,
-  or run separate stacks.
+- **Shared skill store.** The main job cannot write the persistent store, but a
+  compromised learning pass can propose misleading or malicious instructions.
+  Merge validation is structural, not semantic. Review learned skills before
+  relying on them in a higher-trust setting.
 - **Gateway virtual key.** The job holds a static virtual key for the whole job.
   A malicious job can reuse it for its own gateway requests, and the gateway
   does not enforce a per-job request or token budget. Rotate
   `LLM_GATEWAY_VIRTUAL_KEY` if a job is untrusted.
 - **Gateway transport.** The gateway listener is plain HTTP. Keep it on a
   trusted network or terminate TLS in front of it.
-- **Proxy configuration.** The proxy forwards every accepted TCP connection to
-  one fixed upstream. It has no HTTP awareness, but a compromise of the proxy
-  container still gives access to agentgateway.
+- **Proxy configuration.** The proxy forwards only allowlisted HTTP requests to
+  one fixed upstream. A compromise of the proxy container still gives access to
+  agentgateway.
 
 The `kafkallm-jobs` network is IPv6-only and `internal`, so jobs have no IPv4
 address and no default route. The allowlisting proxy is the only other container
@@ -1101,7 +1144,7 @@ small `JobLog` records to the non-compacted `jobs.logs` topic. The GUI shows:
 - assistant text as it streams
 - model thinking chunks
 - tool calls and tool results
-- stderr from the main and reflect runs
+- stderr from the main run (learning-pass logs are not streamed)
 - token usage when goose completes
 
 The panel polls the `GET /api/jobs/<job_id>/logs?after=<sequence>` endpoint
@@ -1124,7 +1167,8 @@ podman compose up -d --scale agent-worker=2
 
 Workers share the `agent-workers` consumer group. Each worker can run
 `WORKER_CONCURRENCY` jobs in parallel, and multiple worker containers add more
-slots. The shared skills directory uses last-writer-wins semantics.
+slots. Concurrent learning passes merge individual skill files with
+last-writer-wins semantics; existing files are never deleted.
 
 ## Operations and guarantees
 

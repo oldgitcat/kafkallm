@@ -24,8 +24,10 @@ Before exposing it to anyone else:
   untrusted.
 - Keep the agentgateway listener on a trusted network. It speaks plain HTTP.
 - Never commit `.env`. Only `.env.example` belongs in Git.
-- Assume every job can read and modify the shared skills directory. Use one
-  stack (or one skills directory) per trust domain.
+- Treat the persistent skill store as untrusted input. The main job cannot write
+  it, but the isolated learning pass can propose changes that later jobs load.
+  Merge validation is structural, not semantic; review learned skills before
+  trusting them. Use separate skill directories per trust domain if needed.
 - The rootless Podman socket proxy is equivalent to root on the host. Do not
   publish it or place it on a shared network.
 

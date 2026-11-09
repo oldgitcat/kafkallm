@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import shutil
+import tempfile
 import threading
 import time
 import urllib.request
@@ -16,8 +17,14 @@ from kafkallm.goose_output import parse_goose_output, stream_event_log_records
 from kafkallm.job_network import ensure_job_network
 from kafkallm.models import AgentResult, AgentSpec, Job, SandboxSpec
 from kafkallm.retry import RetryTimeout, retry_until
+from kafkallm.safe_fs import (
+    iter_regular_files,
+    open_text_no_follow,
+    read_text_no_follow,
+)
 from kafkallm.sandboxes import SandboxStore, builtin_sandbox
 from kafkallm.settings import Settings
+from kafkallm.skills import copy_skills, merge_skills
 from kafkallm.telemetry import get_tracer, set_content, set_error
 
 logger = logging.getLogger(__name__)
@@ -28,6 +35,7 @@ _stream_event_log_records = stream_event_log_records
 _JOB_LABEL = "kafkallm.vm"
 _JOB_ID_LABEL = "kafkallm.job_id"
 _RUN_ID_LABEL = "kafkallm.run_id"
+_ROLE_LABEL = "kafkallm.role"
 _CREATED_AT_LABEL = "kafkallm.created_at"
 _WORKDIR_LABEL = "kafkallm.workdir"
 
@@ -43,8 +51,22 @@ _MAX_RESULT_BYTES = 500_000
 # The job bundle is bind mounted read-only. The goosetown template and the
 # persistent skills live outside it. Every artifact is written to /workspace,
 # which is the host job directory.
+#
+# The persistent skill store is mounted read-only at /opt/kafkallm/skills-persistent.
+# The job gets a disposable copy at /workspace/.claude/skills; the main microVM
+# can never write the shared store. The learning pass runs in a separate
+# microVM that starts after this one has exited.
 _VM_RUN_SCRIPT = r"""#!/bin/sh
 set -u
+
+# The microVM's guest root maps to the host user that runs Podman, so the
+# workspace root can end up owned by that UID while the worker that collects
+# and removes the tree runs as a different UID. Make the whole tree writable
+# on every exit path so the worker can clean it up.
+cleanup_permissions() {
+  chmod -R a+rwX /workspace 2>/dev/null || true
+}
+trap cleanup_permissions EXIT INT TERM
 
 RESULT_DIR=/workspace/.kafkallm
 if ! mkdir -p "$RESULT_DIR" 2>/dev/null; then
@@ -53,12 +75,8 @@ if ! mkdir -p "$RESULT_DIR" 2>/dev/null; then
 fi
 
 # Seed the workspace with goosetown (AGENTS.md, the goose wrapper, gtwall) and
-# the orchestrator role skills. The skills directory is a persistent host bind
-# mount, so a skill improved by one job is available to the next one.
-if [ -d /opt/goosetown/template ]; then
-  cp -an /opt/goosetown/template/. /workspace/ 2>/dev/null || true
-fi
-mkdir -p /workspace/.claude/skills
+# the orchestrator role skills. The persistent skill store is read-only; each
+# job edits a disposable copy so it cannot poison later jobs.
 seed_skills() {
   source_dir=$1
   target_dir=$2
@@ -72,12 +90,20 @@ seed_skills() {
     fi
   done
 }
+if [ -d /opt/goosetown/template ]; then
+  cp -an /opt/goosetown/template/. /workspace/ 2>/dev/null || true
+fi
+mkdir -p /workspace/.claude/skills
+seed_skills /opt/kafkallm/skills-persistent /workspace/.claude/skills
 seed_skills /opt/goosetown/skills /workspace/.claude/skills
 # Sandbox-specific skills are baked into the image (for example Kuna and REA
 # guidance in the reverse image) and are not visible to other sandboxes.
 seed_skills /opt/kafkallm/sandbox-skills /workspace/.claude/skills
 # REA's own doctor looks for its skill under HOME as well.
 seed_skills /opt/kafkallm/sandbox-skills /opt/data/.claude/skills
+# Rootless Podman maps the job uid into a subuid range, so worker-created files
+# are not owned by the job. The disposable skills copy must stay writable.
+chmod -R a+rwX /workspace/.claude 2>/dev/null || true
 chmod +x /workspace/goose /workspace/gtwall 2>/dev/null || true
 
 # Seed goose's user config from the host-mounted sandbox config. This is how
@@ -94,8 +120,6 @@ export GOOSE_GTWALL_FILE="/tmp/goose-wall.log"
 : > "$GOOSE_MOIM_MESSAGE_FILE"
 : > "$GOOSE_GTWALL_FILE"
 
-started=$(date +%s)
-budget=${KAFKALLM_JOB_BUDGET_SECONDS:-0}
 main_timeout=${KAFKALLM_JOB_MAIN_TIMEOUT:-300}
 
 # Summon provides the delegate/load tools, and Skills makes the goosetown role
@@ -146,43 +170,75 @@ if [ "$(cat "$RESULT_DIR/main.exit")" = "124" ] \
 JSON
 fi
 
-if [ "${KAFKALLM_JOB_REFLECT_ENABLED:-0}" = "1" ]; then
-  now=$(date +%s)
-  left=$(( budget - (now - started) - 25 ))
-  cap=${KAFKALLM_JOB_REFLECT_TIMEOUT:-300}
-  if [ "$left" -ge 30 ]; then
-    reflect_timeout=$cap
-    if [ "$left" -lt "$cap" ]; then
-      reflect_timeout=$left
-    fi
-    timeout --signal=TERM "$reflect_timeout" \
-      stdbuf -oL -eL ./goose run --no-session -q --output-format stream-json \
-        --with-builtin developer \
-        --max-turns "${GOOSE_REFLECT_MAX_TURNS:-20}" \
-        -i /jobboot/reflect-prompt.txt \
-      > "$RESULT_DIR/reflect.jsonl" 2> "$RESULT_DIR/reflect.err"
-    echo "$?" > "$RESULT_DIR/reflect.exit"
-  fi
-fi
-
 # Ghidra and other tools may create read-only files in the scratch tree. Make
 # everything removable by the worker UID before the microVM exits.
 chmod -R a+rwX /workspace/.scratch 2>/dev/null || true
 """
 
-_REFLECT_PROMPT = """Review the job that just completed and improve the reusable goosetown skills for this class of job.
+# The learning pass is a separate microVM. Its writable skill directory is
+# created by the worker after the main microVM has exited, so the main job can
+# never write the tree that the worker merges into the persistent store.
+_REFLECT_RUN_SCRIPT = r"""#!/bin/sh
+set -u
+umask 022
 
-Never read or parse `/workspace/.kafkallm/main.jsonl`; it is a verbose streaming
-transcript. Use the workspace outputs, the git diff, and the existing skills.
-This pass has only the developer builtin: use shell and file tools, not
-`load_skill` or `read_resource`.
+# The reflect workspace is created by the worker but the guest root may take
+# ownership of its root. Make the tree writable on every exit path so the
+# worker can read it for validation and remove it afterwards.
+cleanup_permissions() {
+  chmod -R a+rwX /workspace 2>/dev/null || true
+}
+trap cleanup_permissions EXIT INT TERM
 
-1. Inspect the most relevant skill in /workspace/.claude/skills with the file tools.
-2. Update the best match, or create one class-level skill if none fits. Never name a skill after this job, run, error, or one-off artifact.
-3. Capture durable procedures, commands, tool quirks, verification steps, and templates. Do not store secrets, credentials, customer data, job-specific outputs, or transient facts.
-4. If there is nothing durable to save, do nothing.
+RESULT_DIR=/workspace/.kafkallm
+if ! mkdir -p "$RESULT_DIR" 2>/dev/null; then
+  echo "Cannot create $RESULT_DIR in the shared workspace." >&2
+  exit 3
+fi
+cd /workspace || exit 3
+export GOOSE_BIN="${GOOSE_BIN:-/usr/local/goose/bin/goose}"
+export GOOSE_MOIM_MESSAGE_FILE="/tmp/goose-telepathy.txt"
+export GOOSE_GTWALL_FILE="/tmp/goose-wall.log"
+: > "$GOOSE_MOIM_MESSAGE_FILE"
+: > "$GOOSE_GTWALL_FILE"
+mkdir -p /workspace/.scratch
+chmod 0777 /workspace/.scratch 2>/dev/null || true
+export TMPDIR=/workspace/.scratch
 
-Keep it short: at most one skill change and a few tool calls. Return a one-line summary.
+timeout --signal=TERM "$KAFKALLM_JOB_REFLECT_TIMEOUT" \
+  stdbuf -oL -eL "$GOOSE_BIN" run --no-session -q --output-format stream-json \
+    --with-builtin developer \
+    --max-turns "${GOOSE_REFLECT_MAX_TURNS:-20}" \
+    -i /jobboot/reflect-prompt.txt \
+  > "$RESULT_DIR/reflect.jsonl" 2> "$RESULT_DIR/reflect.err"
+echo "$?" > "$RESULT_DIR/reflect.exit"
+
+# The worker validates and merges this tree. Make it readable after the guest
+# root has written it through the mapped subuid.
+chmod -R a+rX /workspace/.claude/skills 2>/dev/null || true
+"""
+
+_REFLECT_PROMPT = """You are the isolated learning pass for one completed Gänsestall job.
+
+You may propose a small, focused set of reusable skill changes (at most three
+skills). The worker validates the result and merges it into the shared skill
+store; nothing else from this run is kept.
+
+1. Inspect the shared skills in /workspace/.claude/skills with the file tools.
+2. Read the completed job's outputs in /workspace/outputs (read-only). Ignore
+   the internal control files in /workspace/.kafkallm.
+3. Update the best matching skill, or create one class-level skill if none
+   fits. Never name a skill after this job, run, error, or one-off artifact.
+4. Capture durable procedures, commands, tool quirks, verification steps, and
+   templates. Do not store secrets, credentials, customer data, job-specific
+   outputs, or transient facts.
+5. Only regular files inside a directory with SKILL.md are kept. Symlinks,
+   oversized files, and more than three skill changes are rejected. Existing
+   files are never deleted.
+6. If there is nothing durable to save, do nothing.
+
+Keep it short: a few focused skill changes and a few tool calls. Return a
+one-line summary.
 """
 
 
@@ -405,9 +461,7 @@ class _LogCollector:
     def start(self) -> None:
         jobs = (
             ("main.err", "stderr", False, ""),
-            ("reflect.err", "reflect.stderr", False, ""),
             ("main.jsonl", "goose", True, "goose"),
-            ("reflect.jsonl", "reflect", True, "reflect"),
         )
         for name, kind, parse_json, prefix in jobs:
             thread = threading.Thread(
@@ -458,9 +512,8 @@ class _LogCollector:
                 flush(record_kind)
 
         while not self._stop.is_set():
-            try:
-                stream = path.open("r", encoding="utf-8", errors="replace")
-            except OSError:
+            stream = open_text_no_follow(path)
+            if stream is None:
                 self._stop.wait(0.5)
                 continue
             idle_since = time.monotonic()
@@ -648,9 +701,7 @@ class GooseJobRunner:
         )
         environment = self._environment(
             job_id=job.job_id,
-            budget=int(remaining),
             main_budget=main_budget,
-            reflect_reserve=reflect_reserve,
             sandbox=sandbox,
             multi_agent=job.multi_agent,
             agent_count=len(job.agents),
@@ -678,7 +729,7 @@ class GooseJobRunner:
             "job.run_id": job.run_id,
             "session.id": job.job_id,
         }
-        container: Any | None = None
+        main_container: Any | None = None
         collector: _LogCollector | None = None
         run_started = time.perf_counter()
 
@@ -691,21 +742,20 @@ class GooseJobRunner:
                 self._prepare_workdir(workdir, workspace, prompt, job)
                 self._ensure_extension_dirs()
                 proxy_ipv6 = self._ensure_proxy()
-                container = self._create_container(
+                main_container = self._create_container(
                     image=image,
                     environment=environment,
                     labels=labels,
                     workdir=workdir,
                     proxy_ipv6=proxy_ipv6,
                 )
-                with self._active_lock:
-                    self._active_container = container
-                container.start()
-                span.set_attribute("goose.container_id", container.id)
+                self._set_active(main_container)
+                main_container.start()
+                span.set_attribute("goose.container_id", main_container.id)
                 if log is not None:
                     log(
                         "system",
-                        f"container {container.id[:12]} started "
+                        f"container {main_container.id[:12]} started "
                         f"(image={image}, sandbox={job.sandbox})",
                     )
                     activity = _SpanActivity(span)
@@ -725,9 +775,10 @@ class GooseJobRunner:
                     audit.emit(
                         "goose.started",
                         attributes={
-                            "container_id": container.id,
+                            "container_id": main_container.id,
                             "workspace": str(workdir),
                             "skills_dir": self.settings.goose_job_skills_dir,
+                            "skills_mode": "per-job-copy",
                             "image": image,
                             "sandbox": job.sandbox,
                             "model": self.settings.goose_model or None,
@@ -741,7 +792,7 @@ class GooseJobRunner:
                     )
 
                 exit_code, timed_out = self._wait(
-                    container, deadline, heartbeat=heartbeat
+                    main_container, deadline, heartbeat=heartbeat
                 )
                 raw = self._read_text(workdir, "main.jsonl")
                 if not raw.strip():
@@ -753,7 +804,7 @@ class GooseJobRunner:
                             "goose job exceeded the job deadline before "
                             "producing a result."
                         )
-                    detail = main_error.strip() or self._log_tail(container)
+                    detail = main_error.strip() or self._log_tail(main_container)
                     raise GooseJobRuntimeError(
                         "goose microVM produced no result "
                         f"(exit code {exit_code}). {detail[:4000]}"
@@ -778,14 +829,55 @@ class GooseJobRunner:
                     )
                 if timed_out:
                     logger.warning(
-                        "Job %s finished its main run, but the reflect run "
-                        "exceeded the job deadline; returning the main result.",
+                        "Job %s finished its main run, but the job deadline "
+                        "was reached; returning the main result.",
                         job.job_id,
                     )
                 span.set_attribute("goose.steps", steps)
                 span.set_attribute("goose.exit_code", int(exit_code or 0))
                 self._collect_outputs(workdir, workspace)
-                self._audit_reflect(workdir, audit, reflect_reserve)
+                if reflect_reserve and not timed_out:
+                    # Remove the main microVM before creating the reflect
+                    # workspace below its mount. A lingering guest process must
+                    # not be able to observe or write the tree that the worker
+                    # later merges into the skill store. If removal fails, skip
+                    # the pass instead of trusting a VM that might still run.
+                    if not self._remove_container(main_container):
+                        if audit:
+                            audit.emit(
+                                "goose.reflect",
+                                "failed",
+                                error=(
+                                    "The main microVM could not be removed, so "
+                                    "the learning pass was skipped."
+                                ),
+                            )
+                    else:
+                        self._run_reflect(
+                            job=job,
+                            image=image,
+                            workdir=workdir,
+                            outputs=workspace / "outputs",
+                            deadline=deadline,
+                            reflect_reserve=reflect_reserve,
+                            labels=labels,
+                            proxy_ipv6=proxy_ipv6,
+                            audit=audit,
+                            heartbeat=heartbeat,
+                        )
+                else:
+                    if audit:
+                        audit.emit(
+                            "goose.reflect",
+                            attributes={
+                                "status": "skipped",
+                                "reason": (
+                                    "no time budget"
+                                    if not reflect_reserve
+                                    else "deadline reached"
+                                ),
+                            },
+                        )
                 if audit:
                     audit.emit(
                         "goose.completed",
@@ -794,7 +886,7 @@ class GooseJobRunner:
                             (time.perf_counter() - run_started) * 1000, 3
                         ),
                         attributes={
-                            "container_id": container.id,
+                            "container_id": main_container.id,
                             "usage": usage,
                             "steps": steps,
                             "reflect_enabled": bool(reflect_reserve),
@@ -812,7 +904,9 @@ class GooseJobRunner:
                             (time.perf_counter() - run_started) * 1000, 3
                         ),
                         attributes={
-                            "container_id": container.id if container else None
+                            "container_id": (
+                                main_container.id if main_container else None
+                            )
                         },
                         error=str(exc),
                     )
@@ -821,10 +915,164 @@ class GooseJobRunner:
                 if collector is not None:
                     collector.stop()
                 with self._active_lock:
+                    if self._active_container is main_container:
+                        self._active_container = None
+                self._remove_container(main_container)
+                self._remove_workdir(workdir)
+
+    def _set_active(self, container: Any) -> None:
+        with self._active_lock:
+            self._active_container = container
+
+    def _run_reflect(
+        self,
+        *,
+        job: Job,
+        image: str,
+        workdir: Path,
+        outputs: Path,
+        deadline: float,
+        reflect_reserve: int,
+        labels: dict[str, str],
+        proxy_ipv6: str,
+        audit: JobAudit | None,
+        heartbeat: Callable[[], bool] | None,
+    ) -> None:
+        """Run the learning pass in a fresh microVM and merge its skill changes.
+
+        The writable skill tree is created here, after the main microVM has
+        exited, and only this tree is merged. A compromised main job therefore
+        cannot forge a reflect success or write the skill tree that the worker
+        persists. Nothing in the reflect workspace is taken from the main
+        microVM; the learning pass sees only the already-collected outputs.
+        """
+        reflect_workdir: Path | None = None
+        container: Any | None = None
+        try:
+            # Keep the reflect workspace next to, not inside, the main job
+            # directory. The guest root may take ownership of the main
+            # workspace root, which would leave the worker unable to create a
+            # subdirectory there. The shared job root stays writable for the
+            # worker, the name is random, and the main microVM never sees it.
+            reflect_workdir = Path(
+                tempfile.mkdtemp(
+                    prefix=".reflect-",
+                    dir=Path(self.settings.goose_job_workspace_root),
+                )
+            )
+            skills_dir = reflect_workdir / ".claude" / "skills"
+            skills_dir.mkdir(parents=True, exist_ok=True)
+            control_dir = reflect_workdir / ".kafkallm"
+            control_dir.mkdir(parents=True, exist_ok=True)
+            bundle = reflect_workdir / "bundle"
+            bundle.mkdir(parents=True, exist_ok=True)
+            (bundle / "run-reflect.sh").write_text(
+                _REFLECT_RUN_SCRIPT, encoding="utf-8"
+            )
+            (bundle / "reflect-prompt.txt").write_text(
+                _REFLECT_PROMPT, encoding="utf-8"
+            )
+            os.chmod(bundle / "run-reflect.sh", 0o755)
+            for directory in (
+                reflect_workdir,
+                reflect_workdir / ".claude",
+                control_dir,
+            ):
+                os.chmod(directory, 0o777)
+            os.chmod(skills_dir, 0o777)
+            os.chmod(bundle, 0o755)
+            copied = copy_skills(Path(self.settings.goose_job_skills_dir), skills_dir)
+            if audit and (copied.rejected or copied.copied):
+                audit.emit(
+                    "skills.seeded",
+                    attributes={
+                        "copied": copied.copied,
+                        "rejected": copied.rejected,
+                        "files": copied.files,
+                    },
+                )
+            remaining = max(0.0, deadline - time.monotonic())
+            reflect_seconds = int(min(reflect_reserve, remaining) - 5)
+            if reflect_seconds < 10:
+                if audit:
+                    audit.emit(
+                        "goose.reflect",
+                        attributes={"status": "skipped", "reason": "no time budget"},
+                    )
+                return
+            environment = self._reflect_environment(reflect_seconds)
+            container = self._create_reflect_container(
+                image=image,
+                environment=environment,
+                labels=labels,
+                reflect_workdir=reflect_workdir,
+                outputs=outputs,
+                proxy_ipv6=proxy_ipv6,
+            )
+            self._set_active(container)
+            container.start()
+            reflect_deadline = min(deadline, time.monotonic() + reflect_seconds)
+            reflect_exit, timed_out = self._wait(
+                container, reflect_deadline, heartbeat=heartbeat
+            )
+            if timed_out:
+                if audit:
+                    audit.emit(
+                        "goose.reflect",
+                        "failed",
+                        attributes={"status": "timeout"},
+                        error="The reflect run exceeded its time budget.",
+                    )
+                return
+            if reflect_exit not in (None, 0):
+                if audit:
+                    audit.emit(
+                        "goose.reflect",
+                        "failed",
+                        attributes={"status": "failed"},
+                        error=(f"The reflect microVM exited with code {reflect_exit}."),
+                    )
+                return
+            if not self._audit_reflect(reflect_workdir, audit):
+                return
+            merged = merge_skills(
+                reflect_workdir / ".claude" / "skills",
+                Path(self.settings.goose_job_skills_dir),
+            )
+            if audit:
+                if merged.persisted:
+                    audit.emit(
+                        "skills.persisted",
+                        "succeeded",
+                        attributes={
+                            "skills": merged.persisted,
+                            "files": merged.files,
+                            "bytes": merged.bytes,
+                        },
+                    )
+                if merged.rejected:
+                    audit.emit(
+                        "skills.rejected",
+                        "failed",
+                        attributes={"skills": [name for name, _ in merged.rejected]},
+                        error="; ".join(
+                            f"{name}: {reason}" for name, reason in merged.rejected
+                        )[:4000],
+                    )
+        except (JobCancelledError, WorkerShutdown):
+            raise
+        except Exception as exc:
+            logger.exception("Learning pass failed for job %s", job.job_id)
+            if audit:
+                audit.emit("goose.reflect", "failed", error=str(exc))
+        finally:
+            if container is not None:
+                with self._active_lock:
                     if self._active_container is container:
                         self._active_container = None
                 self._remove_container(container)
-                self._remove_workdir(workdir)
+            if reflect_workdir is not None:
+                self._remove_workdir(reflect_workdir)
 
     def _sandbox_for(self, job: Job) -> SandboxSpec:
         """Resolve the environment (env, extensions, instructions) for a job.
@@ -939,6 +1187,13 @@ class GooseJobRunner:
             except Exception as exc:
                 if not self._is_not_found(exc):
                     raise
+            if container is not None and not self._proxy_image_current(container):
+                logger.info(
+                    "Recreating job gateway proxy: image %s changed",
+                    self.settings.goose_image,
+                )
+                self._remove_container(container)
+                container = None
             if container is None:
                 container = self._create_proxy()
             container.reload()
@@ -956,6 +1211,22 @@ class GooseJobRunner:
                 self.settings.llm_gateway_port,
             )
             return ipv6
+
+    def _proxy_image_current(self, container: Any) -> bool:
+        """Return True when the proxy runs the current job image.
+
+        The proxy script is baked into the job image. Reusing a container that
+        was created from an older image would keep an outdated allowlist (or
+        other proxy fixes) alive across worker restarts.
+        """
+        try:
+            expected = self.client.images.get(self.settings.goose_image)
+        except Exception:
+            return False
+        attrs = getattr(container, "attrs", None) or {}
+        actual = attrs.get("Image")
+        expected_id = getattr(expected, "id", None)
+        return bool(actual) and bool(expected_id) and actual == expected_id
 
     def _create_proxy(self) -> Any:
         body = {
@@ -1063,6 +1334,10 @@ class GooseJobRunner:
         for workdir in self._orphan_workdirs():
             logger.warning("Removing orphaned goose job directory %s", workdir)
             shutil.rmtree(workdir, ignore_errors=True)
+            if workdir.exists():
+                logger.warning(
+                    "Could not remove orphaned goose job directory %s", workdir
+                )
 
     def _orphan_workdirs(self) -> list[Path]:
         root = Path(self.settings.goose_job_workspace_root)
@@ -1070,7 +1345,9 @@ class GooseJobRunner:
             return []
         orphans: list[Path] = []
         for entry in root.iterdir():
-            if not entry.is_dir() or not entry.name.startswith("goose-vm-"):
+            if not entry.is_dir() or not (
+                entry.name.startswith("goose-vm-") or entry.name.startswith(".reflect-")
+            ):
                 continue
             try:
                 age = time.time() - entry.stat().st_mtime
@@ -1106,6 +1383,8 @@ class GooseJobRunner:
         (workdir / "bundle").mkdir(parents=True, exist_ok=True)
         (workdir / ".kafkallm").mkdir(parents=True, exist_ok=True)
         (workdir / ".claude").mkdir(parents=True, exist_ok=True)
+        skills_dir = workdir / ".claude" / "skills"
+        skills_dir.mkdir(parents=True, exist_ok=True)
         agents_dir = workdir / ".claude" / "agents"
         agents_dir.mkdir(parents=True, exist_ok=True)
         if job.multi_agent:
@@ -1117,18 +1396,13 @@ class GooseJobRunner:
                     _agent_source(agent), encoding="utf-8"
                 )
         inputs = workspace / "inputs"
-        if inputs.is_dir():
-            for entry in inputs.rglob("*"):
-                target = workdir / "inputs" / entry.relative_to(inputs)
-                if entry.is_dir():
-                    target.mkdir(parents=True, exist_ok=True)
-                elif entry.is_file():
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(entry, target)
+        for entry, relative in iter_regular_files(inputs):
+            target = workdir / "inputs" / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(entry, target)
         bundle = workdir / "bundle"
         (bundle / "run-job.sh").write_text(_VM_RUN_SCRIPT, encoding="utf-8")
         (bundle / "main-prompt.txt").write_text(prompt, encoding="utf-8")
-        (bundle / "reflect-prompt.txt").write_text(_REFLECT_PROMPT, encoding="utf-8")
         (bundle / "agents.json").write_text(
             json.dumps(
                 [agent.model_dump(mode="json") for agent in job.agents]
@@ -1139,18 +1413,19 @@ class GooseJobRunner:
             encoding="utf-8",
         )
         os.chmod(bundle / "run-job.sh", 0o755)
-        skills_dir = Path(self.settings.goose_job_skills_dir)
+        persistent_skills = Path(self.settings.goose_job_skills_dir)
         try:
-            skills_dir.mkdir(parents=True, exist_ok=True)
+            persistent_skills.mkdir(parents=True, exist_ok=True)
         except OSError:
-            logger.warning("Could not create skills directory %s", skills_dir)
+            logger.warning("Could not create skills directory %s", persistent_skills)
         # Rootless Podman maps the job uid into a subuid range, so the worker's
-        # files are not owned by the job. Make the shared directories writable
-        # so the microVM can write its results and the next job can read them.
+        # files are not owned by the job. Make the per-job directories writable
+        # so the microVM can write its results and its disposable skill copy.
         for directory in (
             workdir,
             workdir / ".kafkallm",
             workdir / ".claude",
+            skills_dir,
             agents_dir,
             workdir / "inputs",
             workdir / "outputs",
@@ -1168,6 +1443,60 @@ class GooseJobRunner:
         workdir: Path,
         proxy_ipv6: str,
     ) -> Any:
+        return self._create_microvm(
+            image=image,
+            environment=environment,
+            labels={**labels, _ROLE_LABEL: "main"},
+            binds=[
+                f"{workdir}:/workspace:rw,z",
+                f"{workdir}/bundle:/jobboot:ro,z",
+                (
+                    f"{self.settings.goose_job_skills_dir}:"
+                    "/opt/kafkallm/skills-persistent:ro,z"
+                ),
+                f"{self.settings.goose_job_tools_dir}:/opt/kafkallm/tools:ro,z",
+                f"{self.settings.goose_job_config_dir}:/opt/kafkallm/config:ro,z",
+            ],
+            cmd=["/bin/sh", "/jobboot/run-job.sh"],
+            proxy_ipv6=proxy_ipv6,
+        )
+
+    def _create_reflect_container(
+        self,
+        image: str,
+        environment: dict[str, str],
+        labels: dict[str, str],
+        reflect_workdir: Path,
+        outputs: Path,
+        proxy_ipv6: str,
+    ) -> Any:
+        if outputs.is_symlink() or not outputs.is_dir():
+            raise GooseJobRuntimeError(
+                "Collected outputs are not a safe directory for the learning pass."
+            )
+        return self._create_microvm(
+            image=image,
+            environment=environment,
+            labels={**labels, _ROLE_LABEL: "reflect"},
+            binds=[
+                f"{reflect_workdir}:/workspace:rw,z",
+                f"{outputs}:/workspace/outputs:ro,z",
+                f"{reflect_workdir}/bundle:/jobboot:ro,z",
+            ],
+            cmd=["/bin/sh", "/jobboot/run-reflect.sh"],
+            proxy_ipv6=proxy_ipv6,
+        )
+
+    def _create_microvm(
+        self,
+        *,
+        image: str,
+        environment: dict[str, str],
+        labels: dict[str, str],
+        binds: list[str],
+        cmd: list[str],
+        proxy_ipv6: str,
+    ) -> Any:
         annotations = {
             "run.oci.handler": "krun",
             "krun.cpus": str(self.settings.goose_job_cpus),
@@ -1177,21 +1506,12 @@ class GooseJobRunner:
             annotations["krun.use_passt"] = "1"
         body = {
             "Image": image,
-            "Cmd": ["/bin/sh", "/jobboot/run-job.sh"],
+            "Cmd": cmd,
             "Env": [f"{key}={value}" for key, value in environment.items()],
             "Labels": labels,
             "WorkingDir": "/workspace",
             "HostConfig": {
-                "Binds": [
-                    f"{workdir}:/workspace:rw,z",
-                    f"{workdir}/bundle:/jobboot:ro,z",
-                    (
-                        f"{self.settings.goose_job_skills_dir}:"
-                        "/workspace/.claude/skills:rw,z"
-                    ),
-                    f"{self.settings.goose_job_tools_dir}:/opt/kafkallm/tools:ro,z",
-                    f"{self.settings.goose_job_config_dir}:/opt/kafkallm/config:ro,z",
-                ],
+                "Binds": binds,
                 "Tmpfs": {
                     "/opt/data": (
                         f"size={self.settings.goose_job_tmpfs_size},mode=0700"
@@ -1270,20 +1590,14 @@ class GooseJobRunner:
         source = workdir / "outputs"
         target = workspace / "outputs"
         target.mkdir(parents=True, exist_ok=True)
-        if not source.is_dir():
-            return
-        for entry in source.rglob("*"):
-            if not entry.is_file():
-                continue
-            destination = target / entry.relative_to(source)
+        # Never follow a job-created symlink: it could point at a host file.
+        for entry, relative in iter_regular_files(source):
+            destination = target / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(entry, destination)
 
     def _read_text(self, workdir: Path, name: str) -> str:
-        path = workdir / ".kafkallm" / name
-        if not path.is_file():
-            return ""
-        return path.read_text(encoding="utf-8", errors="replace")
+        return read_text_no_follow(workdir / ".kafkallm" / name)
 
     def _log_tail(self, container: Any, lines: int = 200) -> str:
         try:
@@ -1294,20 +1608,13 @@ class GooseJobRunner:
             return logs.decode("utf-8", errors="replace")
         return str(logs)
 
-    def _audit_reflect(
-        self,
-        workdir: Path,
-        audit: JobAudit | None,
-        reflect_reserve: int,
-    ) -> None:
-        if audit is None:
-            return
-        if not reflect_reserve:
-            audit.emit(
-                "goose.reflect",
-                attributes={"status": "skipped", "reason": "no time budget"},
-            )
-            return
+    def _audit_reflect(self, workdir: Path, audit: JobAudit | None) -> bool:
+        """Audit the learning pass and report whether its changes are trusted.
+
+        The caller merges skills into the persistent store only when this
+        returns true. The reflect container runs in a separate microVM and its
+        writable skill tree is created by the worker after the main VM exits.
+        """
         raw = self._read_text(workdir, "reflect.jsonl")
         if not raw.strip():
             raw = self._read_text(workdir, "reflect.json")
@@ -1315,39 +1622,46 @@ class GooseJobRunner:
         if not raw.strip():
             stderr = self._read_text(workdir, "reflect.err").strip()
             if exit_raw == "124":
-                audit.emit(
-                    "goose.reflect",
-                    "failed",
-                    attributes={"status": "timeout"},
-                    error="The reflect run exceeded its time budget.",
-                )
+                if audit:
+                    audit.emit(
+                        "goose.reflect",
+                        "failed",
+                        attributes={"status": "timeout"},
+                        error="The reflect run exceeded its time budget.",
+                    )
             elif stderr:
-                audit.emit(
-                    "goose.reflect",
-                    "failed",
-                    attributes={"status": "failed"},
-                    error=stderr[:4000],
-                )
-            else:
+                if audit:
+                    audit.emit(
+                        "goose.reflect",
+                        "failed",
+                        attributes={"status": "failed"},
+                        error=stderr[:4000],
+                    )
+            elif audit:
                 audit.emit(
                     "goose.reflect",
                     attributes={"status": "skipped"},
                 )
-            return
+            return False
         text, usage, steps, error = parse_goose_output(raw)
         if error or (exit_raw and exit_raw != "0"):
+            if audit:
+                audit.emit(
+                    "goose.reflect",
+                    "failed",
+                    attributes={"status": "failed", "usage": usage, "steps": steps},
+                    error=(error or text or f"Reflect exited with code {exit_raw}.")[
+                        :4000
+                    ],
+                )
+            return False
+        if audit:
             audit.emit(
                 "goose.reflect",
-                "failed",
-                attributes={"status": "failed", "usage": usage, "steps": steps},
-                error=(error or text or f"Reflect exited with code {exit_raw}.")[:4000],
+                "succeeded",
+                attributes={"status": "succeeded", "usage": usage, "steps": steps},
             )
-            return
-        audit.emit(
-            "goose.reflect",
-            "succeeded",
-            attributes={"status": "succeeded", "usage": usage, "steps": steps},
-        )
+        return True
 
     def _reflect_reserve(self, remaining: float, enabled: bool | None = None) -> int:
         if enabled is None:
@@ -1367,9 +1681,7 @@ class GooseJobRunner:
     def _environment(
         self,
         job_id: str,
-        budget: int,
         main_budget: int,
-        reflect_reserve: int,
         sandbox: SandboxSpec,
         multi_agent: bool,
         agent_count: int,
@@ -1419,13 +1731,7 @@ class GooseJobRunner:
             "GOOSE_MAX_CONCURRENT_SUBAGENTS": str(
                 max(1, min(5, agent_count)) if agent_count else 5
             ),
-            "GOOSE_REFLECT_MAX_TURNS": "20",
-            "KAFKALLM_JOB_BUDGET_SECONDS": str(max(0, budget)),
             "KAFKALLM_JOB_MAIN_TIMEOUT": "0" if unlimited else str(main_budget + 10),
-            "KAFKALLM_JOB_REFLECT_ENABLED": "1" if reflect_reserve else "0",
-            "KAFKALLM_JOB_REFLECT_TIMEOUT": str(
-                self.settings.goose_job_reflect_timeout_seconds
-            ),
             "NO_PROXY": "127.0.0.1,localhost,host.containers.internal",
         }
         if sandbox.extensions:
@@ -1433,6 +1739,38 @@ class GooseJobRunner:
         # SandboxSpec rejects reserved key names and prefixes, so custom values
         # cannot override the gateway credentials or the runtime controls.
         environment.update(sandbox.env)
+        if self.settings.goose_model:
+            environment["GOOSE_MODEL"] = self.settings.goose_model
+        return environment
+
+    def _reflect_environment(self, reflect_seconds: int) -> dict[str, str]:
+        """Environment for the isolated learning pass.
+
+        It deliberately contains no sandbox-defined variables and no job
+        metadata. The pass only needs the gateway, the read-only outputs, and
+        its own disposable skill copy.
+        """
+        gateway_url = self.settings.llm_gateway_url.rstrip("/")
+        gateway_url = gateway_url.removesuffix("/v1")
+        environment = {
+            "HOME": "/opt/data",
+            "PATH": (
+                "/usr/local/goose/bin:/usr/local/sbin:/usr/local/bin:"
+                "/usr/sbin:/usr/bin:/sbin:/bin"
+            ),
+            "GOOSE_PATH_ROOT": "/opt/data/goose",
+            "GOOSE_MODE": "auto",
+            "GOOSE_DISABLE_KEYRING": "1",
+            "GOOSE_DISABLE_SESSION_NAMING": "true",
+            "GOOSE_TELEMETRY_ENABLED": "false",
+            "GOOSE_AUTO_COMPACT_THRESHOLD": "0.9",
+            "GOOSE_PROVIDER": "openai",
+            "OPENAI_HOST": gateway_url,
+            "OPENAI_API_KEY": self.settings.llm_gateway_virtual_key,
+            "GOOSE_REFLECT_MAX_TURNS": "20",
+            "KAFKALLM_JOB_REFLECT_TIMEOUT": str(max(1, reflect_seconds - 5)),
+            "NO_PROXY": "127.0.0.1,localhost,host.containers.internal",
+        }
         if self.settings.goose_model:
             environment["GOOSE_MODEL"] = self.settings.goose_model
         return environment
@@ -1505,8 +1843,10 @@ class GooseJobRunner:
             "Workspace root: /workspace\n"
             "Input files: /workspace/inputs\n"
             "Write all generated result files to: /workspace/outputs\n"
-            "Do not modify files outside /workspace except the persistent "
-            "skills in /workspace/.claude/skills.\n"
+            "Do not modify files outside /workspace. The skills in "
+            "/workspace/.claude/skills are a disposable copy of the shared "
+            "skill store; the worker decides whether the learning pass keeps "
+            "any changes.\n"
             "There is no web browsing. Your only network endpoint is the model "
             "gateway used by goose; do not try to reach any other host or "
             "internal service. Work only from the provided instruction and "
@@ -1518,9 +1858,10 @@ class GooseJobRunner:
             f"{job.input}"
         )
 
-    def _remove_container(self, container: Any | None) -> None:
+    def _remove_container(self, container: Any | None) -> bool:
+        """Remove a container, returning false only for a real failure."""
         if container is None:
-            return
+            return True
         try:
             container.remove(force=True)
         except Exception as exc:
@@ -1530,6 +1871,8 @@ class GooseJobRunner:
                     container.id[:12],
                     exc,
                 )
+                return False
+        return True
 
     def _remove_workdir(self, workdir: Path) -> None:
         for attempt in range(10):

@@ -66,7 +66,8 @@ Check the wall yourself with `./gtwall orchestrator` between phases. Use
 - Timebox: if a delegate is idle or the remaining budget is short, proceed with
   the completed pieces rather than stall.
 - Never store secrets, credentials, customer data, or job-specific outputs in
-  `.claude/skills/`.
+  `.claude/skills/`. The skill tree is a disposable copy; the worker decides
+  whether a validated learning-pass change is persisted.
 
 ## Output contract
 

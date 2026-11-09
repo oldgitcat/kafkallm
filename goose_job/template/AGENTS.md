@@ -16,8 +16,9 @@ operator anything; the job instruction is complete and the run is unattended.
   as artifacts.
 - `.scratch/` — temporary notes and intermediate files.
 - `WORK_LOGS/` — write short work logs if the job is long or exploratory.
-- `.claude/skills/` — persistent reusable skills. This directory survives the
-  job and is shared with later jobs.
+- `.claude/skills/` — reusable skills copied from the shared store for this
+  job. The copy is disposable: edits are not written back. Only the isolated
+  learning pass may propose changes, and the worker validates and merges them.
 
 Write output files incrementally. A file written before a timeout is useful; a
 perfect result that only exists in context is lost.

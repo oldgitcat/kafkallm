@@ -10,6 +10,7 @@ from botocore.client import Config
 from botocore.exceptions import ClientError
 
 from kafkallm.models import FileRef
+from kafkallm.safe_fs import iter_regular_files
 from kafkallm.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -93,7 +94,12 @@ class S3Storage:
         deadline: float,
         max_files: int = 100,
     ) -> list[FileRef]:
-        paths = [path for path in sorted(outputs.rglob("*")) if path.is_file()]
+        paths = [
+            path
+            for path, _ in sorted(
+                iter_regular_files(outputs), key=lambda item: item[1].as_posix()
+            )
+        ]
         if max_files > 0 and len(paths) > max_files:
             raise RuntimeError(f"A job may produce at most {max_files} result files.")
 

@@ -14,6 +14,7 @@ from kafkallm.goose_job_runtime import (
     WorkerShutdown,
 )
 from kafkallm.models import AgentResult, FileRef, Job, JobResult, utc_now
+from kafkallm.safe_fs import iter_regular_files
 from kafkallm.sandboxes import SandboxStore
 from kafkallm.settings import Settings
 from kafkallm.storage import S3Storage
@@ -173,9 +174,7 @@ class Harness:
                     steps = agent_result.steps
                     usage = agent_result.usage
 
-                    output_files = [
-                        path for path in outputs.rglob("*") if path.is_file()
-                    ]
+                    output_files = [path for path, _ in iter_regular_files(outputs)]
                     artifacts: list[FileRef] = []
                     artifact_error: str | None = None
                     if output_files:

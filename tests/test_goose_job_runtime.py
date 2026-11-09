@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import time
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +17,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
 )
 
 from kafkallm.goose_job_runtime import (
+    _REFLECT_RUN_SCRIPT,
     _VM_RUN_SCRIPT,
     GooseJobRunner,
     GooseJobRuntimeError,
@@ -95,12 +98,14 @@ class FakeContainer:
         self.name = name
         self.body = body or client.create_body
         self.labels = self.body.get("Labels", {})
+        self.role = self.labels.get("kafkallm.role", "main")
         self.is_job = self.labels.get("kafkallm.vm") == "1"
         self.status = "created"
         self.exit_code = 0
         self.stopped = False
         self.removed = False
         self.attrs: dict[str, Any] = {
+            "Image": client.image_id,
             "NetworkSettings": {"Networks": {}},
         }
 
@@ -109,8 +114,14 @@ class FakeContainer:
             self.status = "running"
             return
         self.status = self.client.exit_status
-        self.exit_code = self.client.exit_code
-        self.client.write_results()
+        if self.role == "reflect":
+            self.exit_code = self.client.reflect_exit_code
+        else:
+            self.exit_code = self.client.exit_code
+        self.client.write_results(self)
+        hook = self.client.on_start
+        if hook is not None:
+            hook(self)
 
     def reload(self) -> None:
         pass
@@ -126,6 +137,8 @@ class FakeContainer:
 
     def remove(self, force: bool = False) -> None:
         del force
+        if self.client.fail_remove and self.is_job and self.role == "main":
+            raise RuntimeError("cannot remove")
         self.removed = True
 
     def logs(self, **kwargs: Any) -> bytes:
@@ -155,12 +168,21 @@ class FakeApi:
                 status_code=500,
                 text=str(self.client.create_error),
             )
-        container_id = "proxy-container-id" if name else "vm-container-id"
+        container_id = (
+            "proxy-container-id"
+            if name
+            else f"vm-container-id-{len(self.client.containers.items)}"
+        )
         container = FakeContainer(self.client, container_id, name=name, body=body)
         self.client.containers.items.append(container)
         if not name:
-            self.client.create_body = body
-            self.client.job_body = body
+            role = str((body.get("Labels") or {}).get("kafkallm.role", "main"))
+            if role == "reflect":
+                self.client.reflect_body = body
+            else:
+                self.client.create_body = body
+                self.client.job_body = body
+                self.client.main_body = body
         else:
             self.client.proxy_body = body
         return FakeResponse(201, {"Id": container_id})
@@ -197,13 +219,13 @@ class FakeImages:
     def get(self, name: str) -> Any:
         if not self.client.image_available:
             raise RuntimeError("no such image")
-        return SimpleNamespace(id="image-id", tags=[name])
+        return SimpleNamespace(id=self.client.image_id, tags=[name])
 
     def pull(self, name: str, **kwargs: Any) -> Any:
         del kwargs
         self.client.pulled.append(name)
         self.client.image_available = True
-        return SimpleNamespace(id="image-id", tags=[name])
+        return SimpleNamespace(id=self.client.image_id, tags=[name])
 
 
 class FakeDockerClient:
@@ -213,16 +235,22 @@ class FakeDockerClient:
         self.networks = FakeNetworks()
         self.api = FakeApi(self)
         self.create_body: dict[str, Any] = {}
+        self.main_body: dict[str, Any] = {}
         self.job_body: dict[str, Any] = {}
+        self.reflect_body: dict[str, Any] = {}
         self.proxy_body: dict[str, Any] = {}
         self.create_error: str | None = None
         self.image_available = True
+        self.image_id = "image-id"
         self.exit_status = "exited"
         self.exit_code = 0
+        self.reflect_exit_code = 0
         self.pinged = False
         self.closed = False
         self.pulled: list[str] = []
         self.results: dict[str, str] = {}
+        self.on_start: Callable[[FakeContainer], None] | None = None
+        self.fail_remove = False
 
     def ping(self) -> bool:
         self.pinged = True
@@ -233,14 +261,27 @@ class FakeDockerClient:
 
     @property
     def workdir(self) -> Path:
-        binds = self.create_body.get("HostConfig", {}).get("Binds", [])
+        body = self.main_body or self.create_body
+        binds = body.get("HostConfig", {}).get("Binds", [])
         return Path(binds[0].split(":")[0])
 
-    def write_results(self) -> None:
-        result_dir = self.workdir / ".kafkallm"
+    def write_results(self, container: FakeContainer) -> None:
+        result_dir = self._result_dir(container)
         result_dir.mkdir(parents=True, exist_ok=True)
         for name, content in self.results.items():
+            if (container.role == "reflect") != name.startswith("reflect"):
+                continue
             (result_dir / name).write_text(content, encoding="utf-8")
+
+    @staticmethod
+    def _result_dir(container: FakeContainer) -> Path:
+        binds = container.body.get("HostConfig", {}).get("Binds", [])
+        for bind in binds:
+            source, _, destination = bind.partition(":")
+            if destination.startswith("/workspace/.kafkallm:"):
+                return Path(source)
+        source = binds[0].split(":")[0]
+        return Path(source) / ".kafkallm"
 
 
 class FakeAudit:
@@ -364,7 +405,8 @@ def test_vm_run_starts_microvm_and_collects_result(tmp_path: Path) -> None:
     binds = body["HostConfig"]["Binds"]
     assert any(bind.endswith(":/workspace:rw,z") for bind in binds)
     assert any(bind.endswith(":/jobboot:ro,z") for bind in binds)
-    assert any("/workspace/.claude/skills:rw,z" in bind for bind in binds)
+    assert any("/opt/kafkallm/skills-persistent:ro,z" in bind for bind in binds)
+    assert not any("/workspace/.claude/skills" in bind for bind in binds)
     assert any("/opt/kafkallm/tools:ro,z" in bind for bind in binds)
     assert any("/opt/kafkallm/config:ro,z" in bind for bind in binds)
     assert body["Image"] == "goose:test"
@@ -714,7 +756,8 @@ def test_job_can_disable_the_learning_pass(tmp_path: Path) -> None:
         audit=audit,  # type: ignore[arg-type]
     )
 
-    assert "KAFKALLM_JOB_REFLECT_ENABLED=0" in client.create_body["Env"]
+    assert client.reflect_body == {}
+    assert "KAFKALLM_JOB_REFLECT_ENABLED" not in client.create_body["Env"]
     reflect = [event for event in audit.events if event["type"] == "goose.reflect"]
     assert reflect
     assert reflect[0]["attributes"]["status"] == "skipped"
@@ -725,7 +768,11 @@ def test_job_can_enable_the_learning_pass_when_the_worker_default_is_off(
 ) -> None:
     settings = _settings_for(tmp_path, goose_job_reflect_enabled=False)
     client = FakeDockerClient()
-    client.results = {"main.json": _goose_result(text="Completed")}
+    client.results = {
+        "main.json": _goose_result(text="Completed"),
+        "reflect.json": _goose_result(text="Skill updated"),
+        "reflect.exit": "0",
+    }
     runner = GooseJobRunner(settings, client=client)
     job = Job(instruction="Do the job", reflect=True)
 
@@ -736,7 +783,17 @@ def test_job_can_enable_the_learning_pass_when_the_worker_default_is_off(
         max_steps=5,
     )
 
-    assert "KAFKALLM_JOB_REFLECT_ENABLED=1" in client.create_body["Env"]
+    # The job opted in even though the worker default is off.
+    assert client.reflect_body
+    assert "KAFKALLM_JOB_REFLECT_ENABLED" not in client.create_body["Env"]
+    assert client.reflect_body["Labels"]["kafkallm.role"] == "reflect"
+    timeout = [
+        item
+        for item in client.reflect_body["Env"]
+        if item.startswith("KAFKALLM_JOB_REFLECT_TIMEOUT=")
+    ]
+    assert timeout
+    assert int(timeout[0].split("=", 1)[1]) >= 10
 
 
 def test_reverse_prompt_mentions_rea(tmp_path: Path) -> None:
@@ -755,6 +812,12 @@ def test_run_script_enables_registered_sandbox_extensions() -> None:
     assert "extension_path=${extension#*:}" in _VM_RUN_SCRIPT
     assert "TMPDIR=/workspace/.scratch/tmp" in _VM_RUN_SCRIPT
     assert "chmod -R a+rwX /workspace/.scratch" in _VM_RUN_SCRIPT
+    # The guest root can take ownership of the workspace root, so both scripts
+    # must make the whole tree writable on every exit path for worker cleanup.
+    assert "trap cleanup_permissions EXIT INT TERM" in _VM_RUN_SCRIPT
+    assert "chmod -R a+rwX /workspace 2>/dev/null" in _VM_RUN_SCRIPT
+    assert "trap cleanup_permissions EXIT INT TERM" in _REFLECT_RUN_SCRIPT
+    assert "chmod -R a+rwX /workspace 2>/dev/null" in _REFLECT_RUN_SCRIPT
     assert "seed_skills /opt/kafkallm/sandbox-skills" in _VM_RUN_SCRIPT
     assert "--output-format stream-json" in _VM_RUN_SCRIPT
     assert "stdbuf -oL -eL ./goose" in _VM_RUN_SCRIPT
@@ -763,8 +826,51 @@ def test_run_script_enables_registered_sandbox_extensions() -> None:
     assert '--with-builtin "$builtins"' in _VM_RUN_SCRIPT
     # Extensions are only passed to the main run; the learning pass has none.
     assert _VM_RUN_SCRIPT.count('--with-extension "$extension"') == 1
-    reflect = _VM_RUN_SCRIPT.split("reflect_timeout")[1].split("reflect-prompt.txt")[0]
-    assert '"$@"' not in reflect
+    assert "reflect-prompt.txt" not in _VM_RUN_SCRIPT
+    assert "--with-extension" not in _REFLECT_RUN_SCRIPT
+    assert '"$@"' not in _REFLECT_RUN_SCRIPT
+
+
+def test_worker_removes_orphaned_job_and_reflect_directories(tmp_path: Path) -> None:
+    root = tmp_path / "jobs"
+    root.mkdir()
+    old_job = root / "goose-vm-old-run"
+    old_reflect = root / ".reflect-old-run"
+    fresh_job = root / "goose-vm-fresh-run"
+    for directory in (old_job, old_reflect, fresh_job):
+        directory.mkdir()
+    settings = _settings_for(tmp_path)
+    stale = time.time() - settings.max_job_timeout_seconds - 600
+    os.utime(old_job, (stale, stale))
+    os.utime(old_reflect, (stale, stale))
+
+    client = FakeDockerClient()
+    runner = GooseJobRunner(settings, client=client)
+    runner.wait_ready()
+
+    assert not old_job.exists()
+    assert not old_reflect.exists()
+    assert fresh_job.exists()
+
+
+def test_worker_recreates_a_stale_gateway_proxy(tmp_path: Path) -> None:
+    client = FakeDockerClient()
+    stale = FakeContainer(client, "stale-proxy", name="kafkallm-gateway-proxy")
+    stale.attrs["Image"] = "old-image-id"
+    stale.status = "running"
+    client.containers.items.append(stale)
+
+    runner = GooseJobRunner(_settings_for(tmp_path), client=client)
+    runner.wait_ready()
+
+    assert stale.removed
+    current = [
+        container
+        for container in client.containers.items
+        if container.name == "kafkallm-gateway-proxy" and container is not stale
+    ]
+    assert current
+    assert current[-1].attrs["Image"] == client.image_id
 
 
 def test_vm_does_not_pass_provider_credentials(
@@ -1378,3 +1484,307 @@ def test_log_collector_emits_delegation_events(tmp_path: Path) -> None:
     kinds = [kind for kind, _ in records]
     assert "agent.delegated" in kinds
     assert "agent.returned" in kinds
+
+
+def _bind_source(body: dict[str, Any], destination: str) -> Path:
+    for bind in body["HostConfig"]["Binds"]:
+        source, _, target = bind.partition(":")
+        if target.startswith(destination):
+            return Path(source)
+    raise AssertionError(f"no bind for {destination}: {body['HostConfig']['Binds']}")
+
+
+def test_main_bundle_has_no_learning_pass_assets(tmp_path: Path) -> None:
+    runner = GooseJobRunner(_settings_for(tmp_path))
+    workdir = tmp_path / "workdir"
+    workspace = _workspace(tmp_path)
+
+    runner._prepare_workdir(workdir, workspace, "prompt", Job(instruction="Do it"))
+
+    bundle = workdir / "bundle"
+    assert (bundle / "run-job.sh").exists()
+    assert (bundle / "main-prompt.txt").read_text() == "prompt"
+    assert not (bundle / "run-reflect.sh").exists()
+    assert not (bundle / "reflect-prompt.txt").exists()
+    assert (workdir / ".claude" / "skills").is_dir()
+    assert list((workdir / ".claude" / "skills").iterdir()) == []
+
+
+def test_main_vm_skill_edits_stay_in_the_disposable_copy(tmp_path: Path) -> None:
+    store = tmp_path / "skills" / "guard"
+    store.mkdir(parents=True)
+    (store / "SKILL.md").write_text("# Guard\ntrusted\n", encoding="utf-8")
+    client = FakeDockerClient()
+    client.results = {"main.json": _goose_result(text="Completed")}
+
+    def edit_copy(container: FakeContainer) -> None:
+        if container.role != "main":
+            return
+        workdir = _bind_source(container.body, "/workspace")
+        skill = workdir / ".claude" / "skills" / "guard" / "SKILL.md"
+        skill.parent.mkdir(parents=True, exist_ok=True)
+        skill.write_text("# Guard\npoisoned by the job\n", encoding="utf-8")
+
+    client.on_start = edit_copy
+    audit = FakeAudit()
+    runner = GooseJobRunner(
+        _settings_for(tmp_path, goose_job_reflect_enabled=False), client=client
+    )
+
+    runner.run(
+        job=Job(instruction="Do the job"),
+        workspace=_workspace(tmp_path),
+        deadline=time.monotonic() + 120,
+        max_steps=5,
+        audit=audit,  # type: ignore[arg-type]
+    )
+
+    assert "trusted" in (store / "SKILL.md").read_text()
+    assert "poisoned" not in (store / "SKILL.md").read_text()
+    assert not [event for event in audit.events if event["type"] == "skills.persisted"]
+
+
+def test_reflect_is_skipped_when_the_main_vm_cannot_be_removed(
+    tmp_path: Path,
+) -> None:
+    client = FakeDockerClient()
+    client.results = {"main.json": _goose_result(text="Completed")}
+    client.fail_remove = True
+    audit = FakeAudit()
+    runner = GooseJobRunner(_settings_for(tmp_path), client=client)
+
+    result = runner.run(
+        job=Job(instruction="Do the job"),
+        workspace=_workspace(tmp_path),
+        deadline=time.monotonic() + 120,
+        max_steps=5,
+        audit=audit,  # type: ignore[arg-type]
+    )
+
+    assert result.text == "Completed"
+    assert client.reflect_body == {}
+    reflect = [event for event in audit.events if event["type"] == "goose.reflect"]
+    assert reflect[-1]["status"] == "failed"
+    assert "could not be removed" in reflect[-1]["error"]
+
+
+def test_reflect_vm_uses_a_fresh_workspace_and_safe_mounts(tmp_path: Path) -> None:
+    client = FakeDockerClient()
+    client.results = {
+        "main.json": _goose_result(text="Completed"),
+        "reflect.json": _goose_result(text="Skill updated"),
+        "reflect.exit": "0",
+    }
+    runner = GooseJobRunner(_settings_for(tmp_path), client=client)
+
+    main_removed: list[bool] = []
+
+    def check_main_removed(container: FakeContainer) -> None:
+        if container.role == "reflect":
+            main_removed.append(
+                any(
+                    item.is_job and item.role == "main" and item.removed
+                    for item in client.containers.items
+                )
+            )
+
+    client.on_start = check_main_removed
+    runner.run(
+        job=Job(instruction="Do the job"),
+        workspace=_workspace(tmp_path),
+        deadline=time.monotonic() + 120,
+        max_steps=5,
+    )
+
+    assert main_removed == [True]
+
+    main_workdir = Path(client.create_body["HostConfig"]["Binds"][0].split(":")[0])
+    body = client.reflect_body
+    assert body["Labels"]["kafkallm.role"] == "reflect"
+    reflect_workdir = _bind_source(body, "/workspace")
+    jobs_root = Path(runner.settings.goose_job_workspace_root)
+    assert reflect_workdir.parent == jobs_root
+    assert reflect_workdir != main_workdir
+    assert not reflect_workdir.is_relative_to(main_workdir)
+    assert reflect_workdir.name.startswith(".reflect-")
+    assert not reflect_workdir.exists()
+
+    binds = body["HostConfig"]["Binds"]
+    destinations = [bind.partition(":")[2] for bind in binds]
+    assert destinations[0].startswith("/workspace:rw")
+    assert any(dest.startswith("/workspace/outputs:ro") for dest in destinations)
+    assert any(dest.startswith("/jobboot:ro") for dest in destinations)
+    assert not any("skills" in dest for dest in destinations)
+    assert not any("/workspace/inputs" in dest for dest in destinations)
+    assert not any("/workspace/.kafkallm" in dest for dest in destinations)
+    assert not any(bind.partition(":")[0] == str(main_workdir) for bind in binds)
+
+    environment = body["Env"]
+    assert not any(item.startswith("KAFKALLM_SANDBOX=") for item in environment)
+    assert "KAFKALLM_MULTI_AGENT=1" not in environment
+    assert "OPENAI_API_KEY=test-virtual-key" in environment
+
+
+def test_reflect_merges_a_validated_skill_into_the_store(tmp_path: Path) -> None:
+    store = tmp_path / "skills" / "guard"
+    store.mkdir(parents=True)
+    (store / "SKILL.md").write_text("# Guard\ntrusted\n", encoding="utf-8")
+    client = FakeDockerClient()
+    client.results = {
+        "main.json": _goose_result(text="Completed"),
+        "reflect.json": _goose_result(text="Skill updated"),
+        "reflect.exit": "0",
+    }
+
+    def write_skill(container: FakeContainer) -> None:
+        if container.role != "reflect":
+            return
+        root = _bind_source(container.body, "/workspace")
+        learned = root / ".claude" / "skills" / "learned"
+        learned.mkdir(parents=True)
+        (learned / "SKILL.md").write_text("# Learned\nprocedure\n", encoding="utf-8")
+
+    client.on_start = write_skill
+    audit = FakeAudit()
+    runner = GooseJobRunner(_settings_for(tmp_path), client=client)
+
+    runner.run(
+        job=Job(instruction="Do the job"),
+        workspace=_workspace(tmp_path),
+        deadline=time.monotonic() + 120,
+        max_steps=5,
+        audit=audit,  # type: ignore[arg-type]
+    )
+
+    merged = tmp_path / "skills" / "learned" / "SKILL.md"
+    assert merged.read_text() == "# Learned\nprocedure\n"
+    assert "trusted" in (store / "SKILL.md").read_text()
+    persisted = [event for event in audit.events if event["type"] == "skills.persisted"]
+    assert persisted
+    assert persisted[0]["attributes"]["skills"] == ["learned"]
+
+
+def test_failed_reflect_does_not_merge_skills(tmp_path: Path) -> None:
+    client = FakeDockerClient()
+    client.results = {
+        "main.json": _goose_result(text="Completed"),
+        "reflect.json": _goose_result(text="Skill updated"),
+        "reflect.exit": "1",
+    }
+
+    def write_skill(container: FakeContainer) -> None:
+        if container.role != "reflect":
+            return
+        root = _bind_source(container.body, "/workspace")
+        learned = root / ".claude" / "skills" / "learned"
+        learned.mkdir(parents=True)
+        (learned / "SKILL.md").write_text("# Learned\nprocedure\n", encoding="utf-8")
+
+    client.on_start = write_skill
+    audit = FakeAudit()
+    runner = GooseJobRunner(_settings_for(tmp_path), client=client)
+
+    runner.run(
+        job=Job(instruction="Do the job"),
+        workspace=_workspace(tmp_path),
+        deadline=time.monotonic() + 120,
+        max_steps=5,
+        audit=audit,  # type: ignore[arg-type]
+    )
+
+    assert not (tmp_path / "skills" / "learned").exists()
+    reflect = [event for event in audit.events if event["type"] == "goose.reflect"]
+    assert reflect[-1]["status"] == "failed"
+    assert not [event for event in audit.events if event["type"] == "skills.persisted"]
+
+
+def test_symlinked_outputs_are_not_collected(tmp_path: Path) -> None:
+    secret = tmp_path / "host-secret.txt"
+    secret.write_text("host secret", encoding="utf-8")
+    client = FakeDockerClient()
+    client.results = {"main.json": _goose_result(text="Completed")}
+
+    def write_outputs(container: FakeContainer) -> None:
+        if container.role != "main":
+            return
+        workdir = _bind_source(container.body, "/workspace")
+        outputs = workdir / "outputs"
+        outputs.mkdir(parents=True, exist_ok=True)
+        (outputs / "result.txt").write_text("artifact", encoding="utf-8")
+        (outputs / "leak.txt").symlink_to(secret)
+        (outputs / "leakdir").symlink_to(tmp_path)
+
+    client.on_start = write_outputs
+    runner = GooseJobRunner(
+        _settings_for(tmp_path, goose_job_reflect_enabled=False), client=client
+    )
+    workspace = _workspace(tmp_path)
+
+    runner.run(
+        job=Job(instruction="Do the job"),
+        workspace=workspace,
+        deadline=time.monotonic() + 120,
+        max_steps=5,
+    )
+
+    assert (workspace / "outputs" / "result.txt").read_text() == "artifact"
+    assert not (workspace / "outputs" / "leak.txt").exists()
+    assert not (workspace / "outputs" / "leak.txt").is_symlink()
+    assert not (workspace / "outputs" / "leakdir").exists()
+
+
+def test_control_file_reads_reject_symlinks(tmp_path: Path) -> None:
+    runner = GooseJobRunner(_settings_for(tmp_path))
+    secret = tmp_path / "secret.txt"
+    secret.write_text("host secret", encoding="utf-8")
+
+    workdir = tmp_path / "job"
+    control = workdir / ".kafkallm"
+    control.mkdir(parents=True)
+    (control / "main.jsonl").symlink_to(secret)
+
+    assert runner._read_text(workdir, "main.jsonl") == ""
+
+    other = tmp_path / "other"
+    other.mkdir()
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "main.jsonl").write_text("not allowed", encoding="utf-8")
+    (other / ".kafkallm").symlink_to(target)
+
+    assert runner._read_text(other, "main.jsonl") == ""
+
+
+def test_reflect_vm_process_failure_does_not_merge_skills(tmp_path: Path) -> None:
+    client = FakeDockerClient()
+    client.reflect_exit_code = 1
+    client.results = {
+        "main.json": _goose_result(text="Completed"),
+        "reflect.json": _goose_result(text="Skill updated"),
+        "reflect.exit": "0",
+    }
+
+    def write_skill(container: FakeContainer) -> None:
+        if container.role != "reflect":
+            return
+        root = _bind_source(container.body, "/workspace")
+        learned = root / ".claude" / "skills" / "learned"
+        learned.mkdir(parents=True)
+        (learned / "SKILL.md").write_text("# Learned\nprocedure\n", encoding="utf-8")
+
+    client.on_start = write_skill
+    audit = FakeAudit()
+    runner = GooseJobRunner(_settings_for(tmp_path), client=client)
+
+    runner.run(
+        job=Job(instruction="Do the job"),
+        workspace=_workspace(tmp_path),
+        deadline=time.monotonic() + 120,
+        max_steps=5,
+        audit=audit,  # type: ignore[arg-type]
+    )
+
+    assert not (tmp_path / "skills" / "learned").exists()
+    reflect = [event for event in audit.events if event["type"] == "goose.reflect"]
+    assert reflect[-1]["status"] == "failed"
+    assert "exited with code 1" in reflect[-1]["error"]
