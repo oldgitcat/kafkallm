@@ -1,6 +1,6 @@
 ---
 name: goosetown-orchestrator
-description: Coordinate parallel goose subagents — researchers, workers, writers, reviewers — for one Kafkallm job.
+description: Coordinate parallel goose subagents — researchers, workers, writers, reviewers — for one Gänsestall job.
 ---
 
 # Goosetown Orchestrator

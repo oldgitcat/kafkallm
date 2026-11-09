@@ -210,7 +210,7 @@ def _agent_source(agent: AgentSpec) -> str:
         f"description: {json.dumps(description)}\n"
         "---\n\n"
         f"You are {agent.name}, the {agent.role} delegate in one isolated "
-        "Kafkallm job.\n\n"
+        "Gänsestall job.\n\n"
         f"{description}\n\n"
         "Role instructions:\n"
         f"{instructions}\n\n"
@@ -1289,7 +1289,7 @@ class GooseJobRunner:
                 sandbox = None
         if job.multi_agent:
             role = (
-                "You are the goosetown orchestrator for one isolated Kafkallm "
+                "You are the goosetown orchestrator for one isolated Gänsestall "
                 "job. Follow the goosetown-orchestrator skill.\n"
             )
             delegates = [agent for agent in job.agents if agent.role != "orchestrator"]
@@ -1327,7 +1327,7 @@ class GooseJobRunner:
                     "delegate task.\n"
                 )
         else:
-            role = "You are the goose agent for one isolated Kafkallm job.\n"
+            role = "You are the goose agent for one isolated Gänsestall job.\n"
             mode = (
                 "Goosetown multi-agent mode is OFF. Do the job yourself; do "
                 "not delegate or spawn subagents.\n"

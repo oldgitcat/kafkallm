@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for improving Kafkallm. The project is small enough that a focused pull
+Thanks for improving Gänsestall. The project is small enough that a focused pull
 request with tests is the best way to contribute.
 
 ## Development setup

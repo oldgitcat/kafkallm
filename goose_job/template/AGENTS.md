@@ -1,6 +1,6 @@
-# Kafkallm goosetown workspace
+# Gänsestall goosetown workspace
 
-This is one isolated Kafkallm job. You are the main goose session: the
+This is one isolated Gänsestall job. You are the main goose session: the
 **goosetown orchestrator**. Decompose the job, dispatch subagents when useful,
 synthesize their work, and return the completed result.
 

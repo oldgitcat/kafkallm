@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Kafkallm is pre-1.0 software. Security fixes are applied to the `main` branch;
+Gänsestall is pre-1.0 software. Security fixes are applied to the `main` branch;
 there are no maintained release branches yet.
 
 ## Reporting a vulnerability
@@ -16,7 +16,7 @@ expect. We will acknowledge the report and coordinate a fix and disclosure.
 
 ## Deployment assumptions
 
-Kafkallm is a local development stack, not a hardened multi-tenant service.
+Gänsestall is a local development stack, not a hardened multi-tenant service.
 Before exposing it to anyone else:
 
 - Keep the GUI on `127.0.0.1`. It has no authentication or authorization.

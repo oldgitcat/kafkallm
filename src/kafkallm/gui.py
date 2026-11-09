@@ -894,7 +894,7 @@ def run_gui(settings: Settings) -> None:
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
     logger.info(
-        "Kafkallm GUI listening on http://%s:%s",
+        "Gänsestall GUI listening on http://%s:%s",
         settings.gui_host,
         settings.gui_port,
     )

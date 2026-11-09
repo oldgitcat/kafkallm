@@ -134,7 +134,7 @@ def host_checks(
             "Python",
             "ok" if sys.version_info >= (3, 12) else "fail",
             version,
-            "Kafkallm requires Python 3.12 or newer.",
+            "Gänsestall requires Python 3.12 or newer.",
         )
     )
 
@@ -336,7 +336,7 @@ def service_checks(settings: Settings, offline: bool = False) -> list[Check]:
 
 def format_report(checks: list[Check]) -> str:
     width = max((len(check.name) for check in checks), default=0)
-    lines = ["Kafkallm doctor", ""]
+    lines = ["Gänsestall doctor", ""]
     for check in checks:
         line = f"{LABELS.get(check.status, check.status.upper()):4}  {check.name:<{width}}  {check.detail}"
         lines.append(line)

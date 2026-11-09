@@ -19,7 +19,7 @@ The upstream files (`goose`, `gtwall`, the worker/writer/reviewer/local-research
 skills) are from [aaif-goose/goosetown](https://github.com/aaif-goose/goosetown)
 at commit `d1f62b0bce24ad0ec74bae51044378c4fed40600`, Apache 2.0.
 `template/AGENTS.md` and `skills/goosetown-orchestrator/SKILL.md` are adapted for
-an unattended, offline Kafkallm job.
+an unattended, offline Gänsestall job.
 
 ## Build
 

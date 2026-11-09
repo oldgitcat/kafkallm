@@ -1,18 +1,18 @@
-# Kafkallm
+# Gänsestall
 
 [![CI](https://github.com/oldgitcat/kafkallm/actions/workflows/ci.yml/badge.svg)](https://github.com/oldgitcat/kafkallm/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](pyproject.toml)
 [![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)](#project-status)
 
-Kafkallm is a small Apache Kafka job queue where every job is executed by a
+Gänsestall is a small Apache Kafka job queue where every job is executed by a
 disposable [goose](https://github.com/aaif-goose/goose) microVM running the
 [goosetown](https://github.com/aaif-goose/goosetown) multi-agent workflow.
 Kafka is the queue, the materialized state store, the scheduler, and the audit
 log. There is no PostgreSQL and no separate scheduler service.
 
 > [!IMPORTANT]
-> Kafkallm is a local development stack, not a hardened multi-tenant service.
+> Gänsestall is a local development stack, not a hardened multi-tenant service.
 > The GUI has no authentication, the LLM gateway speaks plain HTTP, and jobs
 > share a writable skills directory. Keep the stack on localhost or a trusted
 > network. See [SECURITY.md](SECURITY.md) and the
@@ -20,7 +20,7 @@ log. There is no PostgreSQL and no separate scheduler service.
 
 ## Project status
 
-Kafkallm is pre-1.0 (`0.1.0`). The core job flow and sandbox isolation are
+Gänsestall is pre-1.0 (`0.1.0`). The core job flow and sandbox isolation are
 usable, but configuration and APIs may change between minor releases.
 
 ## Contents
@@ -382,7 +382,7 @@ The job image contains a small goosetown hub:
 The upstream role skills and `gtwall` are vendored from goosetown under
 Apache 2.0; see `goose_job/LICENSE-goosetown`. The orchestrator and `AGENTS.md`
 are adapted so they do not depend on the internet, `bd`, `uv`, or the goosetown
-dashboard. The browser-based goosetown dashboard is not used; Kafkallm has its
+dashboard. The browser-based goosetown dashboard is not used; Gänsestall has its
 own job GUI.
 
 Skills are stored on the host at `GOOSE_JOB_SKILLS_DIR`
@@ -805,7 +805,7 @@ The control plane runs under Docker Compose; the job microVMs run under Podman.
 
 The control plane stays on Docker Compose because some host interfaces expose
 unusual netmasks (for example a `/0` netmask from a mobile hotspot) that make
-netavark reject every IPv4 bridge subnet. Kafkallm therefore writes an
+netavark reject every IPv4 bridge subnet. Gänsestall therefore writes an
 IPv6-only internal job network directly into rootless Podman's network store
 instead of asking netavark to derive one. Docker's existing bridges are
 unaffected.
@@ -1184,7 +1184,7 @@ reported privately as described in [SECURITY.md](SECURITY.md).
 
 ## License
 
-Kafkallm is licensed under the [Apache License 2.0](LICENSE). The vendored
+Gänsestall is licensed under the [Apache License 2.0](LICENSE). The vendored
 goosetown files under `goose_job/` are also Apache 2.0; see
 [goose_job/LICENSE-goosetown](goose_job/LICENSE-goosetown). REA, Ghidra, Kuna,
 `jadx-headless-mcp`, apktool, and apksigner are installed as separate upstream

@@ -10,7 +10,7 @@ description: >
 
 You are a Local Researcher in Goosetown. Your job is to search the local knowledge base for relevant information.
 
-> Kafkallm note: `CATALOG.md` is optional. If it does not exist, skip the
+> Gänsestall note: `CATALOG.md` is optional. If it does not exist, skip the
 > catalog step and search `WORK_LOGS/`, `.scratch/`, `inputs/`, and
 > `.claude/skills/` directly.
 
