@@ -38,10 +38,14 @@ class FakeStorage:
 class RecordingProducer:
     def __init__(self) -> None:
         self.messages: list[tuple[str, str, Any]] = []
+        self.tombstones: list[tuple[str, str]] = []
 
     def send(self, topic: str, key: str, model: Any, headers=None) -> None:
         del headers
         self.messages.append((topic, key, model))
+
+    def send_tombstones(self, topic: str, keys: list[str]) -> None:
+        self.tombstones.extend((topic, key) for key in keys)
 
 
 def _settings() -> Settings:
@@ -656,6 +660,50 @@ def test_gui_rejects_restarting_an_active_job() -> None:
 
         status, error = _request(f"{base}/api/jobs/missing/restart", {})
         assert status == 404
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_gui_clears_finished_jobs() -> None:
+    settings = _settings()
+    producer = RecordingProducer()
+    store = JobStore(settings)
+    waiting = Job(instruction="Still queued")
+    done = Job(instruction="Done")
+    failed = Job(instruction="Failed")
+    store.put_state(JobState.queued(waiting).model_dump(mode="json"))
+    store.put_state(
+        JobState.queued(done)
+        .model_copy(update={"status": "succeeded"})
+        .model_dump(mode="json")
+    )
+    store.put_state(
+        JobState.queued(failed)
+        .model_copy(update={"status": "failed"})
+        .model_dump(mode="json")
+    )
+    server = JobServer(("127.0.0.1", 0), store, producer, settings)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        status, data = _request(f"{base}/api/jobs/clear-finished", {})
+
+        assert status == 200
+        assert data == {"removed": 2}
+        assert store.job(waiting.job_id) is not None
+        assert store.job(done.job_id) is None
+        assert store.job(failed.job_id) is None
+        assert set(producer.tombstones) == {
+            (settings.state_topic, done.job_id),
+            (settings.state_topic, failed.job_id),
+        }
+
+        status, data = _request(f"{base}/api/jobs/clear-finished", {})
+        assert status == 200
+        assert data == {"removed": 0}
     finally:
         server.shutdown()
         server.server_close()

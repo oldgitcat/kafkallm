@@ -8,7 +8,7 @@ PYTEST := $(VENV)/bin/pytest
 RUFF := $(VENV)/bin/ruff
 VENV_STAMP := $(VENV)/.kafkallm-installed
 
-.PHONY: help setup doctor bootstrap network images rea-image up down restart logs ps test lint format venv clean
+.PHONY: help setup doctor bootstrap network images rea-image up down restart logs ps test lint format venv clean reset
 
 help: ## Show this help
 	@printf "%-14s %s\n" "target" "description"
@@ -65,6 +65,11 @@ lint: venv ## Check formatting and lint rules
 format: venv ## Auto-format and fix lint findings
 	$(RUFF) check --fix src tests
 	$(RUFF) format src tests
+
+reset: ## Stop the stack and delete all Kafka, trace, and storage data
+	@printf 'This deletes all jobs, agents, sandboxes, and traces. Type "reset" to continue: '; \
+	read -r answer; [ "$$answer" = "reset" ] || { echo "aborted"; exit 1; }
+	$(COMPOSE) --profile storage down --remove-orphans -v
 
 clean: ## Remove local caches and build output (keeps .env and .venv)
 	rm -rf build dist .pytest_cache .ruff_cache

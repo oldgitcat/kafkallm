@@ -643,13 +643,17 @@
     </div>
 
     <section>
-      <h2>Jobs</h2>
+      <div class="panel-head">
+        <h2>Jobs</h2>
+        <button id="clear-finished" type="button" class="compact">Clear finished</button>
+      </div>
+      <input id="job-search" placeholder="Filter by job ID, instruction, sandbox, or status">
       <div id="jobs" class="empty">Loading…</div>
     </section>
   </main>
 
   <script>
-    const state = { jobs: [], agents: [], sandboxes: [], features: { unlimited_jobs: false }, selected: null, selectedAgents: null, detail: null, detailError: null, logs: [], logSeq: -1, logAutoScroll: true, logScrollTop: 0, timer: null };
+    const state = { jobs: [], agents: [], sandboxes: [], features: { unlimited_jobs: false }, selected: null, selectedAgents: null, detail: null, detailError: null, logs: [], logSeq: -1, logAutoScroll: true, logScrollTop: 0, timer: null, jobFilter: "" };
     const $ = (id) => document.getElementById(id);
 
     function esc(value) {
@@ -955,13 +959,25 @@
     }
 
     function renderJobs() {
-      if (!state.jobs.length) {
+      const query = (state.jobFilter || "").trim().toLowerCase();
+      const jobs = query
+        ? state.jobs.filter((job) => [
+            job.job_id,
+            job.instruction,
+            job.sandbox,
+            sandboxLabel(job.sandbox),
+            job.status,
+          ].join(" ").toLowerCase().includes(query))
+        : state.jobs;
+      if (!jobs.length) {
         $("jobs").className = "empty";
-        $("jobs").textContent = "No jobs yet. Submit one.";
+        $("jobs").textContent = state.jobs.length
+          ? "No jobs match the filter."
+          : "No jobs yet. Submit one.";
         return;
       }
       $("jobs").className = "";
-      const rows = state.jobs.map((job) => {
+      const rows = jobs.map((job) => {
         const selected = job.job_id === state.selected;
         return `
         <tr data-id="${esc(job.job_id)}" class="${selected ? "selected" : ""}">
@@ -1093,6 +1109,22 @@
       } catch (error) {
         state.detailError = error.message;
         renderJobs();
+      }
+    }
+
+    async function clearFinishedJobs() {
+      if (!window.confirm("Remove all finished jobs from the list? Their state records are deleted from Kafka.")) {
+        return;
+      }
+      try {
+        await api("/api/jobs/clear-finished", { method: "POST" });
+        await loadJobs();
+        if (state.selected && !state.jobs.some((job) => job.job_id === state.selected)) {
+          closeJob();
+        }
+      } catch (error) {
+        $("jobs").className = "empty";
+        $("jobs").textContent = error.message;
       }
     }
 
@@ -1263,8 +1295,14 @@
       }
     });
 
-    $("agent-new").addEventListener("click", openNewAgent);
-    $("agent-new-inline").addEventListener("click", openNewAgent);
+    $("job-search").addEventListener("input", () => {
+      state.jobFilter = $("job-search").value;
+      renderJobs();
+    });
+
+    $("clear-finished").addEventListener("click", clearFinishedJobs);
+
+    $("agent-new").addEventListener("click", openNewAgent);    $("agent-new-inline").addEventListener("click", openNewAgent);
     $("agent-reset").addEventListener("click", resetAgentForm);
 
     $("agent-form").addEventListener("submit", async (event) => {

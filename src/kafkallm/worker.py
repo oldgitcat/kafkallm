@@ -7,6 +7,7 @@ import signal
 import threading
 import time
 from dataclasses import replace
+from pathlib import Path
 from types import FrameType
 
 from confluent_kafka import Consumer, KafkaError, KafkaException, Message
@@ -34,6 +35,9 @@ from kafkallm.telemetry import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Written once the runtime is ready; the Compose healthcheck looks for it.
+WORKER_READY_FILE = Path("/tmp/kafkallm-worker-ready")
 
 
 class Worker:
@@ -306,4 +310,9 @@ class WorkerPool:
 
 
 def run_workers(settings: Settings) -> None:
-    WorkerPool(settings).run()
+    pool = WorkerPool(settings)
+    WORKER_READY_FILE.touch()
+    try:
+        pool.run()
+    finally:
+        WORKER_READY_FILE.unlink(missing_ok=True)

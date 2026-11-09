@@ -48,6 +48,9 @@ kafkallm = ["static/*.html"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+    "integration: requires a running Kafka broker",
+]
 
 [tool.ruff]
 line-length = 88

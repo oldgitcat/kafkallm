@@ -100,6 +100,13 @@ class JobStore:
             if isinstance(record.get("sequence"), int) and record["sequence"] > after
         ]
 
+    def remove_job(self, job_id: str) -> None:
+        """Forget a job and its events and logs after its state was deleted."""
+        with self._lock:
+            self._states.pop(job_id, None)
+            self._events.pop(job_id, None)
+            self._logs.pop(job_id, None)
+
     def _consume_states(self) -> None:
         self._consume_topic(self.settings.state_topic, self.put_state)
 

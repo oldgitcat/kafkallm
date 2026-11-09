@@ -25,6 +25,7 @@ usable, but configuration and APIs may change between minor releases.
 
 ## Contents
 
+- [Cheat sheet](#cheat-sheet)
 - [Quick start](#quick-start)
 - [How a job runs](#how-a-job-runs)
 - [Configuration](#configuration)
@@ -59,6 +60,37 @@ Browser / CLI ──→ jobs.in ──→ worker ──→ rootless Podman (krun
 GUI ──→ jobs.in, jobs.state, agents.state, sandboxes.state, agent.events
 ```
 
+## Cheat sheet
+
+| Task | Command or URL |
+|---|---|
+| Configure the stack | `make setup` |
+| Check the host and services | `make doctor` |
+| Build images and start everything | `make bootstrap` |
+| Start / stop | `make up` / `make down` |
+| Recreate after `.env` changes | `make restart` |
+| Follow logs | `make logs` |
+| Run tests / lint | `make test` / `make lint` |
+| Delete all Kafka, trace, and storage data | `make reset` |
+
+| Service | URL |
+|---|---|
+| GUI | <http://localhost:8090> |
+| Kafka UI | <http://localhost:8080> |
+| MLflow | <http://localhost:5000> |
+| LLM gateway (OpenAI-compatible) | <http://localhost:8091/v1> |
+| RustFS S3 API / console | <http://localhost:19000> / <http://localhost:19001> |
+
+| Host path | Contents |
+|---|---|
+| `/var/lib/kafkallm/jobs` | Per-job workspaces |
+| `/var/lib/kafkallm/skills` | Persistent goosetown skills |
+| `/var/lib/kafkallm/agents` | Custom agent profiles (`*.md`) |
+| `/var/lib/kafkallm/tools`, `config` | Sandbox tools and goose/MCP config |
+
+Kafka is the database: `jobs.state`, `agents.state`, and `sandboxes.state` are
+compacted; the other topics expire after `KAFKA_TOPIC_RETENTION_MS`.
+
 ## Included
 
 - One-command setup and host diagnostics through `make` and `kafkallm doctor`
@@ -74,7 +106,7 @@ GUI ──→ jobs.in, jobs.state, agents.state, sandboxes.state, agent.events
   reachable peer; it forwards only to agentgateway
 - A browser GUI for submitting jobs, uploading input files or binaries,
   watching state, results, and audit events, and downloading result text and
-  artifacts
+  artifacts; the job list has a text filter and a **Clear finished** action
 - An opt-in unlimited job mode without a wall-clock timeout or Goose turn cap;
   oversized results are preserved as downloadable S3 artifacts
 - Stop buttons for queued/running jobs, restart for finished jobs, and
@@ -573,7 +605,8 @@ cannot consume the reflect budget.
 `job_id` and `run_id` are generated as UUIDs if omitted. Messages use `job_id`
 as the Kafka key. `sandbox` is a registry ID such as `default`, `reverse`, or a
 custom environment added in the GUI. `max_steps` is advisory; goose is bounded
-by `GOOSE_JOB_MAX_TURNS` and the job timeout.
+by `GOOSE_JOB_MAX_TURNS` and the job timeout. `input` is limited to 256 KB per
+job; put larger payloads in a file and attach it with `input_files`.
 
 `sandbox_image` is the OCI reference the worker runs. The GUI fills it from the
 selected registry entry; a producer can also submit any pullable reference

@@ -6,7 +6,6 @@ import os
 import shutil
 import threading
 import time
-import urllib.error
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
@@ -16,6 +15,7 @@ from kafkallm.audit import JobAudit
 from kafkallm.goose_output import parse_goose_output, stream_event_log_records
 from kafkallm.job_network import ensure_job_network
 from kafkallm.models import AgentResult, AgentSpec, Job, SandboxSpec
+from kafkallm.retry import RetryTimeout, retry_until
 from kafkallm.sandboxes import SandboxStore, builtin_sandbox
 from kafkallm.settings import Settings
 from kafkallm.telemetry import get_tracer, set_content, set_error
@@ -387,67 +387,59 @@ class GooseJobRunner:
             )
         deadline = time.monotonic() + self.settings.goose_startup_timeout_seconds
         self._wait_for_gateway(deadline)
-        delay = 1.0
-        last_error: Exception | None = None
-        while time.monotonic() < deadline:
-            try:
-                self.client.ping()
-                self._ensure_image()
-                self._ensure_extension_dirs()
-                self._ensure_job_network()
-                self._ensure_proxy()
-                self._cleanup_orphans()
-                logger.info(
-                    "goose microVM runtime is ready (image=%s, docker_host=%s, "
-                    "network=%s)",
-                    self.settings.goose_image,
-                    self.settings.goose_job_docker_host,
-                    self.settings.goose_job_network,
-                )
-                return
-            except Exception as exc:
-                last_error = exc
-                remaining = max(0.0, deadline - time.monotonic())
-                logger.warning(
-                    "goose microVM runtime not ready yet (%s); retrying in %.1fs",
-                    exc,
-                    min(delay, remaining),
-                )
-                time.sleep(min(delay, remaining))
-                delay = min(delay * 2, 10.0)
-        raise GooseJobRuntimeError(
-            "goose microVM runtime did not become ready within the startup timeout."
-        ) from last_error
+        try:
+            retry_until(
+                deadline,
+                self._prepare_runtime,
+                description="goose microVM runtime",
+                logger=logger,
+            )
+        except RetryTimeout as exc:
+            raise GooseJobRuntimeError(
+                "goose microVM runtime did not become ready within the startup timeout."
+            ) from exc
+        logger.info(
+            "goose microVM runtime is ready (image=%s, docker_host=%s, network=%s)",
+            self.settings.goose_image,
+            self.settings.goose_job_docker_host,
+            self.settings.goose_job_network,
+        )
+
+    def _prepare_runtime(self) -> bool:
+        self.client.ping()
+        self._ensure_image()
+        self._ensure_extension_dirs()
+        self._ensure_job_network()
+        self._ensure_proxy()
+        self._cleanup_orphans()
+        return True
 
     def _wait_for_gateway(self, deadline: float) -> None:
         ready_url = self.settings.llm_gateway_ready_url.strip()
         if not ready_url:
             return
-        last_error: Exception | None = None
-        delay = 1.0
-        while time.monotonic() < deadline:
-            try:
-                with urllib.request.urlopen(ready_url, timeout=3) as response:
-                    if 200 <= response.status < 300:
-                        logger.info("LLM gateway is ready at %s", ready_url)
-                        return
-                    last_error = GooseJobRuntimeError(
+
+        def check() -> bool:
+            with urllib.request.urlopen(ready_url, timeout=3) as response:
+                if not 200 <= response.status < 300:
+                    raise GooseJobRuntimeError(
                         f"LLM gateway readiness returned HTTP {response.status}"
                     )
-            except (OSError, urllib.error.URLError) as exc:
-                last_error = exc
-            remaining = max(0.0, deadline - time.monotonic())
-            logger.warning(
-                "LLM gateway not ready yet (%s); retrying in %.1fs",
-                last_error,
-                min(delay, remaining),
+            return True
+
+        try:
+            retry_until(
+                deadline,
+                check,
+                description="LLM gateway",
+                logger=logger,
             )
-            time.sleep(min(delay, remaining))
-            delay = min(delay * 2, 10.0)
-        raise GooseJobRuntimeError(
-            f"LLM gateway at {ready_url} did not become ready within the "
-            "startup timeout."
-        ) from last_error
+        except RetryTimeout as exc:
+            raise GooseJobRuntimeError(
+                f"LLM gateway at {ready_url} did not become ready within the "
+                "startup timeout."
+            ) from exc
+        logger.info("LLM gateway is ready at %s", ready_url)
 
     def close(self) -> None:
         self.cancel_active()

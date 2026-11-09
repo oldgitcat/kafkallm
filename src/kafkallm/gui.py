@@ -346,6 +346,33 @@ class JobHandler(BaseHTTPRequestHandler):
             status=HTTPStatus.ACCEPTED,
         )
 
+    def _handle_clear_finished(self) -> None:
+        """Delete the state records of all finished jobs from the compacted topic."""
+        finished = [
+            job
+            for job in self.server.store.jobs()
+            if job.get("status") not in {"queued", "running"}
+        ]
+        if not finished:
+            self._send_json({"removed": 0})
+            return
+        try:
+            with self.server.producer_lock:
+                self.server.producer.send_tombstones(
+                    self.server.settings.state_topic,
+                    [str(job["job_id"]) for job in finished],
+                )
+        except Exception as exc:
+            logger.exception("Could not clear finished jobs")
+            self._send_json(
+                {"error": f"Could not clear finished jobs: {exc}"},
+                status=HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+            return
+        for job in finished:
+            self.server.store.remove_job(str(job["job_id"]))
+        self._send_json({"removed": len(finished)})
+
     def _handle_job_restart(self) -> None:
         """Queue a new job with the stored instruction, inputs, and settings."""
         parts = urlsplit(self.path).path.strip("/").split("/")
@@ -432,6 +459,9 @@ class JobHandler(BaseHTTPRequestHandler):
             return
         if self.path == "/api/sandboxes":
             self._handle_sandbox_save()
+            return
+        if self.path == "/api/jobs/clear-finished":
+            self._handle_clear_finished()
             return
         if self.path.startswith("/api/jobs/") and self.path.endswith("/cancel"):
             self._handle_job_cancel()

@@ -83,6 +83,17 @@ def test_sandbox_spec_rejects_unsafe_extensions() -> None:
         )
 
 
+def test_job_rejects_oversized_input() -> None:
+    with pytest.raises(ValidationError, match="input exceeds"):
+        Job(instruction="Hello", input={"data": "x" * 300_000})
+
+
+def test_job_accepts_a_normal_input() -> None:
+    job = Job(instruction="Hello", input={"key": "value"})
+
+    assert job.input == {"key": "value"}
+
+
 def test_job_rejects_unknown_fields() -> None:
     with pytest.raises(ValidationError):
         Job.model_validate({"instruction": "Hello", "unexpected": True})

@@ -261,6 +261,16 @@ services:
       - label=disable
     cap_drop:
       - ALL
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import pathlib,sys; sys.exit(0 if pathlib.Path('/tmp/kafkallm-worker-ready').exists() else 1)"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
     stop_grace_period: 30s
 
   gui:

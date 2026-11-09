@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -9,6 +10,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+_MAX_INPUT_BYTES = 256_000
 
 _ENV_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _EXTENSION_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -157,6 +159,17 @@ class Job(BaseModel):
     # Optional per-job override for the reflect/learning pass. None uses the
     # worker default (GOOSE_JOB_REFLECT_ENABLED).
     reflect: bool | None = None
+
+    @field_validator("input")
+    @classmethod
+    def _validate_input_size(cls, value: dict) -> dict:
+        encoded = json.dumps(value, ensure_ascii=False, default=str).encode("utf-8")
+        if len(encoded) > _MAX_INPUT_BYTES:
+            raise ValueError(
+                f"input exceeds the {_MAX_INPUT_BYTES} byte limit; put large "
+                "payloads in a file and attach it with input_files"
+            )
+        return value
 
 
 class JobResult(BaseModel):
