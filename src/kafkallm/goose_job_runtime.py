@@ -274,6 +274,125 @@ class _SpanActivity:
         )
 
 
+class _DelegationTracker:
+    """Turn delegate tool calls and completions into agent-scoped records.
+
+    Goose streams the delegate request, an acknowledgement with the subagent
+    session id, and a ``Subagent <id> completed`` notification. The subagent's
+    final text is not part of the main stream, so the returned event reports the
+    role and duration rather than inventing a result.
+    """
+
+    def __init__(self) -> None:
+        self._calls: dict[str, tuple[str, float]] = {}
+        self._fallback: list[tuple[str, float]] = []
+        self._subagents: dict[str, tuple[str, float]] = {}
+
+    def observe_event(self, event: dict[str, Any]) -> list[tuple[str, str]]:
+        if event.get("type") != "message":
+            return []
+        message = event.get("message")
+        if not isinstance(message, dict):
+            return []
+        role = message.get("role")
+        records: list[tuple[str, str]] = []
+        for block in message.get("content") or []:
+            if not isinstance(block, dict):
+                continue
+            block_type = block.get("type")
+            if block_type in {"toolRequest", "tool_use", "tool_call"}:
+                if role != "assistant":
+                    continue
+                if block_type == "toolRequest":
+                    call = block.get("toolCall") or {}
+                    value = call.get("value") or {}
+                else:
+                    call = block
+                    value = {"name": block.get("name"), "input": block.get("input")}
+                if value.get("name") != "delegate":
+                    continue
+                call_id = str(block.get("id") or call.get("id") or "")
+                data = value.get("arguments") or value.get("input") or {}
+                if not isinstance(data, dict):
+                    data = {}
+                source = str(data.get("source") or "ad-hoc").strip() or "ad-hoc"
+                instructions = str(data.get("instructions") or "").strip()
+                started = time.monotonic()
+                if call_id:
+                    self._calls[call_id] = (source, started)
+                else:
+                    self._fallback.append((source, started))
+                detail = f"{source}: {instructions}" if instructions else source
+                records.append(("agent.delegated", detail[:4000]))
+            elif block_type in {"toolResponse", "tool_result"} and role == "user":
+                call_id = str(block.get("id") or "")
+                value = (block.get("toolResult") or {}).get("value") or {}
+                meta = value.get("_meta") or {}
+                session_id = meta.get("subagent_session_id")
+                pending = self._calls.pop(call_id, None) if call_id else None
+                if pending is None and not call_id and self._fallback:
+                    pending = self._fallback.pop(0)
+                if pending is None:
+                    continue
+                source, started = pending
+                if isinstance(session_id, str) and session_id:
+                    self._subagents[session_id] = (source, started)
+                    continue
+                elapsed = max(0.0, time.monotonic() - started)
+                content = _tool_result_text(value)
+                records.append(
+                    (
+                        "agent.returned",
+                        f"{source} ({elapsed:.1f}s): {content}"[:4000],
+                    )
+                )
+            elif block_type == "systemNotification":
+                message_text = str(block.get("msg") or "")
+                prefix, suffix = "Subagent ", " completed"
+                if not message_text.startswith(prefix) or not message_text.endswith(
+                    suffix
+                ):
+                    continue
+                session_id = message_text[len(prefix) : -len(suffix)]
+                pending = self._subagents.pop(session_id, None)
+                if pending is None:
+                    continue
+                source, started = pending
+                elapsed = max(0.0, time.monotonic() - started)
+                records.append(
+                    (
+                        "agent.returned",
+                        f"{source} completed ({elapsed:.1f}s, subagent {session_id})"[
+                            :4000
+                        ],
+                    )
+                )
+        return records
+
+
+def _tool_result_text(value: dict[str, Any]) -> str:
+    content = value.get("content")
+    if isinstance(content, list):
+        text = "\n".join(
+            item.get("text", "")
+            for item in content
+            if isinstance(item, dict) and item.get("type") == "text"
+        )
+        if text:
+            return text
+    if isinstance(content, str):
+        return content
+    return ""
+
+
+def _json_object(text: str) -> dict[str, Any] | None:
+    try:
+        value = json.loads(text)
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
 class _LogCollector:
     """Tail the job workspace and turn goose stream-json into live activity."""
 
@@ -313,6 +432,7 @@ class _LogCollector:
         prefix: str,
     ) -> None:
         pending: dict[str, str] = {}
+        delegation = _DelegationTracker() if parse_json and prefix == "goose" else None
 
         def flush(kind_name: str | None = None) -> None:
             if kind_name is None:
@@ -326,7 +446,7 @@ class _LogCollector:
         def emit(record_kind: str, text: str) -> None:
             if record_kind.endswith(
                 (".tool", ".tool_result", ".usage", ".error", ".raw")
-            ):
+            ) or record_kind.startswith("agent."):
                 flush()
                 self.log(record_kind, text)
                 return
@@ -365,6 +485,11 @@ class _LogCollector:
                         emit(f"{prefix}.raw", line)
                         continue
                     if isinstance(event, dict):
+                        if delegation is not None:
+                            for extra_kind, extra_text in delegation.observe_event(
+                                event
+                            ):
+                                emit(extra_kind, extra_text)
                         for record_kind, text in _stream_event_log_records(
                             event, prefix
                         ):
@@ -588,6 +713,11 @@ class GooseJobRunner:
                     def publish_activity(kind: str, text: str) -> None:
                         log(kind, text)
                         activity(kind, text)
+                        if audit is not None and kind in {
+                            "agent.delegated",
+                            "agent.returned",
+                        }:
+                            audit.emit(kind, attributes={"detail": text[:4000]})
 
                     collector = _LogCollector(workdir, publish_activity)
                     collector.start()

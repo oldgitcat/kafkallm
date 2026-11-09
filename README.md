@@ -1109,6 +1109,13 @@ every two seconds and keeps a bounded ring buffer per job. Raw log records are
 also available with `kafkallm logs`. Job logs expire with the normal topic
 retention (`KAFKA_TOPIC_RETENTION_MS`, seven days by default).
 
+When the orchestrator delegates, the panel shows two extra records:
+`agent.delegated` (role and instructions) and `agent.returned` (completion,
+duration, and the delegate's error or result when Goose streams one). The
+subagent's own thinking and tool calls run in a separate process and are not
+part of the main stream, so these events identify which role ran and how long
+it took. They are also mirrored to the MLflow span events.
+
 ## Multiple workers
 
 ```bash

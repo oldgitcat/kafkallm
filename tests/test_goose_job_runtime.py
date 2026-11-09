@@ -19,6 +19,8 @@ from kafkallm.goose_job_runtime import (
     GooseJobRunner,
     GooseJobRuntimeError,
     JobCancelledError,
+    _DelegationTracker,
+    _LogCollector,
     _parse_bytes,
     _SpanActivity,
     _stream_event_log_records,
@@ -1185,3 +1187,194 @@ def test_span_activity_records_bounded_events() -> None:
     events = exporter.get_finished_spans()[0].events
     assert [event.name for event in events] == ["goose.thinking", "goose.tool"]
     assert events[0].attributes["kafkallm.text"] == "first"
+
+
+def test_delegation_tracker_emits_agent_events() -> None:
+    tracker = _DelegationTracker()
+    request = {
+        "type": "message",
+        "message": {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "toolRequest",
+                    "id": "call-1",
+                    "toolCall": {
+                        "value": {
+                            "name": "delegate",
+                            "arguments": {
+                                "source": "Reviewer",
+                                "instructions": "Check it",
+                            },
+                        }
+                    },
+                }
+            ],
+        },
+    }
+    ack = {
+        "type": "message",
+        "message": {
+            "role": "user",
+            "content": [
+                {
+                    "type": "toolResponse",
+                    "id": "call-1",
+                    "toolResult": {
+                        "value": {
+                            "content": [
+                                {"type": "text", "text": "Delegated to subagent s-1"}
+                            ],
+                            "_meta": {"subagent_session_id": "s-1"},
+                        }
+                    },
+                }
+            ],
+        },
+    }
+    completed = {
+        "type": "message",
+        "message": {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "systemNotification",
+                    "notificationType": "inlineMessage",
+                    "msg": "Subagent s-1 completed",
+                }
+            ],
+        },
+    }
+
+    assert tracker.observe_event(request) == [("agent.delegated", "Reviewer: Check it")]
+    assert tracker.observe_event(ack) == []
+    returned = tracker.observe_event(completed)
+    assert returned[0][0] == "agent.returned"
+    assert returned[0][1].startswith("Reviewer completed (")
+    assert "subagent s-1" in returned[0][1]
+
+
+def test_delegation_tracker_handles_ad_hoc_and_other_tools() -> None:
+    tracker = _DelegationTracker()
+
+    other = {
+        "type": "message",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "name": "shell", "input": {"cmd": "ls"}}],
+        },
+    }
+    assert tracker.observe_event(other) == []
+
+    ad_hoc = {
+        "type": "message",
+        "message": {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "toolRequest",
+                    "id": "call-2",
+                    "toolCall": {"value": {"name": "delegate", "arguments": {}}},
+                }
+            ],
+        },
+    }
+    assert tracker.observe_event(ad_hoc) == [("agent.delegated", "ad-hoc")]
+
+    result = {
+        "type": "message",
+        "message": {
+            "role": "user",
+            "content": [
+                {
+                    "type": "toolResponse",
+                    "id": "call-2",
+                    "toolResult": {
+                        "value": {"content": [{"type": "text", "text": "Review text"}]}
+                    },
+                }
+            ],
+        },
+    }
+    returned = tracker.observe_event(result)
+    assert returned[0][0] == "agent.returned"
+    assert returned[0][1].startswith("ad-hoc (")
+    assert returned[0][1].endswith(": Review text")
+
+
+def test_log_collector_emits_delegation_events(tmp_path: Path) -> None:
+    result_dir = tmp_path / ".kafkallm"
+    result_dir.mkdir(parents=True)
+    call = {
+        "type": "message",
+        "message": {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "toolRequest",
+                    "id": "call-1",
+                    "toolCall": {
+                        "value": {
+                            "name": "delegate",
+                            "arguments": {
+                                "source": "Reviewer",
+                                "instructions": "Check it",
+                            },
+                        }
+                    },
+                }
+            ],
+        },
+    }
+    ack = {
+        "type": "message",
+        "message": {
+            "role": "user",
+            "content": [
+                {
+                    "type": "toolResponse",
+                    "id": "call-1",
+                    "toolResult": {
+                        "value": {
+                            "content": [
+                                {"type": "text", "text": "Delegated to subagent s-1"}
+                            ],
+                            "_meta": {"subagent_session_id": "s-1"},
+                        }
+                    },
+                }
+            ],
+        },
+    }
+    completed = {
+        "type": "message",
+        "message": {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "systemNotification",
+                    "notificationType": "inlineMessage",
+                    "msg": "Subagent s-1 completed",
+                }
+            ],
+        },
+    }
+    (result_dir / "main.jsonl").write_text(
+        "\n".join(json.dumps(event) for event in (call, ack, completed)) + "\n",
+        encoding="utf-8",
+    )
+    records: list[tuple[str, str]] = []
+    collector = _LogCollector(tmp_path, lambda kind, text: records.append((kind, text)))
+    collector.start()
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not any(
+            kind == "agent.returned" for kind, _ in records
+        ):
+            time.sleep(0.1)
+    finally:
+        collector.stop()
+
+    kinds = [kind for kind, _ in records]
+    assert "agent.delegated" in kinds
+    assert "agent.returned" in kinds
