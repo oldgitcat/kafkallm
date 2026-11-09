@@ -20,18 +20,17 @@ class StatePublisher:
         self.settings = settings
         self.producer = producer
 
-    def queued(self, job: Job, worker_id: str | None = None) -> None:
-        self._send(JobState.queued(job, worker_id=worker_id))
+    def queued(self, job: Job, worker_id: str | None = None) -> bool:
+        return self._send(JobState.queued(job, worker_id=worker_id))
 
-    def running(self, job: Job, worker_id: str) -> JobState:
+    def running(self, job: Job, worker_id: str) -> tuple[JobState, bool]:
         state = JobState.queued(job, worker_id=worker_id).model_copy(
             update={"status": "running", "started_at": utc_now()}
         )
-        self._send(state)
-        return state
+        return state, self._send(state)
 
-    def completed(self, state: JobState, result: JobResult) -> None:
-        self._send(
+    def completed(self, state: JobState, result: JobResult) -> bool:
+        return self._send(
             state.model_copy(
                 update={
                     "status": "succeeded" if result.status == "succeeded" else "failed",
@@ -48,8 +47,8 @@ class StatePublisher:
             )
         )
 
-    def invalid(self, result: JobResult) -> None:
-        self._send(
+    def invalid(self, result: JobResult) -> bool:
+        return self._send(
             JobState(
                 job_id=result.job_id,
                 run_id=result.run_id,
@@ -63,12 +62,26 @@ class StatePublisher:
             )
         )
 
-    def _send(self, state: JobState) -> None:
+    def _send(self, state: JobState) -> bool:
+        """Publish one state update and report whether it was delivered.
+
+        ``KafkaProducer.send`` already flushes for up to 30 seconds and the
+        idempotent producer retries internally. A second application-level
+        retry would only multiply that latency, so the failure is logged and
+        reported to the caller. The job result in jobs.out stays authoritative.
+        """
         try:
             self.producer.send(
                 topic=self.settings.state_topic,
                 key=state.job_id,
                 model=state,
             )
+            return True
         except Exception:
-            logger.exception("Could not publish state for job %s", state.job_id)
+            logger.exception(
+                "Could not publish the %s state for job %s to %s",
+                state.status,
+                state.job_id,
+                self.settings.state_topic,
+            )
+            return False

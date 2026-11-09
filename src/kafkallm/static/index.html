@@ -561,6 +561,9 @@
         <label class="check"><input id="unlimited" type="checkbox" disabled> Unlimited runtime and result size</label>
         <div id="unlimited-hint" class="hint">Checking this disables the job timeout and Goose turn cap. Oversized results are preserved as a <span class="mono">result-full.md</span> artifact.</div>
 
+        <label class="check"><input id="reflect" type="checkbox" checked> Run learning pass (improve reusable skills)</label>
+        <div id="reflect-hint" class="hint">After the main run, a short second Goose session can update one skill in the shared skills directory.</div>
+
         <button id="submit" type="submit">Submit job</button>
         <div id="message" class="message"></div>
         <div class="hint">The worker runs the job in an isolated goose microVM. Files written to <span class="mono">outputs/</span> are uploaded as artifacts.</div>
@@ -779,6 +782,10 @@
         $("unlimited").checked = false;
         $("unlimited-hint").textContent = "Unlimited jobs are disabled on this worker. Set ALLOW_UNLIMITED_JOBS=true to enable them.";
       }
+      $("reflect").checked = state.features.reflect_default !== false;
+      $("reflect-hint").textContent = state.features.reflect_default === false
+        ? "Learning pass is off by default on this worker. Checking it enables the pass for this job."
+        : "After the main run, a short second Goose session can update one skill in the shared skills directory.";
       syncUnlimited();
     }
 
@@ -978,13 +985,26 @@
         <tbody>${rows}</tbody>
       </table>`;
       for (const row of $("jobs").querySelectorAll("tbody tr[data-id]")) {
-        row.addEventListener("click", () => selectJob(row.dataset.id));
+        row.addEventListener("click", () => {
+          if (state.selected === row.dataset.id) {
+            closeJob();
+          } else {
+            selectJob(row.dataset.id);
+          }
+        });
       }
       const stop = $("jobs").querySelector("[data-stop-job]");
       if (stop) {
         stop.addEventListener("click", (event) => {
           event.stopPropagation();
           cancelJob(stop.dataset.stopJob);
+        });
+      }
+      const restart = $("jobs").querySelector("[data-restart-job]");
+      if (restart) {
+        restart.addEventListener("click", (event) => {
+          event.stopPropagation();
+          restartJob(restart.dataset.restartJob);
         });
       }
       const live = $("jobs").querySelector(".live-logs");
@@ -1025,6 +1045,15 @@
       }
     }
 
+    function closeJob() {
+      state.selected = null;
+      state.detail = null;
+      state.detailError = null;
+      state.logs = [];
+      state.logSeq = -1;
+      renderJobs();
+    }
+
     async function selectJob(jobId) {
       state.selected = jobId;
       state.detail = null;
@@ -1045,6 +1074,19 @@
         });
         await loadJobs();
         await loadDetail();
+      } catch (error) {
+        state.detailError = error.message;
+        renderJobs();
+      }
+    }
+
+    async function restartJob(jobId) {
+      try {
+        const job = await api(`/api/jobs/${encodeURIComponent(jobId)}/restart`, {
+          method: "POST",
+        });
+        await loadJobs();
+        await selectJob(job.job_id);
       } catch (error) {
         state.detailError = error.message;
         renderJobs();
@@ -1132,16 +1174,20 @@
           <div class="field"><div class="k">Submitted</div><div class="v">${esc(fmtTime(job.submitted_at))}</div></div>
           <div class="field"><div class="k">Started</div><div class="v">${esc(fmtTime(job.started_at))}</div></div>
           <div class="field"><div class="k">Finished</div><div class="v">${esc(fmtTime(job.finished_at))}</div></div>
-          <div class="field"><div class="k">Sandbox</div><div class="v">${esc(sandboxLabel(job.sandbox))}${sandboxSpec(job.sandbox)?.description ? ` <span class="muted">${esc(sandboxSpec(job.sandbox).description)}</span>` : ""}</div></div>
+          <div class="field"><div class="k">Sandbox</div><div class="v">${esc(sandboxLabel(job.sandbox))}${job.sandbox_image ? ` <span class="muted mono">· ${esc(job.sandbox_image)}</span>` : ""}</div></div>
           <div class="field"><div class="k">Mode</div><div class="v">${job.multi_agent === false ? "single agent" : "goosetown flock"}</div></div>
           <div class="field"><div class="k">Runtime</div><div class="v">${job.unlimited ? "unlimited" : `${esc(job.timeout_seconds)}s`}</div></div>
           <div class="field"><div class="k">Max steps</div><div class="v">${job.unlimited ? "unlimited" : esc(job.max_steps)}</div></div>
+          <div class="field"><div class="k">Learning pass</div><div class="v">${job.reflect === false ? "off" : job.reflect === true ? "on" : "worker default"}</div></div>
           <div class="field"><div class="k">Flock</div><div class="v">${esc((job.agent_names || []).join(", ") || "built-in roles")}</div></div>
           <div class="field"><div class="k">Usage</div><div class="v mono">${usage}</div></div>
         </div>
         ${job.status === "queued" || job.status === "running" ? `<div class="block">
           <button id="stop-job" type="button" class="danger" data-stop-job="${esc(job.job_id)}">Stop job</button>
           <div class="hint">Requests cancellation. The worker stops the microVM and marks the job as cancelled.</div>
+        </div>` : job.status === "succeeded" || job.status === "failed" ? `<div class="block">
+          <button id="restart-job" type="button" data-restart-job="${esc(job.job_id)}">Restart job</button>
+          <div class="hint">Queues a new job with the same instruction, inputs, sandbox image, agents, and limits.</div>
         </div>` : ""}
         <div class="block"><h3>Instruction</h3><pre>${esc(job.instruction)}</pre></div>
         ${job.result ? `<div class="block">
@@ -1193,6 +1239,7 @@
           unlimited: $("unlimited").checked,
           timeout_seconds: Number($("timeout").value),
           max_steps: Number($("max_steps").value),
+          reflect: $("reflect").checked,
         };
         const job = await api("/api/jobs", {
           method: "POST",

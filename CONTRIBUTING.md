@@ -16,7 +16,7 @@ make venv       # editable install with dev dependencies
 Edit `.env` and add an `OPENROUTER_API_KEY` before running `make setup` again.
 Never commit `.env`; it is ignored by Git.
 
-The unit tests do not need Docker, Podman, KVM, or Redpanda:
+The unit tests do not need Docker, Podman, KVM, or Kafka:
 
 ```bash
 make test

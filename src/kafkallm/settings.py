@@ -5,16 +5,36 @@ import socket
 from dataclasses import dataclass, field
 
 
+class SettingsError(ValueError):
+    """An environment variable is missing or malformed."""
+
+
 def _int_env(name: str, default: int) -> int:
     value = os.getenv(name)
-    return int(value) if value else default
+    if value is None or not value.strip():
+        return default
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise SettingsError(f"{name} must be an integer, got {value!r}.") from exc
+
+
+_TRUE_VALUES = {"1", "true", "yes", "on"}
+_FALSE_VALUES = {"0", "false", "no", "off"}
 
 
 def _bool_env(name: str, default: bool) -> bool:
     value = os.getenv(name)
-    if value is None:
+    if value is None or not value.strip():
         return default
-    return value.lower() in {"1", "true", "yes", "on"}
+    normalized = value.strip().lower()
+    if normalized in _TRUE_VALUES:
+        return True
+    if normalized in _FALSE_VALUES:
+        return False
+    raise SettingsError(
+        f"{name} must be a boolean such as true or false, got {value!r}."
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +79,7 @@ class Settings:
     goose_job_docker_host: str
     goose_job_workspace_root: str
     goose_job_skills_dir: str
+    goose_job_agents_dir: str
     goose_job_tools_dir: str
     goose_job_config_dir: str
     goose_job_reflect_enabled: bool
@@ -93,6 +114,33 @@ class Settings:
     mlflow_enabled: bool
     mlflow_tracking_uri: str
     mlflow_experiment_id: str
+    gui_max_request_bytes: int = 2 * 1024 * 1024
+
+    def __post_init__(self) -> None:
+        limits = {
+            "KAFKA_TOPIC_PARTITIONS": (self.kafka_topic_partitions, 1),
+            "KAFKA_STARTUP_TIMEOUT_SECONDS": (self.kafka_startup_timeout_seconds, 0),
+            "WORKER_CONCURRENCY": (self.worker_concurrency, 1),
+            "MAX_JOB_TIMEOUT_SECONDS": (self.max_job_timeout_seconds, 1),
+            "MAX_AGENT_STEPS": (self.max_agent_steps, 1),
+            "MAX_RESULT_BYTES": (self.max_result_bytes, 1),
+            "MAX_OUTPUT_FILES": (self.max_output_files, 0),
+            "UPLOAD_MAX_FILES": (self.upload_max_files, 1),
+            "UPLOAD_MAX_FILE_BYTES": (self.upload_max_file_bytes, 1),
+            "UPLOAD_MAX_TOTAL_BYTES": (self.upload_max_total_bytes, 1),
+            "GUI_MAX_REQUEST_BYTES": (self.gui_max_request_bytes, 1024),
+        }
+        for name, (value, minimum) in limits.items():
+            if value < minimum:
+                raise SettingsError(f"{name} must be at least {minimum}, got {value}.")
+        for name, port in (
+            ("GUI_PORT", self.gui_port),
+            ("LLM_GATEWAY_PORT", self.llm_gateway_port),
+        ):
+            if not 0 <= port <= 65535:
+                raise SettingsError(
+                    f"{name} must be a TCP port between 0 and 65535, got {port}."
+                )
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -155,6 +203,9 @@ class Settings:
             goose_job_skills_dir=os.getenv(
                 "GOOSE_JOB_SKILLS_DIR", "/var/lib/kafkallm/skills"
             ),
+            goose_job_agents_dir=os.getenv(
+                "GOOSE_JOB_AGENTS_DIR", "/var/lib/kafkallm/agents"
+            ),
             goose_job_tools_dir=os.getenv(
                 "GOOSE_JOB_TOOLS_DIR", "/var/lib/kafkallm/tools"
             ),
@@ -215,6 +266,7 @@ class Settings:
             mlflow_enabled=_bool_env("MLFLOW_ENABLED", True),
             mlflow_tracking_uri=os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000"),
             mlflow_experiment_id=os.getenv("MLFLOW_EXPERIMENT_ID", "0"),
+            gui_max_request_bytes=_int_env("GUI_MAX_REQUEST_BYTES", 2 * 1024 * 1024),
         )
 
     @property

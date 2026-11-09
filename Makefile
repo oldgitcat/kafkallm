@@ -32,13 +32,13 @@ rea-image: ## Build the optional REA + Ghidra job image
 	./scripts/build-rea-image.sh
 
 up: ## Start the control plane with persistent storage
-	$(COMPOSE) --profile storage up -d --build
+	$(COMPOSE) --profile storage up -d --build --remove-orphans
 
 down: ## Stop the stack without deleting volumes
-	$(COMPOSE) --profile storage down
+	$(COMPOSE) --profile storage down --remove-orphans
 
 restart: ## Recreate the stack with the current .env
-	$(COMPOSE) --profile storage up -d --force-recreate
+	$(COMPOSE) --profile storage up -d --force-recreate --remove-orphans
 
 logs: ## Follow logs for the whole stack
 	$(COMPOSE) logs -f --tail=100
@@ -50,7 +50,9 @@ venv: $(VENV_STAMP) ## Create the local development environment
 
 $(VENV_STAMP): pyproject.toml
 	@test -x $(VENV)/bin/python || $(PYTHON) -m venv $(VENV)
-	$(VENV)/bin/pip install -e '.[dev]'
+	@$(VENV)/bin/python -m pip --version >/dev/null 2>&1 || \
+		$(VENV)/bin/python -m ensurepip --upgrade
+	$(VENV)/bin/python -m pip install -e '.[dev]'
 	@touch $(VENV_STAMP)
 
 test: venv ## Run the unit tests

@@ -41,7 +41,7 @@ class Worker:
         self.running = True
         self._pending_messages: list[Message] = []
         logger.info(
-            "Waiting up to %ss for Redpanda at %s",
+            "Waiting up to %ss for Kafka at %s",
             settings.kafka_startup_timeout_seconds,
             settings.kafka_bootstrap_servers,
         )
@@ -142,7 +142,7 @@ class Worker:
                 span.set_attribute("kafkallm.trace_id", trace_id)
                 set_content(span, "input.value", job.instruction)
 
-                state = self.state.running(job, worker_id=self.settings.worker_id)
+                state, _ = self.state.running(job, worker_id=self.settings.worker_id)
                 job_audit = self.audit.for_job(job)
                 job_audit.emit(
                     "job.received",
@@ -159,7 +159,13 @@ class Worker:
                     heartbeat=lambda: self._heartbeat(job.job_id),
                     log=lambda kind, text: self.logs.publish(job.job_id, kind, text),
                 )
-                self.state.completed(state, result)
+                if not self.state.completed(state, result):
+                    job_audit.emit(
+                        "state.failed",
+                        "failed",
+                        attributes={"topic": self.settings.state_topic},
+                        error="The final job state could not be published.",
+                    )
                 job_audit.emit(
                     "job.completed",
                     result.status,

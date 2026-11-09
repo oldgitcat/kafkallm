@@ -5,7 +5,6 @@ import logging
 import mimetypes
 import signal
 import threading
-import uuid
 from collections.abc import Callable
 from email.parser import BytesParser
 from email.policy import default as email_policy
@@ -15,15 +14,15 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, urlsplit
 
-from confluent_kafka import Consumer, KafkaError, KafkaException
 from pydantic import ValidationError
 
 from kafkallm.agents import (
     AgentPublisher,
     AgentStore,
     new_agent_id,
-    seed_default_agents,
+    sync_agents,
 )
+from kafkallm.job_store import JobStore
 from kafkallm.kafka import KafkaProducer, ensure_topics, wait_for_kafka
 from kafkallm.models import (
     AgentSpec,
@@ -37,6 +36,7 @@ from kafkallm.models import (
 from kafkallm.sandboxes import (
     SandboxPublisher,
     SandboxStore,
+    builtin_sandbox,
     new_sandbox_id,
     seed_default_sandboxes,
 )
@@ -51,9 +51,6 @@ from kafkallm.telemetry import (
 
 logger = logging.getLogger(__name__)
 
-_MAX_EVENTS_PER_JOB = 200
-_MAX_LOGS_PER_JOB = 3000
-_MAX_LOG_JOBS = 200
 _MULTIPART_OVERHEAD_BYTES = 1024 * 1024
 
 
@@ -77,134 +74,8 @@ def _multipart_files(content_type: str, body: bytes) -> list[tuple[str, bytes]]:
     return files
 
 
-class JobStore:
-    """In-memory projection of the compacted state topic and the event stream.
-
-    Kafka is the database. This projection is rebuilt from the beginning of the
-    topics whenever the GUI restarts, so there is no local state to back up.
-    """
-
-    def __init__(self, settings: Settings) -> None:
-        self.settings = settings
-        self._states: dict[str, dict[str, Any]] = {}
-        self._events: dict[str, list[dict[str, Any]]] = {}
-        self._logs: dict[str, list[dict[str, Any]]] = {}
-        self._lock = threading.Lock()
-        self._stop = threading.Event()
-        self._threads: list[threading.Thread] = []
-
-    def start(self) -> None:
-        for target, name in (
-            (self._consume_states, "kafkallm-gui-state"),
-            (self._consume_events, "kafkallm-gui-events"),
-            (self._consume_logs, "kafkallm-gui-logs"),
-        ):
-            thread = threading.Thread(target=target, name=name, daemon=True)
-            thread.start()
-            self._threads.append(thread)
-
-    def stop(self) -> None:
-        self._stop.set()
-        for thread in self._threads:
-            thread.join(timeout=5)
-
-    def jobs(self) -> list[dict[str, Any]]:
-        with self._lock:
-            states = list(self._states.values())
-        states.sort(key=lambda state: state.get("submitted_at") or "", reverse=True)
-        return states
-
-    def job(self, job_id: str) -> dict[str, Any] | None:
-        with self._lock:
-            state = self._states.get(job_id)
-            events = list(self._events.get(job_id, []))
-        if state is None:
-            return None
-        return {**state, "events": events}
-
-    def put_state(self, state: dict[str, Any]) -> None:
-        job_id = state.get("job_id")
-        if not isinstance(job_id, str):
-            return
-        with self._lock:
-            self._states[job_id] = state
-
-    def put_event(self, event: dict[str, Any]) -> None:
-        job_id = event.get("job_id")
-        if not isinstance(job_id, str):
-            return
-        with self._lock:
-            events = self._events.setdefault(job_id, [])
-            events.append(event)
-            if len(events) > _MAX_EVENTS_PER_JOB:
-                del events[: len(events) - _MAX_EVENTS_PER_JOB]
-
-    def put_log(self, record: dict[str, Any]) -> None:
-        job_id = record.get("job_id")
-        if not isinstance(job_id, str):
-            return
-        with self._lock:
-            if job_id not in self._logs and len(self._logs) >= _MAX_LOG_JOBS:
-                self._logs.pop(next(iter(self._logs)), None)
-            records = self._logs.setdefault(job_id, [])
-            records.append(record)
-            if len(records) > _MAX_LOGS_PER_JOB:
-                del records[: len(records) - _MAX_LOGS_PER_JOB]
-
-    def logs(self, job_id: str, after: int = 0) -> list[dict[str, Any]]:
-        with self._lock:
-            records = list(self._logs.get(job_id, []))
-        return [
-            record
-            for record in records
-            if isinstance(record.get("sequence"), int) and record["sequence"] > after
-        ]
-
-    def _consume_states(self) -> None:
-        self._consume_topic(self.settings.state_topic, self.put_state)
-
-    def _consume_events(self) -> None:
-        self._consume_topic(self.settings.events_topic, self.put_event)
-
-    def _consume_logs(self) -> None:
-        self._consume_topic(self.settings.logs_topic, self.put_log)
-
-    def _consume_topic(self, topic: str, handler: Any) -> None:
-        while not self._stop.is_set():
-            consumer = Consumer(
-                {
-                    "bootstrap.servers": self.settings.kafka_bootstrap_servers,
-                    "group.id": f"kafkallm-gui-{topic}-{uuid.uuid4()}",
-                    "auto.offset.reset": "earliest",
-                    "enable.auto.commit": False,
-                    "session.timeout.ms": 15000,
-                }
-            )
-            consumer.subscribe([topic])
-            try:
-                while not self._stop.is_set():
-                    message = consumer.poll(timeout=1.0)
-                    if message is None:
-                        continue
-                    if message.error():
-                        if message.error().code() == KafkaError._PARTITION_EOF:
-                            continue
-                        raise KafkaException(message.error())
-                    value = message.value()
-                    if value is None:
-                        continue
-                    try:
-                        payload = json.loads(value.decode("utf-8"))
-                    except (UnicodeDecodeError, ValueError):
-                        logger.warning("Skipping malformed message in %s", topic)
-                        continue
-                    if isinstance(payload, dict):
-                        handler(payload)
-            except Exception:
-                logger.exception("GUI consumer for %s failed; reconnecting", topic)
-                self._stop.wait(2)
-            finally:
-                consumer.close()
+class RequestTooLarge(ValueError):
+    """The request body exceeds the configured JSON body limit."""
 
 
 class JobServer(ThreadingHTTPServer):
@@ -247,6 +118,43 @@ class JobHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         logger.info("%s - %s", self.address_string(), format % args)
 
+    def _read_json_request(self, subject: str) -> dict[str, Any] | None:
+        """Read a size-bounded JSON object or send a 4xx response.
+
+        Returns ``None`` after the response has been sent. Every write endpoint
+        uses this helper so an oversized body is rejected before it is read.
+        """
+        limit = self.server.settings.gui_max_request_bytes
+        try:
+            raw_length = self.headers.get("Content-Length", "0")
+            try:
+                length = int(raw_length)
+            except ValueError as exc:
+                raise ValueError("Invalid Content-Length header.") from exc
+            if length < 0:
+                raise ValueError("Invalid Content-Length header.")
+            if length > limit:
+                raise RequestTooLarge(
+                    f"The request body exceeds the {limit} byte limit."
+                )
+            body = self.rfile.read(length) if length else b"{}"
+            payload = json.loads(body)
+            if not isinstance(payload, dict):
+                raise ValueError("The request body must be a JSON object.")
+        except RequestTooLarge as exc:
+            self._send_json(
+                {"error": str(exc)},
+                status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+            )
+            return None
+        except (UnicodeDecodeError, ValueError) as exc:
+            self._send_json(
+                {"error": f"Invalid {subject}: {exc}"},
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return None
+        return payload
+
     def do_GET(self) -> None:
         path = urlsplit(self.path).path
         if path in {"/", "/index.html"}:
@@ -281,7 +189,10 @@ class JobHandler(BaseHTTPRequestHandler):
             self._send_json(SandboxSpec.model_json_schema())
         elif path == "/api/features":
             self._send_json(
-                {"unlimited_jobs": self.server.settings.allow_unlimited_jobs}
+                {
+                    "unlimited_jobs": self.server.settings.allow_unlimited_jobs,
+                    "reflect_default": (self.server.settings.goose_job_reflect_enabled),
+                }
             )
         elif path.startswith("/api/jobs/"):
             parts = path.strip("/").split("/")
@@ -429,6 +340,83 @@ class JobHandler(BaseHTTPRequestHandler):
             status=HTTPStatus.ACCEPTED,
         )
 
+    def _handle_job_restart(self) -> None:
+        """Queue a new job with the stored instruction, inputs, and settings."""
+        parts = urlsplit(self.path).path.strip("/").split("/")
+        if len(parts) != 4 or parts[0] != "api" or parts[1] != "jobs":
+            self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
+            return
+        job_id = parts[2]
+        job = self.server.store.job(job_id)
+        if job is None:
+            self._send_json({"error": "job not found"}, status=HTTPStatus.NOT_FOUND)
+            return
+        if job.get("status") in {"queued", "running"}:
+            self._send_json(
+                {"error": "Only finished jobs can be restarted."},
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return
+        try:
+            state = JobState.model_validate(
+                {key: value for key, value in job.items() if key != "events"}
+            )
+        except ValidationError as exc:
+            self._send_json(
+                {"error": f"Invalid job state: {exc}"},
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return
+        if not state.instruction.strip():
+            self._send_json(
+                {"error": "This job has no instruction to restart."},
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return
+        if state.unlimited and not self.server.settings.allow_unlimited_jobs:
+            self._send_json(
+                {
+                    "error": "Unlimited jobs are disabled. Set "
+                    "ALLOW_UNLIMITED_JOBS=true."
+                },
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return
+        restarted = Job(
+            instruction=state.instruction,
+            input=state.input,
+            input_files=state.input_files,
+            sandbox=state.sandbox,
+            sandbox_image=state.sandbox_image,
+            multi_agent=state.multi_agent,
+            agents=state.agents,
+            unlimited=state.unlimited,
+            timeout_seconds=state.timeout_seconds,
+            max_steps=state.max_steps,
+            reflect=state.reflect,
+            trace_id=current_trace_id() or new_trace_id(),
+        )
+        try:
+            with self.server.producer_lock:
+                self.server.producer.send(
+                    self.server.settings.jobs_topic,
+                    restarted.job_id,
+                    restarted,
+                    headers=inject_trace_headers(),
+                )
+                StatePublisher(self.server.settings, self.server.producer).queued(
+                    restarted, worker_id=None
+                )
+        except Exception as exc:
+            logger.exception("Could not restart job %s", job_id)
+            self._send_json(
+                {"error": f"Could not restart job: {exc}"},
+                status=HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+            return
+        self.server.store.put_state(JobState.queued(restarted).model_dump(mode="json"))
+        self._send_json(restarted.model_dump(mode="json"), status=HTTPStatus.CREATED)
+
     def do_POST(self) -> None:
         if self.path == "/api/uploads":
             self._handle_upload()
@@ -442,23 +430,29 @@ class JobHandler(BaseHTTPRequestHandler):
         if self.path.startswith("/api/jobs/") and self.path.endswith("/cancel"):
             self._handle_job_cancel()
             return
+        if self.path.startswith("/api/jobs/") and self.path.endswith("/restart"):
+            self._handle_job_restart()
+            return
         if self.path != "/api/jobs":
             self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
             return
         try:
-            length = int(self.headers.get("Content-Length", "0"))
-            payload = json.loads(self.rfile.read(length) or b"{}")
-            if not isinstance(payload, dict):
-                raise ValueError("The request body must be a JSON object.")
+            payload = self._read_json_request("job")
+            if payload is None:
+                return
             sandbox_id = str(payload.get("sandbox", "default"))
             sandbox = self.server.sandboxes.get(sandbox_id)
-            if sandbox is None and sandbox_id not in {"default", "reverse"}:
+            if sandbox is None:
                 sandbox = self.server.sandboxes.wait_for(sandbox_id, timeout=1.0)
             if sandbox is None:
-                if sandbox_id not in {"default", "reverse"}:
-                    raise ValueError(f"Unknown sandbox: {sandbox_id}")
-            elif not sandbox.enabled:
+                sandbox = builtin_sandbox(sandbox_id, self.server.settings)
+            if sandbox is None:
+                raise ValueError(f"Unknown sandbox: {sandbox_id}")
+            if not sandbox.enabled:
                 raise ValueError(f"Sandbox {sandbox_id!r} is disabled.")
+            # Carry the image reference in the job so the worker runs exactly
+            # what the operator selected and can pull it from its registry.
+            payload["sandbox_image"] = sandbox.image
             if (
                 payload.get("unlimited")
                 and not self.server.settings.allow_unlimited_jobs
@@ -517,6 +511,7 @@ class JobHandler(BaseHTTPRequestHandler):
                 status=HTTPStatus.SERVICE_UNAVAILABLE,
             )
             return
+        self.server.store.put_state(JobState.queued(job).model_dump(mode="json"))
         self._send_json(job.model_dump(mode="json"), status=HTTPStatus.CREATED)
 
     def do_DELETE(self) -> None:
@@ -579,10 +574,9 @@ class JobHandler(BaseHTTPRequestHandler):
 
     def _handle_agent_save(self) -> None:
         try:
-            length = int(self.headers.get("Content-Length", "0"))
-            payload = json.loads(self.rfile.read(length) or b"{}")
-            if not isinstance(payload, dict):
-                raise ValueError("The agent must be a JSON object.")
+            payload = self._read_json_request("agent")
+            if payload is None:
+                return
             name = str(payload.get("name", "")).strip()
             if not name:
                 raise ValueError("The agent name is required.")
@@ -615,10 +609,9 @@ class JobHandler(BaseHTTPRequestHandler):
 
     def _handle_sandbox_save(self) -> None:
         try:
-            length = int(self.headers.get("Content-Length", "0"))
-            payload = json.loads(self.rfile.read(length) or b"{}")
-            if not isinstance(payload, dict):
-                raise ValueError("The sandbox must be a JSON object.")
+            payload = self._read_json_request("sandbox")
+            if payload is None:
+                return
             name = str(payload.get("name", "")).strip()
             if not name:
                 raise ValueError("The sandbox name is required.")
@@ -837,7 +830,7 @@ def run_gui(settings: Settings) -> None:
     store.start()
     producer = KafkaProducer(settings)
     agents = AgentStore(settings)
-    seed_default_agents(settings, producer)
+    sync_agents(settings, producer)
     agents.start()
     sandboxes = SandboxStore(settings)
     seed_default_sandboxes(settings, producer)

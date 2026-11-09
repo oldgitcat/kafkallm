@@ -1,7 +1,7 @@
 name: kafkallm
 
 x-app-environment: &app-environment
-  KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+  KAFKA_BOOTSTRAP_SERVERS: kafka:9092
   JOBS_TOPIC: ${JOBS_TOPIC:-jobs.in}
   RESULTS_TOPIC: ${RESULTS_TOPIC:-jobs.out}
   STATE_TOPIC: ${STATE_TOPIC:-jobs.state}
@@ -34,6 +34,8 @@ x-app-environment: &app-environment
   GOOSE_JOB_USE_PASST: ${GOOSE_JOB_USE_PASST:-false}
   GOOSE_JOB_WORKSPACE_ROOT: ${GOOSE_JOB_WORKSPACE_ROOT:-/var/lib/kafkallm/jobs}
   GOOSE_JOB_SKILLS_DIR: ${GOOSE_JOB_SKILLS_DIR:-/var/lib/kafkallm/skills}
+  # Optional drop-in agent profiles, imported by the GUI at startup.
+  GOOSE_JOB_AGENTS_DIR: ${GOOSE_JOB_AGENTS_DIR:-/var/lib/kafkallm/agents}
   GOOSE_JOB_TOOLS_DIR: ${GOOSE_JOB_TOOLS_DIR:-/var/lib/kafkallm/tools}
   GOOSE_JOB_CONFIG_DIR: ${GOOSE_JOB_CONFIG_DIR:-/var/lib/kafkallm/config}
   GOOSE_JOB_NETWORK: ${GOOSE_JOB_NETWORK:-kafkallm-jobs}
@@ -55,6 +57,7 @@ x-app-environment: &app-environment
   UNLIMITED_MAX_POLL_INTERVAL_MS: ${UNLIMITED_MAX_POLL_INTERVAL_MS:-86400000}
   GUI_HOST: ${GUI_HOST:-0.0.0.0}
   GUI_PORT: ${GUI_PORT:-8090}
+  GUI_MAX_REQUEST_BYTES: ${GUI_MAX_REQUEST_BYTES:-2097152}
   UPLOAD_MAX_FILES: ${UPLOAD_MAX_FILES:-16}
   UPLOAD_MAX_FILE_BYTES: ${UPLOAD_MAX_FILE_BYTES:-52428800}
   UPLOAD_MAX_TOTAL_BYTES: ${UPLOAD_MAX_TOTAL_BYTES:-104857600}
@@ -87,42 +90,55 @@ x-worker-environment: &worker-environment
   LLM_GATEWAY_PORT: ${LLM_GATEWAY_PORT:-8091}
 
 services:
-  redpanda:
-    image: docker.redpanda.com/redpandadata/redpanda:v26.2.6
-    command:
-      - redpanda
-      - start
-      - --mode=dev-container
-      - --smp=1
-      - --default-log-level=info
-      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
-      - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:19092
+  # Apache Kafka in KRaft mode: no ZooKeeper, no separate license terms.
+  # Internal clients use kafka:9092; host tools use localhost:19092.
+  kafka:
+    image: apache/kafka:4.4.0
+    environment:
+      CLUSTER_ID: ${KAFKA_CLUSTER_ID:-kafkallm-local-cluster}
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: INTERNAL://:9092,EXTERNAL://:19092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:19092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: ${KAFKA_TOPIC_PARTITIONS:-3}
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
     ports:
       - "127.0.0.1:19092:19092"
     volumes:
-      - redpanda-data:/var/lib/redpanda/data
+      - kafka-data:/var/lib/kafka/data
     healthcheck:
-      test: ["CMD", "rpk", "cluster", "info", "-X", "brokers=localhost:9092"]
-      interval: 5s
-      timeout: 10s
-      retries: 20
-      start_period: 10s
+      test:
+        - CMD-SHELL
+        - /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1
+      interval: 10s
+      timeout: 15s
+      retries: 12
+      start_period: 20s
     restart: unless-stopped
 
-  console:
-    image: docker.redpanda.com/redpandadata/console:v3.13.1
-    entrypoint: /bin/sh
-    command: -c 'echo "$$CONSOLE_CONFIG_FILE" > /tmp/config.yml && /app/console'
+  # kafbat/kafka-ui is Apache-2.0 and replaces the source-available
+  # Redpanda Console for topic inspection.
+  kafka-ui:
+    image: ghcr.io/kafbat/kafka-ui:v1.5.0
     environment:
-      CONFIG_FILEPATH: /tmp/config.yml
-      CONSOLE_CONFIG_FILE: |
-        kafka:
-          brokers: ["redpanda:9092"]
+      KAFKA_CLUSTERS_0_NAME: kafkallm
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
     ports:
       - "127.0.0.1:8080:8080"
     depends_on:
-      redpanda:
+      kafka:
         condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
 
   mlflow:
@@ -168,8 +184,8 @@ services:
       - |
         set -eu
         mkdir -p /var/lib/kafkallm/jobs /var/lib/kafkallm/staging \
-          /var/lib/kafkallm/skills /var/lib/kafkallm/tools/bin \
-          /var/lib/kafkallm/config
+          /var/lib/kafkallm/skills /var/lib/kafkallm/agents \
+          /var/lib/kafkallm/tools/bin /var/lib/kafkallm/config
         chmod -R 777 /var/lib/kafkallm
     volumes:
       - ${KAFKALLM_JOB_ROOT:-/var/lib/kafkallm}:/var/lib/kafkallm:z
@@ -243,7 +259,7 @@ services:
     volumes:
       - ${KAFKALLM_JOB_ROOT:-/var/lib/kafkallm}:/var/lib/kafkallm:z
     depends_on:
-      redpanda:
+      kafka:
         condition: service_healthy
       kafkallm-job-init:
         condition: service_completed_successfully
@@ -268,10 +284,13 @@ services:
     build: .
     command: ["kafkallm", "gui"]
     environment: *app-environment
+    volumes:
+      # Read-only access to the drop-in agent profiles.
+      - ${KAFKALLM_JOB_ROOT:-/var/lib/kafkallm}:/var/lib/kafkallm:ro,z
     ports:
       - "127.0.0.1:${GUI_PORT:-8090}:${GUI_PORT:-8090}"
     depends_on:
-      redpanda:
+      kafka:
         condition: service_healthy
     healthcheck:
       test:
@@ -300,7 +319,7 @@ services:
     command: ["--help"]
     environment: *app-environment
     depends_on:
-      redpanda:
+      kafka:
         condition: service_healthy
 
   rustfs:
@@ -325,7 +344,7 @@ services:
     restart: unless-stopped
 
 volumes:
-  redpanda-data:
+  kafka-data:
   rustfs-data:
   phoenix-data:
   mlflow-data:

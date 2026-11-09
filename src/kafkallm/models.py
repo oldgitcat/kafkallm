@@ -128,6 +128,14 @@ class JobLog(BaseModel):
 
 
 class Job(BaseModel):
+    """One unit of work published to the jobs topic.
+
+    The message names the sandbox entry and carries the OCI image reference the
+    worker must run. The worker pulls that reference if it is not yet in local
+    Podman storage. Input files stay S3 references because Kafka is not a file
+    store.
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     job_id: str = Field(default_factory=lambda: str(uuid.uuid4()), pattern=ID_PATTERN)
@@ -138,11 +146,17 @@ class Job(BaseModel):
     input: dict = Field(default_factory=dict)
     input_files: list[FileRef] = Field(default_factory=list, max_length=32)
     sandbox: str = Field(default="default", pattern=ID_PATTERN)
+    # OCI reference such as "localhost/kafkallm-goose-job:latest" or
+    # "ghcr.io/org/image:tag". Empty means "use the registry entry for sandbox".
+    sandbox_image: str | None = Field(default=None, max_length=255, pattern=r"^\S+$")
     multi_agent: bool = True
     agents: list[AgentSpec] = Field(default_factory=list, max_length=20)
     unlimited: bool = False
     timeout_seconds: int = Field(default=300, ge=1, le=3600)
     max_steps: int = Field(default=6, ge=1, le=50)
+    # Optional per-job override for the reflect/learning pass. None uses the
+    # worker default (GOOSE_JOB_REFLECT_ENABLED).
+    reflect: bool | None = None
 
 
 class JobResult(BaseModel):
@@ -192,13 +206,18 @@ class JobState(BaseModel):
     status: Literal["queued", "running", "succeeded", "failed", "invalid"]
     trace_id: str | None = Field(default=None, min_length=1, max_length=128)
     cancelled: bool = False
+    # Everything needed to restart the job from its stored state.
+    input: dict = Field(default_factory=dict)
     input_files: list[FileRef] = Field(default_factory=list, max_length=32)
     sandbox: str = Field(default="default", pattern=ID_PATTERN)
+    sandbox_image: str | None = Field(default=None, max_length=255, pattern=r"^\S+$")
     multi_agent: bool = True
     agent_names: list[str] = Field(default_factory=list, max_length=20)
+    agents: list[AgentSpec] = Field(default_factory=list, max_length=20)
     unlimited: bool = False
     timeout_seconds: int = Field(default=300, ge=1, le=3600)
     max_steps: int = Field(default=6, ge=1, le=50)
+    reflect: bool | None = None
     submitted_at: datetime = Field(default_factory=utc_now)
     started_at: datetime | None = None
     finished_at: datetime | None = None
@@ -218,13 +237,17 @@ class JobState(BaseModel):
             instruction=job.instruction,
             status="queued",
             trace_id=job.trace_id,
+            input=job.input,
             input_files=job.input_files,
             sandbox=job.sandbox,
+            sandbox_image=job.sandbox_image,
             multi_agent=job.multi_agent,
             agent_names=[agent.name for agent in job.agents] if job.multi_agent else [],
+            agents=job.agents if job.multi_agent else [],
             unlimited=job.unlimited,
             timeout_seconds=job.timeout_seconds,
             max_steps=job.max_steps,
+            reflect=job.reflect,
             worker_id=worker_id,
         )
 

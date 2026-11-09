@@ -70,20 +70,20 @@ def wait_for_kafka(settings: Settings) -> None:
         try:
             _check_broker(settings)
             ensure_topics(settings)
-            logger.info("Redpanda is reachable and topics are ready")
+            logger.info("Kafka is reachable and topics are ready")
             return
         except (KafkaException, TimeoutError, OSError) as exc:
             last_error = exc
             remaining = max(0.0, deadline - time.monotonic())
             logger.warning(
-                "Redpanda not ready yet (%s); retrying in %.1fs",
+                "Kafka not ready yet (%s); retrying in %.1fs",
                 exc,
                 min(delay, remaining),
             )
         time.sleep(min(delay, max(0.0, deadline - time.monotonic())))
         delay = min(delay * 2, 10.0)
 
-    message = "Redpanda did not become available within the startup timeout"
+    message = "Kafka did not become available within the startup timeout"
     if last_error is not None:
         raise RuntimeError(message) from last_error
     raise RuntimeError(message)

@@ -5,7 +5,7 @@
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](pyproject.toml)
 [![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)](#project-status)
 
-Kafkallm is a small Kafka/Redpanda job queue where every job is executed by a
+Kafkallm is a small Apache Kafka job queue where every job is executed by a
 disposable [goose](https://github.com/aaif-goose/goose) microVM running the
 [goosetown](https://github.com/aaif-goose/goosetown) multi-agent workflow.
 Kafka is the queue, the materialized state store, the scheduler, and the audit
@@ -77,7 +77,10 @@ GUI ──→ jobs.in, jobs.state, agents.state, sandboxes.state, agent.events
   artifacts
 - An opt-in unlimited job mode without a wall-clock timeout or Goose turn cap;
   oversized results are preserved as downloadable S3 artifacts
-- Stop buttons for queued/running jobs and configurable parallel worker slots
+- Stop buttons for queued/running jobs, restart for finished jobs, and
+  configurable parallel worker slots
+- A drop-in agent profile directory (`/var/lib/kafkallm/agents`) next to the
+  persistent skills directory
 - A live activity panel with goose thinking, tool calls, tool results, stderr,
   and token usage streamed from the microVM through Kafka
 - **MLflow** observability with OTLP traces, token usage, durations, and errors
@@ -86,16 +89,18 @@ GUI ──→ jobs.in, jobs.state, agents.state, sandboxes.state, agent.events
   extra build packages, plus seeded **Default** and **REA + Ghidra**
   reverse-engineering environments with Kuna, JADX, Frida, apktool, and
   apksigner
+- Job messages that name the sandbox entry and carry its OCI image reference
+  (local build or registry tag); the worker pulls the image when it is missing
 - A compacted `jobs.state` topic that acts as the GUI database; the GUI rebuilds
   its view from Kafka after a restart
 - Compacted `agents.state` and `sandboxes.state` registries
-- Redpanda topics `jobs.in`, `jobs.out`, `jobs.state`, `agents.state`,
+- Apache Kafka topics `jobs.in`, `jobs.out`, `jobs.state`, `agents.state`,
   `sandboxes.state`, and `agent.events`
 - A Kafka worker with manual offset commits and a bounded startup wait
 - A persistent skills directory that goose and goosetown improve across jobs
 - Correlated traces for submission, worker, and the goose run
 - Optional S3-compatible RustFS for input files and result artifacts
-- Redpanda Console and a CLI for scripting
+- A Kafka UI (kafbat/kafka-ui, Apache-2.0) and a CLI for scripting
 
 ## Quick start
 
@@ -157,7 +162,7 @@ Open:
 
 - GUI: <http://localhost:8090>
 - MLflow traces: <http://localhost:5000>
-- Redpanda Console: <http://localhost:8080>
+- Kafka UI: <http://localhost:8080>
 
 Once `.env` is valid and the prerequisites are installed, `make bootstrap` runs
 setup, network creation, the default image build, and `make up` in one command.
@@ -197,6 +202,13 @@ docker compose run --rm -v "$PWD:/data:ro" jobctl submit \
   "Reverse engineer this binary and summarize its behavior" \
   --sandbox reverse --upload /data/tool.bin
 
+# Pull and run an image that is not in the sandbox registry
+docker compose run --rm jobctl submit "Say hello" \
+  --sandbox adhoc --image ghcr.io/example/agent:1.2.3
+
+# Submit without the learning pass (skill improvement)
+docker compose run --rm jobctl submit "Say hello" --no-reflect
+
 # Submit a complete Job JSON payload from a file or stdin
 docker compose run --rm -T jobctl submit --job-json - < job.json
 
@@ -225,7 +237,7 @@ docker compose logs -f llm-gateway
 docker compose logs -f mlflow
 ```
 
-Redpanda Console runs at <http://localhost:8080>. MLflow runs at
+The Kafka UI runs at <http://localhost:8080>. MLflow runs at
 <http://localhost:5000>. Phoenix, if enabled, runs at <http://localhost:6006>.
 
 ## How a job runs
@@ -291,8 +303,10 @@ required values; `OPENROUTER_API_KEY` is the only required secret.
 | `GOOSE_IMAGE` | `kafkallm-goose-job:latest` | Default job microVM image |
 | `GOOSE_RE_IMAGE` | `kafkallm-rea-job:latest` | Reverse-engineering image |
 | `GOOSE_JOB_RAM_MIB` / `GOOSE_JOB_CPUS` | `2048` / `2` | Per-job resources |
-| `GOOSE_JOB_REFLECT_ENABLED` | `true` | Skill-improvement pass after a job |
+| `GOOSE_JOB_REFLECT_ENABLED` | `true` | Default for the per-job learning pass |
+| `GOOSE_JOB_AGENTS_DIR` | `/var/lib/kafkallm/agents` | Drop-in agent profiles imported at GUI start |
 | `GUI_PORT` | `8090` | GUI listener |
+| `GUI_MAX_REQUEST_BYTES` | `2097152` | Limit for JSON request bodies (uploads use `UPLOAD_MAX_*`) |
 | `LLM_GATEWAY_PORT` | `8091` | LLM gateway listener |
 | `S3_ENDPOINT_URL` | `http://rustfs:9000` (storage profile) | Uploads and artifacts |
 | `MLFLOW_ENABLED` | `true` | OTLP traces to MLflow |
@@ -406,12 +420,45 @@ enables the `skills` builtin so the role skills are discoverable. When the
 flock is disabled, the prompt runs a single goose agent without `summon` or
 delegation.
 
+#### Agent profile directory
+
+The GUI also imports agent profiles from `GOOSE_JOB_AGENTS_DIR`
+(`/var/lib/kafkallm/agents` by default) at startup, next to the skills
+directory. Each `*.md` file needs YAML front matter; the filename is the
+`agent_id`:
+
+```markdown
+---
+name: "Security reviewer"
+role: reviewer
+description: "Checks security-sensitive outputs."
+skills:
+  - goosetown-reviewer
+enabled: true
+---
+
+Review the assigned output for security issues and report file/line references.
+```
+
+The body becomes the `instructions` field. The parser accepts the flat subset
+used by goose agent sources: strings (optionally quoted), booleans, and lists in
+`- item` or `[a, b]` form. Files are imported on every GUI start and win over
+the existing registry entry for the same `agent_id`; agents that only exist in
+the GUI are untouched. The directory is mounted read-only into the GUI
+container, so the GUI never writes it. Kafka remains the runtime registry that
+the GUI reads from and edits.
+
 ### Sandbox management
 
 The GUI has a **Sandboxes** panel and the job form's sandbox dropdown is built
 from it. The registry is the compacted `sandboxes.state` topic, so there is no
-separate database and the worker resolves the selected image from Kafka before
-starting a microVM. On the first GUI start two environments are seeded:
+separate database. On submit, the GUI writes the selected entry's image
+reference into the job as `sandbox_image` (for example
+`localhost/kafkallm-goose-job:latest` or `ghcr.io/org/agent:1.2.3`). The worker
+runs that reference and pulls it from its registry when it is not already in
+local Podman storage. The sandbox entry itself supplies the optional `env`,
+`extensions`, and `instructions`. On the first GUI start two environments are
+seeded:
 
 - `Default` — `GOOSE_IMAGE`, the normal goose + goosetown image
 - `Reverse engineering` — `GOOSE_RE_IMAGE`, with REA as a local MCP server,
@@ -439,11 +486,31 @@ unavailable. `KAFKALLM_*`, `GOOSE_*`, `OPENAI_*`, and process-critical variables
 such as `PATH` and `HOME` are reserved and rejected in the GUI, so registry
 entries cannot override gateway credentials or runtime controls.
 
+Adding an image therefore needs no Python or Compose change:
+
+1. Build or pull it into the same rootless Podman storage the worker uses
+   (`podman build -t localhost/my-agent:latest ...` or
+   `podman pull ...`, as the same user that owns `PODMAN_SOCKET`).
+2. Open the GUI, choose **Sandboxes → + New sandbox**, and enter the image
+   reference plus optional `env` and `extensions`.
+3. Submit a small job with that environment. The worker uses the entry's image
+   reference and pulls it from the registry if it is not local; watch the live
+   activity panel during the first start.
+
+The entry is stored in Kafka and appears immediately in the dropdown. Deleting
+an entry disables it for new jobs; queued jobs still carry their image
+reference, while `env`, `extensions`, and `instructions` are read from the
+registry at run time.
+
 The CLI accepts the same registry IDs:
 
 ```bash
 docker compose run --rm jobctl submit "Analyze the sample" --sandbox malware-analysis
 ```
+
+New agent profiles follow the same pattern: **Goosetown agents → + New agent**,
+choose a role and skills, then select the agent in the job form. No restart and
+no code change are required.
 
 A separate persistent goosetown container is not used: the actual multi-agent
 flock runs inside each disposable job microVM. This keeps the jobs isolated and
@@ -456,7 +523,17 @@ with a review prompt. It may update one reusable skill under
 `.claude/skills`. This is best-effort: a failed reflect run is reported as a
 `goose.reflect` audit event and does not fail the job.
 
-- `GOOSE_JOB_REFLECT_ENABLED=true` (default)
+The job form has a **Run learning pass** checkbox. It is checked by default
+from the worker setting, and the choice travels in the Job message as
+`reflect`. A job can therefore enable or disable the pass regardless of the
+worker default. The CLI has `--no-reflect` for the same override.
+
+The pass needs enough remaining time: it is skipped when fewer than 60 seconds
+are left at the start, and it reserves at most 25 % of the remaining budget
+(capped by `GOOSE_JOB_REFLECT_TIMEOUT_SECONDS`). The main run is shortened so it
+cannot consume the reflect budget.
+
+- `GOOSE_JOB_REFLECT_ENABLED=true` (worker default when a job has no `reflect`)
 - `GOOSE_JOB_REFLECT_TIMEOUT_SECONDS=300`
 - `GOOSE_JOB_MAX_TURNS=60` (main run)
 - `GOOSE_JOB_SUBAGENT_MAX_TURNS=40`
@@ -473,11 +550,13 @@ with a review prompt. It may update one reusable skill under
   "input": {"arbitrary": "JSON data"},
   "input_files": [],
   "sandbox": "default",
+  "sandbox_image": "kafkallm-goose-job:latest",
   "multi_agent": true,
   "agents": [],
   "unlimited": false,
   "timeout_seconds": 300,
-  "max_steps": 6
+  "max_steps": 6,
+  "reflect": true
 }
 ```
 
@@ -485,6 +564,15 @@ with a review prompt. It may update one reusable skill under
 as the Kafka key. `sandbox` is a registry ID such as `default`, `reverse`, or a
 custom environment added in the GUI. `max_steps` is advisory; goose is bounded
 by `GOOSE_JOB_MAX_TURNS` and the job timeout.
+
+`sandbox_image` is the OCI reference the worker runs. The GUI fills it from the
+selected registry entry; a producer can also submit any pullable reference
+directly. The worker checks local Podman storage first and pulls the image from
+its registry if it is missing. `env`, `extensions`, and `instructions` still
+come from the registry entry named by `sandbox`, and an unknown `sandbox` with
+an explicit `sandbox_image` runs with an empty environment. The supplied
+`agents` list travels with the job. Older payloads without `sandbox_image`
+still work; the worker then uses the image from the registry entry.
 
 ### Unlimited jobs
 
@@ -699,7 +787,7 @@ The control plane runs under Docker Compose; the job microVMs run under Podman.
 - **Podman runs the microVMs.** Only Podman's `crun` krun runtime can start a
   libkrun microVM, selected through the `run.oci.handler=krun` annotation.
   Docker's runc has no krun handler.
-- **Docker runs the control plane.** The worker, GUI, Redpanda, RustFS, MLflow,
+- **Docker runs the control plane.** The worker, GUI, Apache Kafka, RustFS, MLflow,
   Phoenix (optional), and the socket proxy are ordinary containers.
 - **Rootless Podman is required.** Rootful Podman can break libkrun's TSI
   networking, leaving the microVMs without an outbound path and stalling every
@@ -924,6 +1012,15 @@ The final `JobResult` has `cancelled: true` and a user-facing cancellation
 message. Cancellation is best-effort; a job that has just finished may still
 publish its normal result.
 
+### Restarting jobs
+
+Finished jobs (`succeeded` or `failed`) have a **Restart job** button. It
+queues a new job with a new `job_id` and `run_id`, keeping the instruction,
+structured input, input files, sandbox ID, image reference, agent profiles,
+limits, and the learning-pass choice. Queued or running jobs cannot be
+restarted; stop them first. Clicking an open job row again collapses its detail
+view.
+
 ### Live activity
 
 The job detail has a **Live activity** panel. The worker tails goose's
@@ -953,10 +1050,10 @@ slots. The shared skills directory uses last-writer-wins semantics.
 
 ## Operations and guarantees
 
-- The worker waits for Redpanda, agentgateway readiness, the Podman API, the
+- The worker waits for Kafka, agentgateway readiness, the Podman API, the
   job network, the allowlisting proxy, and the goose image before consuming
   jobs.
-- Redpanda, Console, RustFS, the Podman proxy, MLflow, Phoenix, the worker, and
+- Kafka, the Kafka UI, RustFS, the Podman proxy, MLflow, Phoenix, the worker, and
   the GUI have restart policies.
 - The Kafka offset is committed only after the result is written to `jobs.out`.
 - Processing is **at-least-once**. A redelivered job starts a new microVM, so
@@ -964,7 +1061,7 @@ slots. The shared skills directory uses last-writer-wins semantics.
 - Audit delivery is asynchronous and best effort and does not change job status.
 - `jobs.state` is compacted; the other topics keep seven days by default
   (`KAFKA_TOPIC_RETENTION_MS`).
-- The Compose configuration is for local development. Redpanda has no SASL/TLS
+- The Compose configuration is for local development. Kafka has no SASL/TLS
   here.
 - The GUI has no authentication and is published on `127.0.0.1` only.
 
@@ -973,6 +1070,25 @@ Stop without deleting volumes:
 ```bash
 docker compose down
 ```
+
+### Upgrading from Redpanda
+
+Earlier versions used Redpanda. The stack now runs Apache Kafka 4.4 in KRaft
+mode (Apache-2.0, no ZooKeeper) and the Apache-2.0 kafbat Kafka UI. The Kafka
+protocol, topics, and the Job format are unchanged; only the broker container
+and its data volume differ:
+
+- The service names changed (`redpanda` → `kafka`, `console` → `kafka-ui`).
+  Recreate the stack with `make down && make up` (the Make targets pass
+  `--remove-orphans`) so the old containers release port `19092`.
+- The new volume is `kafka-data`, mounted at `/var/lib/kafka/data`.
+- Kafka does not read the old `redpanda-data` volume. Start the new stack and
+  verify it, then remove the old volume when you no longer need its topics, for
+  example `docker volume rm kafkallm_redpanda-data` (adjust the Compose project
+  prefix if needed).
+- The compacted `agents.state` and `sandboxes.state` topics start empty, so the
+  default flock and the two built-in sandboxes are seeded again on the first
+  GUI start. Jobs that were only in the old `jobs.in` topic are not migrated.
 
 ## Local tests
 
@@ -993,7 +1109,7 @@ python3 -m venv .venv
 ```
 
 The unit tests use a fake Podman client, a fake Kafka producer, and the real GUI
-HTTP handler. They require neither a Podman daemon nor Redpanda.
+HTTP handler. They require neither a Podman daemon nor Kafka.
 
 ## Troubleshooting
 
@@ -1032,7 +1148,8 @@ docker compose logs -f llm-gateway
 ## Repository layout
 
 ```text
-src/kafkallm/       worker, GUI, doctor, Kafka, state, agents, sandboxes, goose runtime, models
+src/kafkallm/       worker, GUI, job store, doctor, Kafka, state, agents,
+                    sandboxes, goose runtime, output parsing, models
 goose_job/          job image, goosetown template, skills, config and tool examples
 agentgateway/       LLM gateway policy
 scripts/            setup, doctor, image builds, network init, sandbox helpers

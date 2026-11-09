@@ -172,6 +172,7 @@ def test_gui_submits_a_job_and_serves_state() -> None:
         status, features = _request(f"{base}/api/features")
         assert status == 200
         assert features["unlimited_jobs"] is False
+        assert features["reflect_default"] is True
 
         status, job = _request(
             f"{base}/api/jobs",
@@ -181,11 +182,17 @@ def test_gui_submits_a_job_and_serves_state() -> None:
                 "sandbox": "reverse",
                 "timeout_seconds": 120,
                 "max_steps": 4,
+                "reflect": False,
             },
         )
         assert status == 201
         assert job["instruction"] == "Write a file"
         assert job["sandbox"] == "reverse"
+        assert job["reflect"] is False
+        # The Job message carries the OCI image reference to run.
+        assert job["sandbox_image"] == "kafkallm-rea-job:latest"
+        assert producer.messages[0][2].sandbox_image == job["sandbox_image"]
+        assert producer.messages[0][2].reflect is False
         assert [message[0] for message in producer.messages] == [
             "jobs.in",
             "jobs.state",
@@ -564,6 +571,77 @@ def test_gui_downloads_results_and_artifacts() -> None:
         thread.join(timeout=5)
 
 
+def test_gui_restarts_a_finished_job_with_its_settings() -> None:
+    settings = _settings()
+    producer = RecordingProducer()
+    store = JobStore(settings)
+    job = Job(
+        instruction="Do it again",
+        input={"key": "value"},
+        sandbox="reverse",
+        sandbox_image="kafkallm-rea-job:latest",
+        multi_agent=False,
+        timeout_seconds=120,
+        max_steps=4,
+        reflect=False,
+    )
+    store.put_state(
+        JobState.queued(job)
+        .model_copy(update={"status": "succeeded", "result": "done"})
+        .model_dump(mode="json")
+    )
+    server = JobServer(("127.0.0.1", 0), store, producer, settings)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        status, restarted = _request(f"{base}/api/jobs/{job.job_id}/restart", {})
+
+        assert status == 201
+        assert restarted["job_id"] != job.job_id
+        assert restarted["run_id"] != job.run_id
+        assert restarted["instruction"] == "Do it again"
+        assert restarted["input"] == {"key": "value"}
+        assert restarted["sandbox_image"] == "kafkallm-rea-job:latest"
+        assert restarted["multi_agent"] is False
+        assert restarted["reflect"] is False
+        assert [message[0] for message in producer.messages] == [
+            "jobs.in",
+            "jobs.state",
+        ]
+        assert store.job(restarted["job_id"]) is not None
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_gui_rejects_restarting_an_active_job() -> None:
+    settings = _settings()
+    store = JobStore(settings)
+    job = Job(instruction="Still running")
+    store.put_state(
+        JobState.queued(job)
+        .model_copy(update={"status": "running"})
+        .model_dump(mode="json")
+    )
+    server = JobServer(("127.0.0.1", 0), store, RecordingProducer(), settings)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        status, error = _request(f"{base}/api/jobs/{job.job_id}/restart", {})
+        assert status == 400
+        assert "Only finished jobs" in error["error"]
+
+        status, error = _request(f"{base}/api/jobs/missing/restart", {})
+        assert status == 404
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
 def test_gui_rejects_oversized_uploads() -> None:
     settings = replace(
         _settings(),
@@ -586,6 +664,24 @@ def test_gui_rejects_oversized_uploads() -> None:
         assert status == 413
         assert "size limit" in error["error"]
         assert storage.uploads == []
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_gui_rejects_oversized_json_bodies() -> None:
+    settings = replace(_settings(), gui_max_request_bytes=1024)
+    producer = RecordingProducer()
+    server = JobServer(("127.0.0.1", 0), JobStore(settings), producer, settings)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        status, error = _request(f"{base}/api/jobs", {"instruction": "x" * 2000})
+        assert status == 413
+        assert "exceeds the 1024 byte limit" in error["error"]
+        assert producer.messages == []
     finally:
         server.shutdown()
         server.server_close()

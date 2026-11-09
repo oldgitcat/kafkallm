@@ -613,7 +613,122 @@ def test_unknown_sandbox_is_rejected(tmp_path: Path) -> None:
     runner = GooseJobRunner(_settings_for(tmp_path))
 
     with pytest.raises(GooseJobRuntimeError, match="Unknown sandbox"):
-        runner._sandbox_for("missing")
+        runner._sandbox_for(Job(instruction="Analyze", sandbox="missing"))
+
+
+def test_job_image_overrides_the_registry_image(tmp_path: Path) -> None:
+    """The image reference from the Job message is the one that runs."""
+    client = FakeDockerClient()
+    client.results = {"main.json": _goose_result(text="Completed")}
+    settings = _settings_for(tmp_path)
+    sandboxes = SandboxStore(settings)
+    sandboxes.put(
+        SandboxSpec(
+            sandbox_id="custom",
+            name="Custom",
+            image="registry:new",
+            env={"CUSTOM_FLAG": "on"},
+        )
+    )
+    runner = GooseJobRunner(settings, client=client, sandboxes=sandboxes)
+    job = Job(
+        instruction="Run the submitted image",
+        sandbox="custom",
+        sandbox_image="localhost/custom:old",
+    )
+
+    runner.run(
+        job=job,
+        workspace=_workspace(tmp_path),
+        deadline=time.monotonic() + 120,
+        max_steps=5,
+    )
+
+    assert client.create_body["Image"] == "localhost/custom:old"
+    # Environment settings still come from the selected registry entry.
+    assert "CUSTOM_FLAG=on" in client.create_body["Env"]
+
+
+def test_job_image_works_without_a_registry_entry(tmp_path: Path) -> None:
+    client = FakeDockerClient()
+    client.results = {"main.json": _goose_result(text="Completed")}
+    runner = GooseJobRunner(_settings_for(tmp_path), client=client)
+    job = Job(
+        instruction="Run an ad-hoc image",
+        sandbox="adhoc",
+        sandbox_image="ghcr.io/example/agent:1.2.3",
+    )
+
+    runner.run(
+        job=job,
+        workspace=_workspace(tmp_path),
+        deadline=time.monotonic() + 120,
+        max_steps=5,
+    )
+
+    assert client.create_body["Image"] == "ghcr.io/example/agent:1.2.3"
+
+
+def test_job_image_is_pulled_when_missing(tmp_path: Path) -> None:
+    client = FakeDockerClient()
+    client.image_available = False
+    client.results = {"main.json": _goose_result(text="Completed")}
+    runner = GooseJobRunner(_settings_for(tmp_path), client=client)
+    job = Job(
+        instruction="Pull the image",
+        sandbox="adhoc",
+        sandbox_image="ghcr.io/example/agent:1.2.3",
+    )
+
+    runner.run(
+        job=job,
+        workspace=_workspace(tmp_path),
+        deadline=time.monotonic() + 120,
+        max_steps=5,
+    )
+
+    assert client.pulled == ["ghcr.io/example/agent:1.2.3"]
+    assert client.create_body["Image"] == "ghcr.io/example/agent:1.2.3"
+
+
+def test_job_can_disable_the_learning_pass(tmp_path: Path) -> None:
+    client = FakeDockerClient()
+    client.results = {"main.json": _goose_result(text="Completed")}
+    audit = FakeAudit()
+    runner = GooseJobRunner(_settings_for(tmp_path), client=client)
+    job = Job(instruction="Do the job", reflect=False)
+
+    runner.run(
+        job=job,
+        workspace=_workspace(tmp_path),
+        deadline=time.monotonic() + 120,
+        max_steps=5,
+        audit=audit,  # type: ignore[arg-type]
+    )
+
+    assert "KAFKALLM_JOB_REFLECT_ENABLED=0" in client.create_body["Env"]
+    reflect = [event for event in audit.events if event["type"] == "goose.reflect"]
+    assert reflect
+    assert reflect[0]["attributes"]["status"] == "skipped"
+
+
+def test_job_can_enable_the_learning_pass_when_the_worker_default_is_off(
+    tmp_path: Path,
+) -> None:
+    settings = _settings_for(tmp_path, goose_job_reflect_enabled=False)
+    client = FakeDockerClient()
+    client.results = {"main.json": _goose_result(text="Completed")}
+    runner = GooseJobRunner(settings, client=client)
+    job = Job(instruction="Do the job", reflect=True)
+
+    runner.run(
+        job=job,
+        workspace=_workspace(tmp_path),
+        deadline=time.monotonic() + 120,
+        max_steps=5,
+    )
+
+    assert "KAFKALLM_JOB_REFLECT_ENABLED=1" in client.create_body["Env"]
 
 
 def test_reverse_prompt_mentions_rea(tmp_path: Path) -> None:

@@ -3,7 +3,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from kafkallm.models import Job, JobState, SandboxSpec, to_json_bytes
+from kafkallm.models import AgentSpec, Job, JobState, SandboxSpec, to_json_bytes
 
 
 def test_job_defaults_and_serialization() -> None:
@@ -22,6 +22,16 @@ def test_job_and_state_keep_the_unlimited_flag() -> None:
 
     assert job.unlimited is True
     assert state.unlimited is True
+
+
+def test_job_and_state_keep_the_learning_pass_choice() -> None:
+    assert Job(instruction="Hello").reflect is None
+
+    job = Job(instruction="Hello", reflect=False)
+    state = JobState.queued(job)
+
+    assert job.reflect is False
+    assert state.reflect is False
 
 
 def test_job_accepts_a_registry_sandbox_id() -> None:
@@ -101,8 +111,43 @@ def test_job_state_is_the_gui_projection() -> None:
     assert state.started_at is None
 
 
+def test_job_state_keeps_the_restart_payload() -> None:
+    agent = AgentSpec(agent_id="worker", name="Worker", role="worker")
+    job = Job(
+        instruction="Hello",
+        input={"key": "value"},
+        sandbox="custom",
+        sandbox_image="localhost/custom:1",
+        agents=[agent],
+    )
+
+    state = JobState.queued(job)
+
+    assert state.input == {"key": "value"}
+    assert state.sandbox_image == "localhost/custom:1"
+    assert [item.agent_id for item in state.agents] == ["worker"]
+
+
 def test_job_state_keeps_the_reverse_sandbox() -> None:
     job = Job(instruction="Analyze this", sandbox="reverse")
     state = JobState.queued(job)
 
     assert state.sandbox == "reverse"
+
+
+def test_job_carries_the_sandbox_image_reference() -> None:
+    job = Job(
+        instruction="Hello",
+        sandbox="custom",
+        sandbox_image="ghcr.io/example/agent:1.2.3",
+    )
+
+    encoded = json.loads(to_json_bytes(job))
+
+    assert encoded["sandbox_image"] == "ghcr.io/example/agent:1.2.3"
+
+
+@pytest.mark.parametrize("image", ["has spaces:latest", "tab\timage", ""])
+def test_job_rejects_an_invalid_sandbox_image(image: str) -> None:
+    with pytest.raises(ValidationError):
+        Job(instruction="Hello", sandbox_image=image)

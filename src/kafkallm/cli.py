@@ -13,6 +13,7 @@ from confluent_kafka import Consumer, KafkaError, KafkaException
 from kafkallm.dotenv import load_dotenv
 from kafkallm.kafka import KafkaProducer, ensure_topics
 from kafkallm.models import AgentSpec, FileRef, Job, SandboxSpec
+from kafkallm.sandboxes import resolve_sandbox
 from kafkallm.settings import Settings
 from kafkallm.state import StatePublisher
 from kafkallm.telemetry import (
@@ -47,7 +48,7 @@ def _add_consumer_arguments(parser: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="kafkallm", description="Run goose jobs through Redpanda"
+        prog="kafkallm", description="Run goose jobs through Apache Kafka"
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -102,6 +103,13 @@ def build_parser() -> argparse.ArgumentParser:
         default="default",
         help="Sandbox ID from the GUI environment registry (default: default)",
     )
+    submit.add_argument(
+        "--image",
+        help=(
+            "Run this OCI image reference instead of the registry image; the "
+            "worker pulls it from its registry if it is not local"
+        ),
+    )
     submit.add_argument("--job-id")
     submit.add_argument("--run-id")
     submit.add_argument("--timeout", type=int, default=300)
@@ -113,6 +121,11 @@ def build_parser() -> argparse.ArgumentParser:
             "Ignore the job timeout and turn cap and preserve oversized results "
             "as a result-full.md artifact."
         ),
+    )
+    submit.add_argument(
+        "--no-reflect",
+        action="store_true",
+        help="Skip the learning pass (skill improvement) for this job",
     )
 
     schema = subparsers.add_parser(
@@ -149,11 +162,13 @@ def _job_payload(args: argparse.Namespace) -> dict:
                 ("--input-file", args.input_file, []),
                 ("--upload", args.upload, []),
                 ("--sandbox", args.sandbox, "default"),
+                ("--image", args.image, None),
                 ("--job-id", args.job_id, None),
                 ("--run-id", args.run_id, None),
                 ("--timeout", args.timeout, 300),
                 ("--max-steps", args.max_steps, 6),
                 ("--unlimited", args.unlimited, False),
+                ("--no-reflect", args.no_reflect, False),
             )
             if value != default
         ]
@@ -193,6 +208,8 @@ def _job_payload(args: argparse.Namespace) -> dict:
         payload["job_id"] = args.job_id
     if args.run_id:
         payload["run_id"] = args.run_id
+    if args.no_reflect:
+        payload["reflect"] = False
     return payload
 
 
@@ -223,6 +240,33 @@ def _attach_uploads(
     payload["input_files"] = input_files
 
 
+def _attach_sandbox_image(
+    settings: Settings,
+    payload: dict,
+    image: str | None = None,
+) -> None:
+    """Record the OCI image the worker must run for this job.
+
+    The image reference is part of the Job message so the worker can pull it
+    from a registry when it is not in local Podman storage.
+    """
+    if payload.get("sandbox_image"):
+        return
+    sandbox_id = str(payload.get("sandbox", "default"))
+    sandbox = resolve_sandbox(settings, sandbox_id)
+    if sandbox is not None and not sandbox.enabled:
+        raise ValueError(f"Sandbox {sandbox_id!r} is disabled.")
+    if image is not None:
+        payload["sandbox_image"] = image
+        return
+    if sandbox is None:
+        raise ValueError(
+            f"Unknown sandbox: {sandbox_id}. Add it in the GUI sandbox registry "
+            "or pass --image."
+        )
+    payload["sandbox_image"] = sandbox.image
+
+
 def submit(settings: Settings, args: argparse.Namespace) -> None:
     payload = _job_payload(args)
     _attach_uploads(settings, args, payload)
@@ -231,6 +275,7 @@ def submit(settings: Settings, args: argparse.Namespace) -> None:
     if not payload.get("trace_id"):
         payload["trace_id"] = current_trace_id() or new_trace_id()
     ensure_topics(settings)
+    _attach_sandbox_image(settings, payload, args.image)
     producer = KafkaProducer(settings)
     state = StatePublisher(settings, producer)
     try:

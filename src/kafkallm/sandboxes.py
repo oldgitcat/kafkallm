@@ -72,6 +72,22 @@ def builtin_sandbox(sandbox_id: str, settings: Settings) -> SandboxSpec | None:
     return None
 
 
+def resolve_sandbox(settings: Settings, sandbox_id: str) -> SandboxSpec | None:
+    """Return the registry entry, or the built-in definition for a known ID.
+
+    The GUI and CLI call this once when a job is submitted so the Job message
+    can carry a snapshot of the selected environment. The short-lived store
+    replays the compacted registry topic and is stopped immediately.
+    """
+    store = SandboxStore(settings)
+    store.start()
+    try:
+        sandbox = store.wait_for(sandbox_id)
+    finally:
+        store.stop()
+    return sandbox or builtin_sandbox(sandbox_id, settings)
+
+
 def new_sandbox_id(name: str) -> str:
     slug = "".join(
         char if char.isalnum() else "-" for char in name.strip().lower()
