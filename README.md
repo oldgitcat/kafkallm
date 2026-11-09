@@ -958,26 +958,6 @@ Prompts, responses, and tool input/output are not captured by default because
 they can contain sensitive data. Set `TELEMETRY_CAPTURE_CONTENT=true` to include
 them in the traces.
 
-### MLflow Assistant
-
-The MLflow Assistant (sparkle icon) is backed by the same agentgateway through
-the in-server MLflow AI Gateway. An endpoint named `assistant` forwards to
-`http://llm-gateway:4000/v1` with the virtual key. Compose enables the gateway
-and allows the private Compose upstream:
-
-```dotenv
-MLFLOW_ENABLE_AI_GATEWAY=true
-MLFLOW_GATEWAY_API_BASE_ALLOW_PRIVATE_IPS=true
-MLFLOW_GATEWAY_API_BASE_ALLOWED_SCHEMES=http,https
-```
-
-The LLM connection, endpoint, and assistant provider selection live in MLflow's
-SQLite volume, not in this repository, so `make reset` removes them. Recreate
-them under **Settings → LLM Connections** (provider OpenAI, API key = the
-virtual key, base URL `http://llm-gateway:4000/v1`) and **Endpoints**, then
-select **MLflow AI Gateway → assistant** in the assistant. The upstream model is
-`GOOSE_MODEL`; the assistant benefits from a model with reliable tool calling.
-
 Trace export happens in the worker/control plane, which can reach MLflow over
 the Compose network. The goose microVM keeps its strict egress isolation: it
 does not export traces directly and reaches only the allowlisting proxy.
