@@ -30,6 +30,7 @@ from kafkallm.telemetry import (
     inject_trace_headers,
     new_trace_id,
     set_content,
+    set_session,
 )
 
 logger = logging.getLogger(__name__)
@@ -140,6 +141,7 @@ class Worker:
                 span.set_attribute("job.id", job.job_id)
                 span.set_attribute("job.run_id", job.run_id)
                 span.set_attribute("kafkallm.trace_id", trace_id)
+                set_session(span, job.job_id)
                 set_content(span, "input.value", job.instruction)
 
                 state, _ = self.state.running(job, worker_id=self.settings.worker_id)

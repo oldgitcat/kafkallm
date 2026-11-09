@@ -23,6 +23,7 @@ from kafkallm.telemetry import (
     inject_trace_headers,
     new_trace_id,
     set_content,
+    set_session,
     shutdown_telemetry,
 )
 from kafkallm.worker import WorkerPool
@@ -286,6 +287,7 @@ def submit(settings: Settings, args: argparse.Namespace) -> None:
             job = Job.model_validate(payload)
             span.set_attribute("job.id", job.job_id)
             span.set_attribute("job.run_id", job.run_id)
+            set_session(span, job.job_id)
             set_content(span, "input.value", job.instruction)
             producer.send(
                 settings.jobs_topic,

@@ -142,7 +142,7 @@ services:
     restart: unless-stopped
 
   mlflow:
-    image: ghcr.io/mlflow/mlflow:v3.6.0
+    image: ghcr.io/mlflow/mlflow:v3.18.0
     command:
       - mlflow
       - server

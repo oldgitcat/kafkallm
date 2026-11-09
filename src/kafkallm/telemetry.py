@@ -79,6 +79,15 @@ def set_content(span: Span, key: str, value: str | None) -> None:
         span.set_attribute(key, value)
 
 
+def set_session(span: Span, session_id: str) -> None:
+    """Group all spans of one job into an MLflow trace session.
+
+    MLflow maps the OpenTelemetry ``session.id`` attribute to the trace metadata
+    key ``mlflow.trace.session``, which drives the Sessions view.
+    """
+    span.set_attribute("session.id", session_id)
+
+
 def set_error(span: Span, error: Exception) -> None:
     span.record_exception(error)
     span.set_status(Status(StatusCode.ERROR, str(error)[:1000]))

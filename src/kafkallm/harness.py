@@ -126,6 +126,7 @@ class Harness:
                 "job.id": job.job_id,
                 "job.run_id": job.run_id,
                 "kafkallm.trace_id": trace_id,
+                "session.id": job.job_id,
                 "worker.id": self.settings.worker_id,
             },
         ) as span:

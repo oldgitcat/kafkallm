@@ -527,6 +527,7 @@ class GooseJobRunner:
             "llm.gateway": self.settings.llm_gateway_url,
             "job.id": job.job_id,
             "job.run_id": job.run_id,
+            "session.id": job.job_id,
         }
         container: Any | None = None
         collector: _LogCollector | None = None

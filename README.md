@@ -867,6 +867,13 @@ Open <http://localhost:5000> and use the **Traces** tab. Each trace includes the
 job span, the goose microVM span, durations, steps, token usage, artifacts, and
 errors.
 
+Every span carries the OpenTelemetry `session.id` attribute set to the job ID.
+MLflow maps that to `mlflow.trace.session`, so the **Sessions** view groups the
+whole job (submit, worker, agent, microVM) under one session per job. A restarted
+job gets a new `job_id` and therefore its own session. Audit events such as
+`job.received`, `goose.started`, and `goose.reflect` are also recorded as span
+events, so they appear in the trace timeline without a separate query.
+
 MLflow receives two kinds of traces:
 
 - **Job traces** from the worker: `job.submit`, `job.handle`, `agent.run`, and
