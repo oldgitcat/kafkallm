@@ -15,6 +15,27 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      kafka:
+        image: apache/kafka:4.4.0
+        env:
+          KAFKA_NODE_ID: 1
+          KAFKA_PROCESS_ROLES: broker,controller
+          KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+          KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+          KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+          KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+          KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+          KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+        ports:
+          - 9092:9092
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
     steps:
       - name: Check out the repository
         uses: actions/checkout@v4
@@ -22,7 +43,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
           cache: pip
 
       - name: Install the package
@@ -35,6 +56,12 @@ jobs:
 
       - name: Run unit tests
         run: pytest
+
+      - name: Run Kafka integration tests
+        if: matrix.python-version == '3.13'
+        env:
+          KAFKA_INTEGRATION_BOOTSTRAP: localhost:9092
+        run: pytest tests/test_kafka_integration.py
 
       - name: Validate Compose configuration
         run: |
