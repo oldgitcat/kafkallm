@@ -169,7 +169,7 @@ services:
         mkdir -p /var/lib/kafkallm/jobs /var/lib/kafkallm/staging \
           /var/lib/kafkallm/skills /var/lib/kafkallm/agents \
           /var/lib/kafkallm/tools/bin /var/lib/kafkallm/config
-        chmod -R 777 /var/lib/kafkallm
+        chmod -R 777 /var/lib/kafkallm 2>/dev/null || true
     volumes:
       - ${KAFKALLM_JOB_ROOT:-/var/lib/kafkallm}:/var/lib/kafkallm:z
     restart: "no"
@@ -236,6 +236,7 @@ services:
       - ALL
 
   agent-worker:
+    image: ${KAFKALLM_APP_IMAGE:-kafkallm-app:latest}
     build: .
     environment: *worker-environment
     init: true
@@ -274,6 +275,7 @@ services:
     stop_grace_period: 30s
 
   gui:
+    image: ${KAFKALLM_APP_IMAGE:-kafkallm-app:latest}
     build: .
     command: ["kafkallm", "gui"]
     environment: *app-environment
@@ -306,6 +308,7 @@ services:
       - ALL
 
   jobctl:
+    image: ${KAFKALLM_APP_IMAGE:-kafkallm-app:latest}
     build: .
     profiles: ["cli"]
     entrypoint: ["kafkallm"]

@@ -187,7 +187,9 @@ def test_export_writes_missing_custom_profiles(tmp_path: Path) -> None:
     written = export_agent_profiles(settings, {"custom": custom, "worker": builtin})
 
     assert written == 1
-    assert (tmp_path / "custom.md").is_file()
+    profile = tmp_path / "custom.md"
+    assert profile.is_file()
+    assert (profile.stat().st_mode & 0o777) == 0o666
     assert not (tmp_path / "worker.md").exists()
 
     (tmp_path / "custom.md").write_text("keep me", encoding="utf-8")

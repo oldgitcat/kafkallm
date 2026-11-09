@@ -3,12 +3,15 @@ SHELL := /usr/bin/env bash
 
 VENV ?= .venv
 PYTHON ?= python3
-COMPOSE ?= docker compose
+ENGINE ?= podman
+COMPOSE ?= $(ENGINE) compose
+CONTAINER ?= $(ENGINE)
+APP_IMAGE ?= kafkallm-app:latest
 PYTEST := $(VENV)/bin/pytest
 RUFF := $(VENV)/bin/ruff
 VENV_STAMP := $(VENV)/.kafkallm-installed
 
-.PHONY: help setup doctor bootstrap network images rea-image up down restart logs ps test lint format venv clean reset
+.PHONY: help setup doctor bootstrap network images app-image rea-image up down restart logs ps test lint format venv clean reset
 
 help: ## Show this help
 	@printf "%-14s %s\n" "target" "description"
@@ -28,16 +31,21 @@ network: ## Create the isolated IPv6 Podman network (run once per host)
 images: ## Build the default goose job image into rootless Podman
 	./scripts/build-goose-image.sh
 
+app-image: ## Build the worker/GUI image with the selected engine
+	$(CONTAINER) build -t $(APP_IMAGE) .
+
 rea-image: ## Build the optional REA + Ghidra job image
 	./scripts/build-rea-image.sh
 
-up: ## Start the control plane with persistent storage
-	$(COMPOSE) --profile storage up -d --build --remove-orphans
+up: ## Build the app image and start the control plane
+	$(CONTAINER) build -t $(APP_IMAGE) .
+	$(COMPOSE) --profile storage up -d --remove-orphans
 
 down: ## Stop the stack without deleting volumes
 	$(COMPOSE) --profile storage down --remove-orphans
 
-restart: ## Recreate the stack with the current .env
+restart: ## Rebuild the app image and recreate the stack
+	$(CONTAINER) build -t $(APP_IMAGE) .
 	$(COMPOSE) --profile storage up -d --force-recreate --remove-orphans
 
 logs: ## Follow logs for the whole stack

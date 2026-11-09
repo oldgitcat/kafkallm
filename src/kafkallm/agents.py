@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -264,6 +265,9 @@ def write_agent_profile(settings: Settings, agent: AgentSpec) -> Path:
     temporary = path.with_name(f".{path.name}.tmp")
     temporary.write_text(agent_profile_text(agent), encoding="utf-8")
     temporary.replace(path)
+    # The GUI runs under rootless Podman, where its UID maps to a host subuid.
+    # A world-writable profile lets the host user edit the file directly.
+    os.chmod(path, 0o666)
     return path
 
 

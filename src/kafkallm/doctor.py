@@ -148,24 +148,23 @@ def host_checks(
         )
     )
 
-    checks.append(_command_check("Docker", "docker", ["--version"]))
     checks.append(_command_check("Podman", "podman", ["--version"]))
 
-    if shutil.which("docker") is not None:
-        compose = _run(["docker", "compose", "version"], timeout=10)
+    if shutil.which("podman") is not None:
+        compose = _run(["podman", "compose", "version"], timeout=10)
         checks.append(
             Check(
-                "Docker Compose",
+                "Podman Compose",
                 "ok" if compose is not None and compose.returncode == 0 else "fail",
                 (
                     (compose.stdout or compose.stderr).strip()
                     if compose
                     else "not available"
                 ),
-                "Install the Docker Compose plugin.",
+                "Install a Compose provider such as the Docker Compose plugin.",
             )
         )
-        config = _run(["docker", "compose", "config", "--quiet"], timeout=15)
+        config = _run(["podman", "compose", "config", "--quiet"], timeout=15)
         config_ok = config is not None and config.returncode == 0
         checks.append(
             Check(
@@ -183,6 +182,16 @@ def host_checks(
                 "Fix compose.yaml or .env.",
             )
         )
+
+    docker = shutil.which("docker")
+    checks.append(
+        Check(
+            "Docker (optional)",
+            "ok" if docker is not None else "warn",
+            "available" if docker is not None else "not installed",
+            "Only needed for 'make ENGINE=docker ...'.",
+        )
+    )
 
     kvm = Path("/dev/kvm")
     kvm_ok = kvm.exists() and os.access(kvm, os.R_OK | os.W_OK)

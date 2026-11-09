@@ -72,6 +72,7 @@ GUI ──→ jobs.in, jobs.state, agents.state, sandboxes.state, agent.events
 | Follow logs | `make logs` |
 | Run tests / lint | `make test` / `make lint` |
 | Delete all Kafka, trace, and storage data | `make reset` |
+| Use Docker for the control plane | `make ENGINE=docker up` |
 
 | Service | URL |
 |---|---|
@@ -138,8 +139,10 @@ compacted; the other topics expire after `KAFKA_TOPIC_RETENTION_MS`.
 ### Prerequisites
 
 - Linux with KVM (`/dev/kvm`) and virtualization enabled in the BIOS
-- Docker with the Compose plugin for the control plane
-- Rootless Podman with the `krun` runtime (`crun-krun`)
+- Rootless Podman with a Compose provider (`podman compose`) and the `krun`
+  runtime (`crun-krun`)
+- Optional: Docker with the Compose plugin, when you prefer
+  `make ENGINE=docker ...`
 - Python 3.12+ and `make` for the host-side scripts
 - An OpenRouter API key
 - Network access while building the job images
@@ -211,7 +214,8 @@ The Make targets wrap the scripts in this repository:
 ./scripts/init-job-network.sh
 ./scripts/build-goose-image.sh
 ./scripts/build-rea-image.sh   # optional
-docker compose --profile storage up -d --build
+podman build -t kafkallm-app:latest .
+podman compose --profile storage up -d
 ./scripts/doctor.sh
 ```
 
@@ -222,50 +226,50 @@ docker compose --profile storage up -d --build
 
 ```bash
 # Submit a job
-docker compose run --rm jobctl submit "Say hello"
+podman compose run --rm jobctl submit "Say hello"
 
 # Submit a job with a local file or binary (mounted into the CLI container)
-docker compose run --rm -v "$PWD:/data:ro" jobctl submit \
+podman compose run --rm -v "$PWD:/data:ro" jobctl submit \
   "Inspect the uploaded binary" --upload /data/tool.bin
 
 # Submit into the reverse-engineering sandbox (REA + Ghidra)
-docker compose run --rm -v "$PWD:/data:ro" jobctl submit \
+podman compose run --rm -v "$PWD:/data:ro" jobctl submit \
   "Reverse engineer this binary and summarize its behavior" \
   --sandbox reverse --upload /data/tool.bin
 
 # Pull and run an image that is not in the sandbox registry
-docker compose run --rm jobctl submit "Say hello" \
+podman compose run --rm jobctl submit "Say hello" \
   --sandbox adhoc --image ghcr.io/example/agent:1.2.3
 
 # Submit without the learning pass (skill improvement)
-docker compose run --rm jobctl submit "Say hello" --no-reflect
+podman compose run --rm jobctl submit "Say hello" --no-reflect
 
 # Submit a complete Job JSON payload from a file or stdin
-docker compose run --rm -T jobctl submit --job-json - < job.json
+podman compose run --rm -T jobctl submit --job-json - < job.json
 
 # Print the exact Job JSON schema (job, agent, or sandbox)
-docker compose run --rm jobctl schema job
+podman compose run --rm jobctl schema job
 
 # Read results
-docker compose run --rm jobctl results --from-beginning --idle-timeout 5
+podman compose run --rm jobctl results --from-beginning --idle-timeout 5
 
 # Read materialized state
-docker compose run --rm jobctl states --from-beginning --idle-timeout 5
+podman compose run --rm jobctl states --from-beginning --idle-timeout 5
 
 # Read audit events
-docker compose run --rm jobctl events --from-beginning --idle-timeout 5
+podman compose run --rm jobctl events --from-beginning --idle-timeout 5
 
 # Read live activity (thinking, tool calls, stderr)
-docker compose run --rm jobctl logs --from-beginning --idle-timeout 5
+podman compose run --rm jobctl logs --from-beginning --idle-timeout 5
 ```
 
 Worker and GUI logs:
 
 ```bash
-docker compose logs -f agent-worker
-docker compose logs -f gui
-docker compose logs -f llm-gateway
-docker compose logs -f mlflow
+podman compose logs -f agent-worker
+podman compose logs -f gui
+podman compose logs -f llm-gateway
+podman compose logs -f mlflow
 ```
 
 The Kafka UI runs at <http://localhost:8080>. MLflow runs at
@@ -305,7 +309,7 @@ The Kafka UI runs at <http://localhost:8080>. MLflow runs at
 
 6. goose talks the OpenAI protocol to `http://host.containers.internal:8091`,
    which resolves to the proxy. The proxy forwards only to agentgateway on the
-   host; the job cannot reach the internet, the LAN, Docker Compose services, or
+   host; the job cannot reach the internet, the LAN, Compose services, or
    the Podman API. agentgateway verifies the virtual key, replaces it with the
    OpenRouter key, and streams the upstream response back.
 7. The goosetown orchestrator decomposes the job, dispatches parallel subagents
@@ -359,7 +363,7 @@ The `llm-gateway` Compose service runs
   `OPENAI_HOST=http://host.containers.internal:8091`. goose 1.57 calls
   `/v1/chat/completions`, which agentgateway serves.
 - agentgateway is the only upstream the job proxy can reach. The job network
-  has no route to the internet, the LAN, the Docker networks, or other Podman
+  has no route to the internet, the LAN, other container networks, or other Podman
   services.
 - agentgateway stores the provider key only in its process environment and
   never logs it. Rotate the virtual key without rotating the provider key by
@@ -547,7 +551,7 @@ registry at run time.
 The CLI accepts the same registry IDs:
 
 ```bash
-docker compose run --rm jobctl submit "Analyze the sample" --sandbox malware-analysis
+podman compose run --rm jobctl submit "Analyze the sample" --sandbox malware-analysis
 ```
 
 New agent profiles follow the same pattern: **Goosetown agents → + New agent**,
@@ -726,7 +730,7 @@ shipped in the image are available.
 Use it from the GUI (sandbox selector) or the CLI:
 
 ```bash
-docker compose run --rm -v "$PWD:/data:ro" jobctl submit \
+podman compose run --rm -v "$PWD:/data:ro" jobctl submit \
   "Analyze the uploaded binary under /workspace/inputs with REA and explain its network behavior" \
   --sandbox reverse --upload /data/tool.bin
 ```
@@ -823,25 +827,32 @@ To inspect the exact sandbox interactively, without a job and without network:
 ./scripts/sandbox-shell.sh
 ```
 
-## Why Docker and Podman
+## Why Podman
 
-The control plane runs under Docker Compose; the job microVMs run under Podman.
+Both the control plane and the job microVMs run under **rootless Podman** by
+default. `make up` builds the worker/GUI image with `podman build` and runs the
+stack with `podman compose`.
 
 - **Podman runs the microVMs.** Only Podman's `crun` krun runtime can start a
   libkrun microVM, selected through the `run.oci.handler=krun` annotation.
   Docker's runc has no krun handler.
-- **Docker runs the control plane.** The worker, GUI, Apache Kafka, RustFS,
-  MLflow, and the socket proxy are ordinary containers.
+- **The control plane also runs under rootless Podman.** The worker, GUI,
+  Apache Kafka, RustFS, MLflow, the Kafka UI, and the socket proxy are ordinary
+  containers. One engine means one image store.
 - **Rootless Podman is required.** Rootful Podman can break libkrun's TSI
   networking, leaving the microVMs without an outbound path and stalling every
   job on the LLM provider. Use the rootless socket.
 
-The control plane stays on Docker Compose because some host interfaces expose
+The control plane uses Podman Compose because some host interfaces expose
 unusual netmasks (for example a `/0` netmask from a mobile hotspot) that make
 netavark reject every IPv4 bridge subnet. Gänsestall therefore writes an
 IPv6-only internal job network directly into rootless Podman's network store
-instead of asking netavark to derive one. Docker's existing bridges are
+instead of asking netavark to derive one. Other container bridges are
 unaffected.
+
+Docker remains supported for the control plane: run
+`make ENGINE=docker up`. The job microVMs still use rootless Podman, so both
+engines must be installed for that combination.
 
 The worker reaches the rootless Podman API through the internal `podman-proxy`,
 which shares the worker's network namespace and listens on loopback only. The
@@ -858,7 +869,7 @@ Each job runs in its own KVM microVM.
 | Privilege escalation | `no-new-privileges:true` |
 | Resources | `GOOSE_JOB_RAM_MIB` (default `2048`), `GOOSE_JOB_CPUS` (default `2`), `GOOSE_JOB_PIDS_LIMIT` (default `512`) |
 | Filesystem | Disposable job directory, tmpfs `/opt/data`, read-only tools/config mounts, writable skills mount |
-| Network | Attached only to the IPv6-only `kafkallm-jobs` internal network. The allowlisting proxy is the only peer, and it forwards only to agentgateway. Internet, LAN, Docker Compose services, other Podman services, and the Podman API are unreachable |
+| Network | Attached only to the IPv6-only `kafkallm-jobs` internal network. The allowlisting proxy is the only peer, and it forwards only to agentgateway. Internet, LAN, Compose services, other Podman services, and the Podman API are unreachable |
 | Credentials | The real provider key stays in agentgateway. The job gets a rotatable virtual key that is valid only through the gateway |
 | Tools | No browser, no `curl`/`wget` in the image; the prompt forbids web and other network use |
 | Lifetime | The microVM and its job directory are removed after the job |
@@ -942,7 +953,7 @@ Trace export happens in the worker/control plane, which can reach MLflow over
 the Compose network. The goose microVM keeps its strict egress isolation: it
 does not export traces directly and reaches only the allowlisting proxy.
 
-If you run the CLI on the host instead of `docker compose run --rm jobctl`, set
+If you run the CLI on the host instead of `podman compose run --rm jobctl`, set
 `MLFLOW_TRACKING_URI=http://localhost:5000`. The Compose name `mlflow` is not
 resolvable from the host, so the `job.submit` span would be dropped and the
 trace would stay `IN_PROGRESS` in the MLflow UI. GUI submissions are unaffected.
@@ -980,7 +991,7 @@ curl -fL "http://localhost:8090/api/jobs/<job_id>/artifacts/0" -o artifact.bin
 Start with the storage profile:
 
 ```bash
-docker compose --profile storage up -d --build
+podman compose --profile storage up -d --build
 ```
 
 ```dotenv
@@ -999,7 +1010,7 @@ These credentials are for local development only.
 Submit a job with an existing S3 object:
 
 ```bash
-docker compose run --rm jobctl submit \
+podman compose run --rm jobctl submit \
   "Read the input file and summarize it" \
   --input-file jobs/example.txt
 ```
@@ -1016,7 +1027,7 @@ Upload local files or binaries:
 - **CLI:**
 
   ```bash
-  docker compose run --rm -v "$PWD:/data:ro" jobctl submit \
+  podman compose run --rm -v "$PWD:/data:ro" jobctl submit \
     "Inspect the uploaded files" \
     --upload /data/data.csv \
     --upload /data/tool.bin
@@ -1048,7 +1059,7 @@ WORKER_CONCURRENCY=2
 ```
 
 You can also add more worker containers with
-`docker compose up -d --scale agent-worker=2`. Do not set both higher than the
+`podman compose up -d --scale agent-worker=2`. Do not set both higher than the
 number of partitions; extra consumers remain idle.
 
 ### Stopping jobs
@@ -1092,7 +1103,7 @@ retention (`KAFKA_TOPIC_RETENTION_MS`, seven days by default).
 ## Multiple workers
 
 ```bash
-docker compose up -d --scale agent-worker=2
+podman compose up -d --scale agent-worker=2
 ```
 
 Workers share the `agent-workers` consumer group. Each worker can run
@@ -1119,7 +1130,7 @@ slots. The shared skills directory uses last-writer-wins semantics.
 Stop without deleting volumes:
 
 ```bash
-docker compose down
+podman compose down
 ```
 
 ### Upgrading from Redpanda
@@ -1170,7 +1181,7 @@ Start with:
 make doctor
 ```
 
-It checks Python, Docker Compose, Podman, the rootless socket, KVM, the job
+It checks Python, Podman and Podman Compose, the rootless socket, KVM, the job
 network, the job image, the required `.env` values, the gateway, the GUI, and
 OpenRouter connectivity. Use `./scripts/doctor.sh --offline` to skip network
 checks.
@@ -1185,15 +1196,15 @@ Common failures:
 | `Goose job image` warns | Run `make images` |
 | Worker waits for the gateway | Check `OPENROUTER_API_KEY` in `.env`, then `make restart` |
 | Gateway rejects the virtual key | Rerun `make setup`, then `make restart` |
-| `docker compose config` fails | Fix the reported `.env` or `compose.yaml` value |
+| `podman compose config` fails | Fix the reported `.env` or `compose.yaml` value |
 
 Logs:
 
 ```bash
 make logs
-docker compose logs -f agent-worker
-docker compose logs -f gui
-docker compose logs -f llm-gateway
+podman compose logs -f agent-worker
+podman compose logs -f gui
+podman compose logs -f llm-gateway
 ```
 
 ## Repository layout
