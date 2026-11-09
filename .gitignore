@@ -14,3 +14,6 @@ build/
 # Stray directories from a mis-parsed podman invocation.
 --time=*/
 .DS_Store
+
+# Local screenshots
+Screenshot*.png
