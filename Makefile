@@ -39,14 +39,13 @@ rea-image: ## Build the optional REA + Ghidra job image
 
 up: ## Build the app image and start the control plane
 	$(CONTAINER) build -t $(APP_IMAGE) .
+	-$(COMPOSE) --profile storage down --remove-orphans
 	$(COMPOSE) --profile storage up -d --remove-orphans
 
 down: ## Stop the stack without deleting volumes
 	$(COMPOSE) --profile storage down --remove-orphans
 
-restart: ## Rebuild the app image and recreate the stack
-	$(CONTAINER) build -t $(APP_IMAGE) .
-	$(COMPOSE) --profile storage up -d --force-recreate --remove-orphans
+restart: up ## Rebuild the app image and recreate the stack
 
 logs: ## Follow logs for the whole stack
 	$(COMPOSE) logs -f --tail=100

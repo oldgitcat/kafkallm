@@ -928,12 +928,21 @@ job gets a new `job_id` and therefore its own session. Audit events such as
 `job.received`, `goose.started`, and `goose.reflect` are also recorded as span
 events, so they appear in the trace timeline without a separate query.
 
+Goose's live activity is recorded as span events on `goose.job.vm.run`:
+thinking, tool calls, tool results, assistant text, and token usage. The trace
+timeline therefore shows what the agent did, not just the final result. Events
+are truncated and capped per span. Set `TELEMETRY_CAPTURE_CONTENT=true` to also
+attach the prompt and result as span inputs/outputs; otherwise the Input/Output
+columns stay empty.
+
 MLflow receives two kinds of traces:
 
 - **Job traces** from the worker: `job.submit`, `job.handle`, `agent.run`, and
   `goose.job.vm.run`, with steps, token usage, artifacts, and errors.
 - **LLM request traces** from agentgateway: request model, status, duration, and
-  token usage for every call that passes through the gateway.
+  token usage for every call that passes through the gateway. These are separate
+  traces without a session ID, so they appear as extra rows in the Sessions view
+  and are not grouped into the job session.
 
 MLflow is configured with:
 

@@ -242,6 +242,38 @@ class WorkerShutdown(GooseJobRuntimeError):
     pass
 
 
+class _SpanActivity:
+    """Record goose stream activity as span events for the trace timeline.
+
+    Thinking chunks, tool calls, and tool results already feed the live log; the
+    same records become OTel span events so MLflow shows them in the trace.
+    """
+
+    _IGNORED_PREFIXES = ("stderr", "system")
+
+    def __init__(self, span: Any, limit: int = 400, text_limit: int = 4000) -> None:
+        self.span = span
+        self.limit = limit
+        self.text_limit = text_limit
+        self._count = 0
+        self._lock = threading.Lock()
+
+    def __call__(self, kind: str, text: str) -> None:
+        if kind.startswith(self._IGNORED_PREFIXES) or not self.span.is_recording():
+            return
+        with self._lock:
+            if self._count >= self.limit:
+                return
+            self._count += 1
+        self.span.add_event(
+            kind,
+            attributes={
+                "kafkallm.kind": kind,
+                "kafkallm.text": text[: self.text_limit],
+            },
+        )
+
+
 class _LogCollector:
     """Tail the job workspace and turn goose stream-json into live activity."""
 
@@ -551,7 +583,13 @@ class GooseJobRunner:
                         f"container {container.id[:12]} started "
                         f"(image={image}, sandbox={job.sandbox})",
                     )
-                    collector = _LogCollector(workdir, log)
+                    activity = _SpanActivity(span)
+
+                    def publish_activity(kind: str, text: str) -> None:
+                        log(kind, text)
+                        activity(kind, text)
+
+                    collector = _LogCollector(workdir, publish_activity)
                     collector.start()
                 if audit:
                     audit.emit(

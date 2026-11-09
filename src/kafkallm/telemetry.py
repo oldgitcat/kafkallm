@@ -6,7 +6,7 @@ from typing import Any
 from opentelemetry import propagate, trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace import SpanLimits, TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace import Span, Status, StatusCode
 
@@ -30,7 +30,12 @@ def configure_telemetry(settings: Settings) -> None:
             "service.instance.id": settings.worker_id,
         }
     )
-    provider = TracerProvider(resource=resource)
+    # Goose stream activity is recorded as span events, so allow more than the
+    # SDK default of 128 events per span.
+    provider = TracerProvider(
+        resource=resource,
+        span_limits=SpanLimits(max_events=512),
+    )
     if settings.mlflow_enabled:
         endpoint = _traces_endpoint(settings.mlflow_tracking_uri)
         exporter = OTLPSpanExporter(

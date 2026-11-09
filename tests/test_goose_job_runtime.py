@@ -8,6 +8,11 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from opentelemetry.sdk.trace import SpanLimits, TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+    InMemorySpanExporter,
+)
 
 from kafkallm.goose_job_runtime import (
     _VM_RUN_SCRIPT,
@@ -15,6 +20,7 @@ from kafkallm.goose_job_runtime import (
     GooseJobRuntimeError,
     JobCancelledError,
     _parse_bytes,
+    _SpanActivity,
     _stream_event_log_records,
     parse_goose_output,
 )
@@ -1161,3 +1167,21 @@ def test_parse_bytes() -> None:
     assert _parse_bytes("4g") == 4 * 1024**3
     assert _parse_bytes("512m") == 512 * 1024**2
     assert _parse_bytes("1024") == 1024
+
+
+def test_span_activity_records_bounded_events() -> None:
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider(span_limits=SpanLimits(max_events=512))
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    span = provider.get_tracer("test").start_span("goose.job.vm.run")
+
+    activity = _SpanActivity(span, limit=2)
+    activity("goose.thinking", "first")
+    activity("goose.tool", '{"name": "delegate"}')
+    activity("goose.assistant", "dropped by the limit")
+    activity("stderr", "not a trace event")
+    span.end()
+
+    events = exporter.get_finished_spans()[0].events
+    assert [event.name for event in events] == ["goose.thinking", "goose.tool"]
+    assert events[0].attributes["kafkallm.text"] == "first"
