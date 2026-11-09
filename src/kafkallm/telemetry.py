@@ -28,16 +28,9 @@ def configure_telemetry(settings: Settings) -> None:
             "service.name": settings.agent_name,
             "service.version": __version__,
             "service.instance.id": settings.worker_id,
-            "openinference.project.name": settings.phoenix_project_name,
         }
     )
     provider = TracerProvider(resource=resource)
-    if settings.phoenix_enabled:
-        endpoint = _traces_endpoint(settings.phoenix_collector_endpoint)
-        exporter = OTLPSpanExporter(endpoint=endpoint, timeout=2)
-        provider.add_span_processor(
-            BatchSpanProcessor(exporter, schedule_delay_millis=500)
-        )
     if settings.mlflow_enabled:
         endpoint = _traces_endpoint(settings.mlflow_tracking_uri)
         exporter = OTLPSpanExporter(

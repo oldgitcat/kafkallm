@@ -108,9 +108,6 @@ class Settings:
     s3_secret_access_key: str
     agent_name: str
     telemetry_capture_content: bool
-    phoenix_enabled: bool
-    phoenix_collector_endpoint: str
-    phoenix_project_name: str
     mlflow_enabled: bool
     mlflow_tracking_uri: str
     mlflow_experiment_id: str
@@ -254,15 +251,7 @@ class Settings:
             s3_access_key_id=os.getenv("S3_ACCESS_KEY_ID", ""),
             s3_secret_access_key=os.getenv("S3_SECRET_ACCESS_KEY", ""),
             agent_name=os.getenv("AGENT_NAME", "agent-worker"),
-            telemetry_capture_content=_bool_env(
-                "TELEMETRY_CAPTURE_CONTENT",
-                _bool_env("PHOENIX_CAPTURE_CONTENT", False),
-            ),
-            phoenix_enabled=_bool_env("PHOENIX_ENABLED", False),
-            phoenix_collector_endpoint=os.getenv(
-                "PHOENIX_COLLECTOR_ENDPOINT", "http://localhost:6006"
-            ),
-            phoenix_project_name=os.getenv("PHOENIX_PROJECT_NAME", "kafkallm"),
+            telemetry_capture_content=_bool_env("TELEMETRY_CAPTURE_CONTENT", False),
             mlflow_enabled=_bool_env("MLFLOW_ENABLED", True),
             mlflow_tracking_uri=os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000"),
             mlflow_experiment_id=os.getenv("MLFLOW_EXPERIMENT_ID", "0"),

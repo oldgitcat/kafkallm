@@ -5,8 +5,11 @@ from pathlib import Path
 
 from kafkallm.agents import (
     AgentStore,
+    agent_profile_text,
     agent_spec_from_file,
+    default_agent_ids,
     default_agents,
+    export_agent_profiles,
     import_agents_from_dir,
     new_agent_id,
 )
@@ -116,8 +119,8 @@ def test_agent_profile_without_front_matter_is_skipped(tmp_path: Path) -> None:
 
 
 def test_import_agents_from_dir_publishes_markdown_profiles(tmp_path: Path) -> None:
-    (tmp_path / "reviewer.md").write_text(
-        "---\nname: Reviewer\nrole: reviewer\n---\nReview things.\n",
+    (tmp_path / "security-reviewer.md").write_text(
+        "---\nname: Security reviewer\nrole: reviewer\n---\nReview things.\n",
         encoding="utf-8",
     )
     (tmp_path / "broken.md").write_text("no front matter", encoding="utf-8")
@@ -132,4 +135,61 @@ def test_import_agents_from_dir_publishes_markdown_profiles(tmp_path: Path) -> N
     imported = import_agents_from_dir(settings, Publisher())  # type: ignore[arg-type]
 
     assert imported == 1
-    assert [agent.agent_id for agent in saved] == ["reviewer"]
+    assert [agent.agent_id for agent in saved] == ["security-reviewer"]
+
+
+def test_agent_profile_text_round_trips(tmp_path: Path) -> None:
+    agent = AgentSpec(
+        agent_id="custom",
+        name='Quote " and colon: here',
+        role="reviewer",
+        description="First line\nSecond line",
+        instructions="Do the thing.",
+        skills=["alpha", "beta"],
+        enabled=False,
+    )
+    path = tmp_path / "custom.md"
+    path.write_text(agent_profile_text(agent), encoding="utf-8")
+
+    parsed = agent_spec_from_file(path)
+
+    assert parsed is not None
+    assert parsed.agent_id == "custom"
+    assert parsed.name == agent.name
+    assert parsed.description == agent.description
+    assert parsed.instructions == agent.instructions
+    assert parsed.skills == ["alpha", "beta"]
+    assert parsed.enabled is False
+
+
+def test_import_skips_builtin_agent_ids(tmp_path: Path) -> None:
+    (tmp_path / "worker.md").write_text(
+        "---\nname: My worker\nrole: worker\n---\nMine.\n",
+        encoding="utf-8",
+    )
+    settings = replace(Settings.from_env(), goose_job_agents_dir=str(tmp_path))
+    saved: list[AgentSpec] = []
+
+    class Publisher:
+        def save(self, agent: AgentSpec) -> None:
+            saved.append(agent)
+
+    assert import_agents_from_dir(settings, Publisher()) == 0  # type: ignore[arg-type]
+    assert saved == []
+    assert "worker" in default_agent_ids()
+
+
+def test_export_writes_missing_custom_profiles(tmp_path: Path) -> None:
+    settings = replace(Settings.from_env(), goose_job_agents_dir=str(tmp_path))
+    custom = AgentSpec(agent_id="custom", name="Custom", role="custom")
+    builtin = next(agent for agent in default_agents() if agent.agent_id == "worker")
+
+    written = export_agent_profiles(settings, {"custom": custom, "worker": builtin})
+
+    assert written == 1
+    assert (tmp_path / "custom.md").is_file()
+    assert not (tmp_path / "worker.md").exists()
+
+    (tmp_path / "custom.md").write_text("keep me", encoding="utf-8")
+    assert export_agent_profiles(settings, {"custom": custom}) == 0
+    assert (tmp_path / "custom.md").read_text(encoding="utf-8") == "keep me"

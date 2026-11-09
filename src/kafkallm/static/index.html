@@ -631,6 +631,7 @@
           <label for="agent-instructions">Instructions</label>
           <textarea id="agent-instructions" class="small" placeholder="Role-specific instructions passed to the delegate."></textarea>
           <label class="check"><input id="agent-enabled" type="checkbox" checked> Enabled</label>
+          <div class="hint">Custom agents are saved as markdown profiles in the configured agents directory. The five built-in goosetown roles are read-only.</div>
           <div class="agent-actions">
             <button id="agent-save" type="submit">Save agent</button>
             <button id="agent-reset" type="button" class="secondary">New</button>
@@ -880,13 +881,15 @@
       container.innerHTML = state.agents.map((agent) => `
         <div class="agent-row ${agent.enabled ? "" : "disabled"}">
           <div class="info">
-            <div class="name">${esc(agent.name)}</div>
+            <div class="name">${esc(agent.name)}${agent.builtin ? ` <span class="muted">· built-in</span>` : ""}</div>
             <div class="meta">${esc(agent.role)} · ${esc((agent.skills || []).join(", ") || "no skills")}</div>
             <div class="meta">${esc(agent.description || "")}</div>
           </div>
           <div class="actions">
-            <button type="button" data-edit="${esc(agent.agent_id)}">Edit</button>
-            ${agent.enabled ? `<button type="button" data-disable="${esc(agent.agent_id)}">Disable</button>` : ""}
+            ${agent.builtin ? `<span class="muted">read-only</span>` : `
+              <button type="button" data-edit="${esc(agent.agent_id)}">Edit</button>
+              ${agent.enabled ? `<button type="button" data-disable="${esc(agent.agent_id)}">Disable</button>` : ""}
+            `}
           </div>
         </div>`).join("");
       for (const button of container.querySelectorAll("[data-edit]")) {

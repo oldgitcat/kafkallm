@@ -68,10 +68,6 @@ x-app-environment: &app-environment
   S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-kafkallm-secret}
   AGENT_NAME: ${AGENT_NAME:-agent-worker}
   TELEMETRY_CAPTURE_CONTENT: ${TELEMETRY_CAPTURE_CONTENT:-false}
-  PHOENIX_ENABLED: ${PHOENIX_ENABLED:-false}
-  PHOENIX_COLLECTOR_ENDPOINT: ${PHOENIX_COLLECTOR_ENDPOINT:-http://phoenix:6006}
-  PHOENIX_PROJECT_NAME: ${PHOENIX_PROJECT_NAME:-kafkallm}
-  PHOENIX_CAPTURE_CONTENT: ${PHOENIX_CAPTURE_CONTENT:-false}
   # MLflow is the default observability backend. It ingests OTLP/HTTP traces.
   MLFLOW_ENABLED: ${MLFLOW_ENABLED:-true}
   MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://mlflow:5000}
@@ -161,19 +157,6 @@ services:
       - "127.0.0.1:${MLFLOW_UI_PORT:-5000}:5000"
     volumes:
       - mlflow-data:/mlflow
-    restart: unless-stopped
-
-  phoenix:
-    image: arizephoenix/phoenix:21.0.0
-    environment:
-      PHOENIX_WORKING_DIR: /mnt/data
-      PHOENIX_ENABLE_AUTH: "false"
-      PHOENIX_TELEMETRY_ENABLED: "false"
-    ports:
-      - "127.0.0.1:${PHOENIX_UI_PORT:-6006}:6006"
-      - "127.0.0.1:${OTLP_GRPC_PORT:-4317}:4317"
-    volumes:
-      - phoenix-data:/mnt/data
     restart: unless-stopped
 
   kafkallm-job-init:
@@ -285,8 +268,8 @@ services:
     command: ["kafkallm", "gui"]
     environment: *app-environment
     volumes:
-      # Read-only access to the drop-in agent profiles.
-      - ${KAFKALLM_JOB_ROOT:-/var/lib/kafkallm}:/var/lib/kafkallm:ro,z
+      # The GUI reads and writes custom agent profiles here.
+      - ${GOOSE_JOB_AGENTS_DIR:-/var/lib/kafkallm/agents}:${GOOSE_JOB_AGENTS_DIR:-/var/lib/kafkallm/agents}:z
     ports:
       - "127.0.0.1:${GUI_PORT:-8090}:${GUI_PORT:-8090}"
     depends_on:
@@ -346,5 +329,4 @@ services:
 volumes:
   kafka-data:
   rustfs-data:
-  phoenix-data:
   mlflow-data:

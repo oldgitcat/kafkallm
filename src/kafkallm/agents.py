@@ -97,6 +97,11 @@ def default_agents() -> list[AgentSpec]:
     ]
 
 
+def default_agent_ids() -> set[str]:
+    """IDs of the built-in flock; these cannot be edited or overridden."""
+    return {agent.agent_id for agent in default_agents()}
+
+
 def new_agent_id(name: str) -> str:
     slug = "".join(
         char if char.isalnum() else "-" for char in name.strip().lower()
@@ -202,17 +207,24 @@ def agent_spec_from_file(path: Path) -> AgentSpec | None:
 
 
 def import_agents_from_dir(settings: Settings, publisher: AgentPublisher) -> int:
-    """Upsert agent profiles from ``GOOSE_JOB_AGENTS_DIR``.
+    """Upsert custom agent profiles from ``GOOSE_JOB_AGENTS_DIR``.
 
-    The filename (without ``.md``) is the ``agent_id``. Files are the
-    authoritative source for the IDs they define, so they win over an existing
-    registry entry on every GUI start. Agents without a file are untouched.
+    The filename (without ``.md``) is the ``agent_id``. Built-in roles are
+    skipped: they are fixed in code and cannot be overridden by files. Files are
+    the durable source for custom agents, so they win over the registry entry
+    with the same ID.
     """
     directory = Path(settings.goose_job_agents_dir)
     if not directory.is_dir():
         return 0
+    builtin = default_agent_ids()
     imported = 0
     for path in sorted(directory.glob("*.md")):
+        if path.stem in builtin:
+            logger.warning(
+                "Ignoring agent profile %s: %s is a built-in agent", path, path.stem
+            )
+            continue
         agent = agent_spec_from_file(path)
         if agent is None:
             continue
@@ -221,6 +233,67 @@ def import_agents_from_dir(settings: Settings, publisher: AgentPublisher) -> int
     if imported:
         logger.info("Imported %s agent profile(s) from %s", imported, directory)
     return imported
+
+
+def agent_profile_text(agent: AgentSpec) -> str:
+    """Render an agent profile in the markdown format the importer reads."""
+    lines = [
+        "---",
+        f"name: {json.dumps(agent.name)}",
+        f"role: {json.dumps(agent.role)}",
+        f"description: {json.dumps(agent.description)}",
+    ]
+    if agent.skills:
+        lines.append("skills:")
+        lines.extend(f"  - {json.dumps(skill)}" for skill in agent.skills)
+    else:
+        lines.append("skills: []")
+    lines.append(f"enabled: {'true' if agent.enabled else 'false'}")
+    lines.extend(["---", "", agent.instructions.strip(), ""])
+    return "\n".join(lines)
+
+
+def agent_profile_path(settings: Settings, agent_id: str) -> Path:
+    return Path(settings.goose_job_agents_dir) / f"{agent_id}.md"
+
+
+def write_agent_profile(settings: Settings, agent: AgentSpec) -> Path:
+    """Write one custom agent profile atomically and return its path."""
+    path = agent_profile_path(settings, agent.agent_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(agent_profile_text(agent), encoding="utf-8")
+    temporary.replace(path)
+    return path
+
+
+def export_agent_profiles(
+    settings: Settings,
+    agents: dict[str, AgentSpec] | None = None,
+) -> int:
+    """Create a profile file for custom registry agents that have none yet.
+
+    Built-in roles are never written. Existing files are left untouched, so the
+    directory remains the durable source for custom agents.
+    """
+    if agents is None:
+        agents = _existing_agents(settings)
+    builtin = default_agent_ids()
+    written = 0
+    for agent_id, agent in agents.items():
+        if agent_id in builtin:
+            continue
+        if agent_profile_path(settings, agent_id).exists():
+            continue
+        write_agent_profile(settings, agent)
+        written += 1
+    if written:
+        logger.info(
+            "Exported %s custom agent profile(s) to %s",
+            written,
+            settings.goose_job_agents_dir,
+        )
+    return written
 
 
 class AgentPublisher:
@@ -236,7 +309,8 @@ class AgentPublisher:
         )
 
 
-def _existing_agent_ids(settings: Settings, timeout: float = 2.0) -> set[str]:
+def _existing_agents(settings: Settings, timeout: float = 2.0) -> dict[str, AgentSpec]:
+    """Read the compacted agent registry from the beginning."""
     consumer = Consumer(
         {
             "bootstrap.servers": settings.kafka_bootstrap_servers,
@@ -246,7 +320,7 @@ def _existing_agent_ids(settings: Settings, timeout: float = 2.0) -> set[str]:
         }
     )
     consumer.subscribe([settings.agents_topic])
-    found: set[str] = set()
+    found: dict[str, AgentSpec] = {}
     deadline = time.monotonic() + timeout
     try:
         while time.monotonic() < deadline:
@@ -258,19 +332,34 @@ def _existing_agent_ids(settings: Settings, timeout: float = 2.0) -> set[str]:
                     continue
                 raise KafkaException(message.error())
             key = message.key()
-            if isinstance(key, bytes) and key:
-                found.add(key.decode("utf-8"))
+            if not isinstance(key, bytes) or not key:
+                continue
+            agent_id = key.decode("utf-8")
+            value = message.value()
+            if value is None:
+                found.pop(agent_id, None)
+                continue
+            try:
+                found[agent_id] = AgentSpec.model_validate_json(value)
+            except ValueError:
+                logger.warning("Skipping malformed agent record for %s", agent_id)
     finally:
         consumer.close()
     return found
 
 
+def _existing_agent_ids(settings: Settings, timeout: float = 2.0) -> set[str]:
+    return set(_existing_agents(settings, timeout=timeout))
+
+
 def seed_default_agents(
     settings: Settings,
     producer: KafkaProducer,
+    existing: set[str] | None = None,
 ) -> None:
     """Create the standard goosetown flock on the first GUI start."""
-    existing = _existing_agent_ids(settings)
+    if existing is None:
+        existing = _existing_agent_ids(settings)
     publisher = AgentPublisher(settings, producer)
     seeded = 0
     for agent in default_agents():
@@ -283,8 +372,10 @@ def seed_default_agents(
 
 
 def sync_agents(settings: Settings, producer: KafkaProducer) -> None:
-    """Seed the defaults, then apply profiles from the host agents directory."""
-    seed_default_agents(settings, producer)
+    """Seed defaults, persist custom registry agents, then apply profile files."""
+    existing = _existing_agents(settings)
+    seed_default_agents(settings, producer, existing=set(existing))
+    export_agent_profiles(settings, existing)
     import_agents_from_dir(settings, AgentPublisher(settings, producer))
 
 

@@ -84,7 +84,6 @@ GUI ──→ jobs.in, jobs.state, agents.state, sandboxes.state, agent.events
 - A live activity panel with goose thinking, tool calls, tool results, stderr,
   and token usage streamed from the microVM through Kafka
 - **MLflow** observability with OTLP traces, token usage, durations, and errors
-  (Phoenix remains available as an optional second backend)
 - An editable sandbox: host-mounted tools, goose/MCP config, persistent skills,
   extra build packages, plus seeded **Default** and **REA + Ghidra**
   reverse-engineering environments with Kuna, JADX, Frida, apktool, and
@@ -238,7 +237,7 @@ docker compose logs -f mlflow
 ```
 
 The Kafka UI runs at <http://localhost:8080>. MLflow runs at
-<http://localhost:5000>. Phoenix, if enabled, runs at <http://localhost:6006>.
+<http://localhost:5000>.
 
 ## How a job runs
 
@@ -283,8 +282,7 @@ The Kafka UI runs at <http://localhost:8080>. MLflow runs at
 8. The worker parses the structured goose output, copies `outputs/` back,
    optionally runs a short skill-improvement pass, publishes `jobs.out` and the
    final `jobs.state`, uploads artifacts, and commits the Kafka offset.
-9. Audit events go to `agent.events`; traces go to MLflow and, optionally,
-   Phoenix.
+9. Audit events go to `agent.events`; traces go to MLflow.
 
 The microVM never talks to Kafka. The worker is the only Kafka participant.
 
@@ -304,7 +302,7 @@ required values; `OPENROUTER_API_KEY` is the only required secret.
 | `GOOSE_RE_IMAGE` | `kafkallm-rea-job:latest` | Reverse-engineering image |
 | `GOOSE_JOB_RAM_MIB` / `GOOSE_JOB_CPUS` | `2048` / `2` | Per-job resources |
 | `GOOSE_JOB_REFLECT_ENABLED` | `true` | Default for the per-job learning pass |
-| `GOOSE_JOB_AGENTS_DIR` | `/var/lib/kafkallm/agents` | Drop-in agent profiles imported at GUI start |
+| `GOOSE_JOB_AGENTS_DIR` | `/var/lib/kafkallm/agents` | Markdown profiles for custom agents (GUI reads and writes them) |
 | `GUI_PORT` | `8090` | GUI listener |
 | `GUI_MAX_REQUEST_BYTES` | `2097152` | Limit for JSON request bodies (uploads use `UPLOAD_MAX_*`) |
 | `LLM_GATEWAY_PORT` | `8091` | LLM gateway listener |
@@ -405,10 +403,11 @@ On the first GUI start the standard flock is seeded:
 - `Writer` — synthesizes sources into one deliverable
 - `Reviewer` — reviews against explicit acceptance criteria
 
-You can add, edit, enable, or disable agents in the GUI. Each profile has a
-name, role, description, instructions, and a list of skills. Use **+ New agent**
-next to the flock list or in the panel header to create one; it is selected
-automatically, and its display name can be changed later with **Edit**.
+You can add, edit, enable, or disable **custom** agents in the GUI. The five
+built-in goosetown roles are read-only. Each profile has a name, role,
+description, instructions, and a list of skills. Use **+ New agent** next to the
+flock list or in the panel header to create one; it is selected automatically,
+and its display name can be changed later with **Edit**.
 
 The job form has **Use goosetown multi-agent flock**. When it is enabled, the
 selected agents are embedded in the job as a snapshot. The worker writes them
@@ -442,11 +441,22 @@ Review the assigned output for security issues and report file/line references.
 
 The body becomes the `instructions` field. The parser accepts the flat subset
 used by goose agent sources: strings (optionally quoted), booleans, and lists in
-`- item` or `[a, b]` form. Files are imported on every GUI start and win over
-the existing registry entry for the same `agent_id`; agents that only exist in
-the GUI are untouched. The directory is mounted read-only into the GUI
-container, so the GUI never writes it. Kafka remains the runtime registry that
-the GUI reads from and edits.
+`- item` or `[a, b]` form.
+
+The directory is the durable store for custom agents:
+
+- The five built-in roles are defined in code and cannot be edited, disabled, or
+  overridden by a file. A file named like a built-in role is ignored.
+- **+ New agent** writes `<agent-id>.md` and publishes the profile to
+  `agents.state`. **Edit** and **Disable** update both the file and Kafka;
+  disabling sets `enabled: false` instead of deleting the file.
+- On every GUI start the defaults are seeded, custom agents that exist only in
+  Kafka are exported to files, and then the files are imported. Files win over
+  Kafka for their `agent_id`.
+- Files edited outside the GUI are picked up on the next GUI restart. There is
+  no file watcher.
+- The directory is mounted read-write into the GUI container. Kafka remains the
+  runtime registry that the GUI reads from and the worker snapshots into jobs.
 
 ### Sandbox management
 
@@ -787,8 +797,8 @@ The control plane runs under Docker Compose; the job microVMs run under Podman.
 - **Podman runs the microVMs.** Only Podman's `crun` krun runtime can start a
   libkrun microVM, selected through the `run.oci.handler=krun` annotation.
   Docker's runc has no krun handler.
-- **Docker runs the control plane.** The worker, GUI, Apache Kafka, RustFS, MLflow,
-  Phoenix (optional), and the socket proxy are ordinary containers.
+- **Docker runs the control plane.** The worker, GUI, Apache Kafka, RustFS,
+  MLflow, and the socket proxy are ordinary containers.
 - **Rootless Podman is required.** Rootful Podman can break libkrun's TSI
   networking, leaving the microVMs without an outbound path and stalling every
   job on the LLM provider. Use the rootless socket.
@@ -850,7 +860,7 @@ address and no default route. The allowlisting proxy is the only other container
 on that network. Create the network on the host with
 `./scripts/init-job-network.sh`; the worker fails closed if it is missing.
 
-## Observability: MLflow and Phoenix
+## Observability: MLflow
 
 Every job receives a `trace_id`, propagated through Kafka headers and connected
 to the worker and goose spans. Audit events include:
@@ -891,13 +901,9 @@ MLFLOW_OTLP_PORT=5000
 MLFLOW_EXPERIMENT_ID=0
 ```
 
-**Phoenix** remains available as an optional second OTLP backend. Set
-`PHOENIX_ENABLED=true` and open <http://localhost:6006>.
-
 Prompts, responses, and tool input/output are not captured by default because
 they can contain sensitive data. Set `TELEMETRY_CAPTURE_CONTENT=true` to include
-them in the traces. The legacy `PHOENIX_CAPTURE_CONTENT` name is still honoured
-as a fallback.
+them in the traces.
 
 Trace export happens in the worker/control plane, which can reach MLflow over
 the Compose network. The goose microVM keeps its strict egress isolation: it
@@ -1065,8 +1071,8 @@ slots. The shared skills directory uses last-writer-wins semantics.
 - The worker waits for Kafka, agentgateway readiness, the Podman API, the
   job network, the allowlisting proxy, and the goose image before consuming
   jobs.
-- Kafka, the Kafka UI, RustFS, the Podman proxy, MLflow, Phoenix, the worker, and
-  the GUI have restart policies.
+- Kafka, the Kafka UI, RustFS, the Podman proxy, MLflow, the worker, and the GUI
+  have restart policies.
 - The Kafka offset is committed only after the result is written to `jobs.out`.
 - Processing is **at-least-once**. A redelivered job starts a new microVM, so
   side effects must be idempotent.

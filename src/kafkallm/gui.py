@@ -19,8 +19,10 @@ from pydantic import ValidationError
 from kafkallm.agents import (
     AgentPublisher,
     AgentStore,
+    default_agent_ids,
     new_agent_id,
     sync_agents,
+    write_agent_profile,
 )
 from kafkallm.job_store import JobStore
 from kafkallm.kafka import KafkaProducer, ensure_topics, wait_for_kafka
@@ -164,10 +166,14 @@ class JobHandler(BaseHTTPRequestHandler):
         elif path == "/api/jobs":
             self._send_json({"jobs": self.server.store.jobs()})
         elif path == "/api/agents":
+            builtin = default_agent_ids()
             self._send_json(
                 {
                     "agents": [
-                        agent.model_dump(mode="json")
+                        {
+                            **agent.model_dump(mode="json"),
+                            "builtin": agent.agent_id in builtin,
+                        }
                         for agent in self.server.agents.agents()
                     ]
                 }
@@ -525,11 +531,26 @@ class JobHandler(BaseHTTPRequestHandler):
 
     def _handle_agent_delete(self) -> None:
         agent_id = self.path.rsplit("/", 1)[-1]
+        if agent_id in default_agent_ids():
+            self._send_json(
+                {"error": "Built-in agents cannot be disabled."},
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return
         agent = self.server.agents.get(agent_id)
         if agent is None:
             self._send_json({"error": "agent not found"}, status=HTTPStatus.NOT_FOUND)
             return
         updated = agent.model_copy(update={"enabled": False, "updated_at": utc_now()})
+        try:
+            write_agent_profile(self.server.settings, updated)
+        except OSError as exc:
+            logger.exception("Could not write agent profile")
+            self._send_json(
+                {"error": f"Could not write agent profile: {exc}"},
+                status=HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+            return
         try:
             with self.server.producer_lock:
                 self.server.agent_publisher.save(updated)
@@ -594,13 +615,34 @@ class JobHandler(BaseHTTPRequestHandler):
                 status=HTTPStatus.BAD_REQUEST,
             )
             return
+        if agent.agent_id in default_agent_ids():
+            self._send_json(
+                {
+                    "error": "Built-in agents are read-only. Choose a different "
+                    "name for a new agent."
+                },
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return
+        try:
+            write_agent_profile(self.server.settings, agent)
+        except OSError as exc:
+            logger.exception("Could not write agent profile")
+            self._send_json(
+                {"error": f"Could not write agent profile: {exc}"},
+                status=HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+            return
         try:
             with self.server.producer_lock:
                 self.server.agent_publisher.save(agent)
         except Exception as exc:
             logger.exception("Could not save agent")
             self._send_json(
-                {"error": f"Could not save agent: {exc}"},
+                {
+                    "error": f"Could not save agent: {exc}. The profile file was "
+                    "written and will be imported on the next GUI start."
+                },
                 status=HTTPStatus.SERVICE_UNAVAILABLE,
             )
             return

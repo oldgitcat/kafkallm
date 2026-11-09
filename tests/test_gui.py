@@ -6,6 +6,7 @@ import threading
 import urllib.error
 import urllib.request
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 from kafkallm.agents import AgentStore, default_agents
@@ -366,8 +367,10 @@ def test_gui_uploads_binary_inputs_and_attaches_them_to_the_job() -> None:
         thread.join(timeout=5)
 
 
-def test_gui_manages_agents_and_attaches_the_selected_flock() -> None:
-    settings = _settings()
+def test_gui_manages_agents_and_attaches_the_selected_flock(
+    tmp_path: Path,
+) -> None:
+    settings = replace(_settings(), goose_job_agents_dir=str(tmp_path))
     producer = RecordingProducer()
     agents = AgentStore(settings)
     for agent in default_agents():
@@ -427,9 +430,26 @@ def test_gui_manages_agents_and_attaches_the_selected_flock() -> None:
         )
         assert queued.agent_names == ["Worker", "Security reviewer"]
 
+        profile = (tmp_path / "security-reviewer.md").read_text(encoding="utf-8")
+        assert 'name: "Security reviewer"' in profile
+        assert "goosetown-reviewer" in profile
+
         status, disabled = _delete(f"{base}/api/agents/security-reviewer")
         assert status == 200
         assert disabled["enabled"] is False
+        profile = (tmp_path / "security-reviewer.md").read_text(encoding="utf-8")
+        assert "enabled: false" in profile
+
+        status, error = _request(
+            f"{base}/api/agents",
+            {"agent_id": "worker", "name": "Renamed worker"},
+        )
+        assert status == 400
+        assert "Built-in agents" in error["error"]
+
+        status, error = _delete(f"{base}/api/agents/worker")
+        assert status == 400
+        assert "Built-in agents" in error["error"]
     finally:
         server.shutdown()
         server.server_close()
