@@ -6,6 +6,7 @@ from kafkallm.agentgateway_config import (
     ConfigError,
     api_key_from_env,
     base_url_from_env,
+    cors_origins_from_env,
     render_config,
 )
 
@@ -102,3 +103,38 @@ def test_ollama_base_url_defaults_for_environment_reads() -> None:
         )
         == "http://ollama:11434/v1"
     )
+
+
+def test_cors_origins_are_rendered_for_the_playground() -> None:
+    rendered = render_config(
+        TEMPLATE,
+        provider="openrouter",
+        include_api_key=True,
+        cors_origins=["http://127.0.0.1:15000", "http://localhost:15000"],
+    )
+
+    assert "    cors:" in rendered
+    assert '        - "http://127.0.0.1:15000"' in rendered
+    assert '        - "http://localhost:15000"' in rendered
+    assert "        - OPTIONS" in rendered
+    assert "        - Authorization" in rendered
+
+
+def test_empty_cors_origins_disable_the_policy() -> None:
+    rendered = render_config(
+        TEMPLATE,
+        provider="openrouter",
+        include_api_key=True,
+        cors_origins=[],
+    )
+
+    assert "cors:" not in rendered
+
+
+def test_cors_origins_from_env_defaults_and_overrides() -> None:
+    defaults = cors_origins_from_env({})
+    assert "http://127.0.0.1:15000" in defaults
+    assert cors_origins_from_env({"AGENTGATEWAY_CORS_ORIGINS": ""}) == []
+    assert cors_origins_from_env(
+        {"AGENTGATEWAY_CORS_ORIGINS": "https://a.example, https://b.example"}
+    ) == ["https://a.example", "https://b.example"]

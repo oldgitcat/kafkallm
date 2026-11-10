@@ -219,7 +219,9 @@ services:
       MLFLOW_OTLP_PORT: ${MLFLOW_OTLP_PORT:-5000}
       MLFLOW_EXPERIMENT_ID: ${MLFLOW_EXPERIMENT_ID:-0}
     volumes:
-      - ./agentgateway/config.generated.yaml:/config/config.yaml:ro,z
+      # The admin UI saves CORS/model changes to this file. It contains no
+      # secrets; the provider key stays in the process environment.
+      - ./agentgateway/config.generated.yaml:/config/config.yaml:rw,z
     ports:
       # Rootless Podman cannot reach a host service bound only to loopback:
       # host.containers.internal is mapped to the host-side pasta address.

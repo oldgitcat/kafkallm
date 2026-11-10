@@ -358,6 +358,7 @@ the provider key is the only required secret.
 | `GUI_MAX_REQUEST_BYTES` | `2097152` | Limit for JSON request bodies (uploads use `UPLOAD_MAX_*`) |
 | `LLM_GATEWAY_PORT` | `8091` | LLM gateway listener |
 | `AGENTGATEWAY_UI_PORT` | `15000` | agentgateway admin UI / LLM playground (localhost only) |
+| `AGENTGATEWAY_CORS_ORIGINS` | local playground origins | Browser origins allowed to call the LLM listener; empty disables CORS |
 | `S3_ENDPOINT_URL` | `http://rustfs:9000` (storage profile) | Uploads and artifacts |
 | `MLFLOW_ENABLED` | `true` | OTLP traces to MLflow |
 
@@ -434,11 +435,22 @@ GOOSE_MODEL=my-model
 ```
 
 The admin UI and LLM playground are published on
-`http://127.0.0.1:${AGENTGATEWAY_UI_PORT:-15000}`. The OpenAI-compatible API is
-published on `${LLM_GATEWAY_BIND:-0.0.0.0}:${LLM_GATEWAY_PORT}` because rootless
-Podman reaches host services through a non-loopback pasta address. The virtual
-key is the access control. The listener is plain HTTP, so keep it on a trusted
-network or put it behind a TLS reverse proxy.
+`http://127.0.0.1:${AGENTGATEWAY_UI_PORT:-15000}`. The playground calls the LLM
+listener from the browser, so `AGENTGATEWAY_CORS_ORIGINS` includes the admin UI
+origins by default. Add your reverse-proxy origin there if you publish the UI
+elsewhere.
+
+The generated config is mounted read-write so the admin UI can save CORS and
+model changes. It contains no secrets; the provider key stays in the gateway
+process environment. `make gateway-config` re-renders the file from `.env` and
+`agentgateway/config.template.yaml`, so put durable settings there; UI-only
+changes survive until the next render.
+
+The OpenAI-compatible API is published on
+`${LLM_GATEWAY_BIND:-0.0.0.0}:${LLM_GATEWAY_PORT}` because rootless Podman
+reaches host services through a non-loopback pasta address. The virtual key is
+the access control. The listener is plain HTTP, so keep it on a trusted network
+or put it behind a TLS reverse proxy.
 
 Check it with the virtual key:
 

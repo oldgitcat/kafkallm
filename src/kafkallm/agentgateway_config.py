@@ -13,6 +13,7 @@ its own process environment.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
@@ -22,6 +23,10 @@ from pathlib import Path
 DEFAULT_PROVIDER = "openrouter"
 DEFAULT_CUSTOM_FORMAT = "completions"
 DEFAULT_OLLAMA_BASE_URL = "http://host.containers.internal:11434/v1"
+DEFAULT_CORS_ORIGINS = (
+    "http://127.0.0.1:15000",
+    "http://localhost:15000",
+)
 
 BUILTIN_PROVIDERS = frozenset(
     {
@@ -106,6 +111,23 @@ def base_url_from_env(env: Mapping[str, str] | None = None) -> str:
     return base_url
 
 
+def cors_origins_from_env(env: Mapping[str, str] | None = None) -> list[str]:
+    """Return the browser origins allowed to call the LLM listener.
+
+    An explicitly empty value disables the CORS policy. When the variable is
+    absent, the local agentgateway playground origins are allowed so the UI
+    works out of the box.
+    """
+    values = os.environ if env is None else env
+    if "AGENTGATEWAY_CORS_ORIGINS" not in values:
+        return list(DEFAULT_CORS_ORIGINS)
+    return [
+        origin.strip()
+        for origin in values["AGENTGATEWAY_CORS_ORIGINS"].split(",")
+        if origin.strip()
+    ]
+
+
 def render_config(
     template: str,
     *,
@@ -114,6 +136,7 @@ def render_config(
     include_api_key: bool = True,
     provider_format: str = DEFAULT_CUSTOM_FORMAT,
     model: str = "",
+    cors_origins: list[str] | None = None,
 ) -> str:
     """Return the template with the generated ``llm:`` section filled in."""
     provider = (provider or DEFAULT_PROVIDER).strip().lower()
@@ -143,9 +166,30 @@ def render_config(
         '        - key: "$LLM_GATEWAY_VIRTUAL_KEY"',
         "          metadata:",
         "            name: kafkallm-worker",
-        "  providers:",
-        "    - name: upstream",
     ]
+    if cors_origins:
+        lines.extend(
+            [
+                "    cors:",
+                "      allowOrigins:",
+                *[f"        - {json.dumps(origin)}" for origin in cors_origins],
+                "      allowMethods:",
+                "        - GET",
+                "        - POST",
+                "        - OPTIONS",
+                "      allowHeaders:",
+                "        - Authorization",
+                "        - Content-Type",
+                "        - Accept",
+                '      maxAge: "10m"',
+            ]
+        )
+    lines.extend(
+        [
+            "  providers:",
+            "    - name: upstream",
+        ]
+    )
     if provider == "custom":
         lines.extend(
             [
@@ -213,6 +257,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--format", help="Override LLM_UPSTREAM_FORMAT")
     parser.add_argument("--model", help="Override GOOSE_MODEL for the model list")
     parser.add_argument(
+        "--cors-origins",
+        help=(
+            "Comma-separated browser origins for the LLM CORS policy; "
+            "an empty value disables it (default: AGENTGATEWAY_CORS_ORIGINS "
+            "or the local playground origins)"
+        ),
+    )
+    parser.add_argument(
         "--no-api-key",
         action="store_true",
         help="Do not emit an apiKey reference (for tests or unauthenticated endpoints)",
@@ -232,6 +284,12 @@ def main(argv: list[str] | None = None) -> int:
     ).strip()
     model = args.model if args.model is not None else env.get("GOOSE_MODEL", "")
     api_key = api_key_from_env(env)
+    if args.cors_origins is not None:
+        cors_origins = [
+            origin.strip() for origin in args.cors_origins.split(",") if origin.strip()
+        ]
+    else:
+        cors_origins = cors_origins_from_env(env)
 
     if not args.no_api_key and not api_key and provider not in KEY_OPTIONAL_PROVIDERS:
         raise ConfigError(
@@ -254,10 +312,16 @@ def main(argv: list[str] | None = None) -> int:
         ),
         provider_format=provider_format,
         model=model,
+        cors_origins=cors_origins,
     )
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(rendered, encoding="utf-8")
+    # agentgateway runs as uid 65532 and the admin UI saves config changes
+    # (for example the playground's Apply CORS action) back to this file. It
+    # contains no secrets: the provider key is an environment reference.
+    with contextlib.suppress(OSError):
+        output_path.chmod(0o666)
     print(
         f"Wrote {output_path} (provider={provider}, "
         f"base_url={base_url or 'provider default'})"
