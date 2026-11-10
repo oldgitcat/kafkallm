@@ -356,7 +356,7 @@ the provider key is the only required secret.
 | `GOOSE_JOB_AGENTS_DIR` | `/var/lib/kafkallm/agents` | Markdown profiles for custom agents (GUI reads and writes them) |
 | `GUI_PORT` | `8090` | GUI listener |
 | `GUI_MAX_REQUEST_BYTES` | `2097152` | Limit for JSON request bodies (uploads use `UPLOAD_MAX_*`) |
-| `LLM_GATEWAY_PORT` | `8091` | LLM gateway listener |
+| `LLM_GATEWAY_PORT` | `8091` | LLM listener port inside the container and published on the host; the playground uses it too |
 | `AGENTGATEWAY_UI_PORT` | `15000` | agentgateway admin UI / LLM playground (localhost only) |
 | `AGENTGATEWAY_CORS_ORIGINS` | local playground origins | Browser origins allowed to call the LLM listener; empty disables CORS |
 | `S3_ENDPOINT_URL` | `http://rustfs:9000` (storage profile) | Uploads and artifacts |
@@ -438,7 +438,8 @@ The admin UI and LLM playground are published on
 `http://127.0.0.1:${AGENTGATEWAY_UI_PORT:-15000}`. The playground calls the LLM
 listener from the browser, so `AGENTGATEWAY_CORS_ORIGINS` includes the admin UI
 origins by default. Add your reverse-proxy origin there if you publish the UI
-elsewhere.
+elsewhere. The playground derives the LLM URL from `LLM_GATEWAY_PORT`, so the
+container listener and the host-published port are intentionally the same.
 
 The generated config is mounted read-write so the admin UI can save CORS and
 model changes. It contains no secrets; the provider key stays in the gateway

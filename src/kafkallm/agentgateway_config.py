@@ -137,6 +137,7 @@ def render_config(
     provider_format: str = DEFAULT_CUSTOM_FORMAT,
     model: str = "",
     cors_origins: list[str] | None = None,
+    llm_port: int = 8091,
 ) -> str:
     """Return the template with the generated ``llm:`` section filled in."""
     provider = (provider or DEFAULT_PROVIDER).strip().lower()
@@ -145,6 +146,8 @@ def render_config(
             f"Unknown LLM_UPSTREAM_PROVIDER {provider!r}. "
             "Use openrouter, openai, ollama, a supported provider preset, or custom."
         )
+    if not 1 <= llm_port <= 65535:
+        raise ConfigError(f"LLM port {llm_port} is outside 1-65535.")
     if provider == "ollama" and not base_url:
         base_url = DEFAULT_OLLAMA_BASE_URL
     provider_format = (provider_format or DEFAULT_CUSTOM_FORMAT).strip()
@@ -159,6 +162,7 @@ def render_config(
 
     lines = [
         "llm:",
+        f"  port: {llm_port}",
         "  policies:",
         "    apiKey:",
         "      mode: strict",
@@ -265,6 +269,11 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--llm-port",
+        type=int,
+        help="LLM listener port (default: LLM_GATEWAY_PORT or 8091)",
+    )
+    parser.add_argument(
         "--no-api-key",
         action="store_true",
         help="Do not emit an apiKey reference (for tests or unauthenticated endpoints)",
@@ -290,6 +299,13 @@ def main(argv: list[str] | None = None) -> int:
         ]
     else:
         cors_origins = cors_origins_from_env(env)
+    if args.llm_port is not None:
+        llm_port = args.llm_port
+    else:
+        try:
+            llm_port = int(env.get("LLM_GATEWAY_PORT") or 8091)
+        except ValueError as exc:
+            raise ConfigError("LLM_GATEWAY_PORT must be an integer.") from exc
 
     if not args.no_api_key and not api_key and provider not in KEY_OPTIONAL_PROVIDERS:
         raise ConfigError(
@@ -313,6 +329,7 @@ def main(argv: list[str] | None = None) -> int:
         provider_format=provider_format,
         model=model,
         cors_origins=cors_origins,
+        llm_port=llm_port,
     )
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)

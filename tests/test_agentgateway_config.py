@@ -26,6 +26,7 @@ def test_openrouter_config_uses_an_environment_key_reference() -> None:
     )
 
     assert "provider: openrouter" in rendered
+    assert "  port: 8091" in rendered
     assert 'apiKey: "$LLM_UPSTREAM_API_KEY"' in rendered
     assert "real-provider-key" not in rendered
     assert 'name: "openai/gpt-4.1-mini"' in rendered
@@ -138,3 +139,11 @@ def test_cors_origins_from_env_defaults_and_overrides() -> None:
     assert cors_origins_from_env(
         {"AGENTGATEWAY_CORS_ORIGINS": "https://a.example, https://b.example"}
     ) == ["https://a.example", "https://b.example"]
+
+
+def test_llm_port_is_rendered_and_validated() -> None:
+    rendered = render_config(TEMPLATE, provider="openrouter", llm_port=9000)
+    assert "  port: 9000" in rendered
+
+    with pytest.raises(ConfigError, match="outside 1-65535"):
+        render_config(TEMPLATE, provider="openrouter", llm_port=70000)

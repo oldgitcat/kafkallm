@@ -226,7 +226,9 @@ services:
       # Rootless Podman cannot reach a host service bound only to loopback:
       # host.containers.internal is mapped to the host-side pasta address.
       # The virtual key still gates every request.
-      - "${LLM_GATEWAY_BIND:-0.0.0.0}:${LLM_GATEWAY_PORT:-8091}:4000"
+      # The LLM listener and the published port are the same value so the
+      # browser playground, jobs, and external clients all use one port.
+      - "${LLM_GATEWAY_BIND:-0.0.0.0}:${LLM_GATEWAY_PORT:-8091}:${LLM_GATEWAY_PORT:-8091}"
       # agentgateway admin UI; localhost only.
       - "127.0.0.1:${AGENTGATEWAY_UI_PORT:-15000}:15000"
     restart: unless-stopped
