@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -13,7 +14,7 @@ from typing import Any
 from confluent_kafka import Consumer, KafkaError, KafkaException
 
 from kafkallm.kafka import KafkaProducer
-from kafkallm.models import ID_PATTERN, AgentSpec, utc_now
+from kafkallm.models import ID_PATTERN, AgentSpec
 from kafkallm.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -27,79 +28,33 @@ _ROLE_ORDER = {
 }
 
 
+def _default_agents_dir() -> Path:
+    """Directory with the built-in goosetown agent profiles."""
+    return Path(os.getenv("GOOSE_JOB_DEFAULT_AGENTS_DIR", "agents"))
+
+
 def default_agents() -> list[AgentSpec]:
-    now = utc_now()
-    return [
-        AgentSpec(
-            agent_id="orchestrator",
-            name="Orchestrator",
-            role="orchestrator",
-            description="Decomposes the job, dispatches delegates, and synthesizes the result.",
-            instructions=(
-                "You are the main goosetown session. Read the job instruction and "
-                "input files, choose the smallest useful decomposition, dispatch "
-                "delegates for independent work, and synthesize the final result. "
-                "Do not delegate trivial single-step work."
-            ),
-            skills=["goosetown-orchestrator"],
-            updated_at=now,
-        ),
-        AgentSpec(
-            agent_id="researcher-local",
-            name="Local researcher",
-            role="researcher",
-            description="Searches inputs, prior notes, scratch files, and skills. Read-only.",
-            instructions=(
-                "Search the job inputs, WORK_LOGS, .scratch, and .claude/skills for "
-                "relevant prior context. Return concise findings with file paths. "
-                "Never edit source or output files."
-            ),
-            skills=["goosetown-researcher-local"],
-            updated_at=now,
-        ),
-        AgentSpec(
-            agent_id="worker",
-            name="Worker",
-            role="worker",
-            description="Builds code, scripts, configuration, and data files.",
-            instructions=(
-                "Implement one concrete piece of the job. Own only the files assigned "
-                "to you, write incrementally, verify what you build, and report the "
-                "exact output paths."
-            ),
-            skills=["goosetown-worker"],
-            updated_at=now,
-        ),
-        AgentSpec(
-            agent_id="writer",
-            name="Writer",
-            role="writer",
-            description="Synthesizes research and source material into one document.",
-            instructions=(
-                "Turn the supplied sources and findings into a single coherent "
-                "deliverable. State assumptions and cite the input paths you used."
-            ),
-            skills=["goosetown-writer"],
-            updated_at=now,
-        ),
-        AgentSpec(
-            agent_id="reviewer",
-            name="Reviewer",
-            role="reviewer",
-            description="Reviews an output against explicit criteria. Read-only.",
-            instructions=(
-                "Review the assigned output against the stated acceptance criteria. "
-                "Report only material issues, with file and line references. Never "
-                "edit the output."
-            ),
-            skills=["goosetown-reviewer"],
-            updated_at=now,
-        ),
-    ]
+    """Load the built-in flock from the agent profile files.
+
+    The repository (and the app image) ship ``agents/*.md``. They use the same
+    format and parser as custom agents, so the definition lives in data rather
+    than in Python.
+    """
+    directory = _default_agents_dir()
+    if not directory.is_dir():
+        logger.error("Default agents directory %s does not exist", directory)
+        return []
+    agents: list[AgentSpec] = []
+    for path in sorted(directory.glob("*.md")):
+        agent = agent_spec_from_file(path)
+        if agent is not None:
+            agents.append(agent)
+    agents.sort(key=lambda agent: (_ROLE_ORDER.get(agent.role, 99), agent.name))
+    return agents
 
 
 def default_agent_ids() -> set[str]:
-    """IDs of the built-in flock; these cannot be edited or overridden."""
+    """IDs of the built-in flock; the GUI protects them from deletion."""
     return {agent.agent_id for agent in default_agents()}
 
 
@@ -208,24 +163,17 @@ def agent_spec_from_file(path: Path) -> AgentSpec | None:
 
 
 def import_agents_from_dir(settings: Settings, publisher: AgentPublisher) -> int:
-    """Upsert custom agent profiles from ``GOOSE_JOB_AGENTS_DIR``.
+    """Upsert agent profiles from ``GOOSE_JOB_AGENTS_DIR``.
 
-    The filename (without ``.md``) is the ``agent_id``. Built-in roles are
-    skipped: they are fixed in code and cannot be overridden by files. Files are
-    the durable source for custom agents, so they win over the registry entry
-    with the same ID.
+    The filename (without ``.md``) is the ``agent_id``. Files are the durable
+    source for custom agents and for edits to the seeded built-in profiles, so
+    they win over the registry entry with the same ID.
     """
     directory = Path(settings.goose_job_agents_dir)
     if not directory.is_dir():
         return 0
-    builtin = default_agent_ids()
     imported = 0
     for path in sorted(directory.glob("*.md")):
-        if path.stem in builtin:
-            logger.warning(
-                "Ignoring agent profile %s: %s is a built-in agent", path, path.stem
-            )
-            continue
         agent = agent_spec_from_file(path)
         if agent is None:
             continue
@@ -375,8 +323,36 @@ def seed_default_agents(
         logger.info("Seeded %s default goosetown agents", seeded)
 
 
+def seed_default_agent_profiles(settings: Settings) -> int:
+    """Copy the built-in agent profiles into GOOSE_JOB_AGENTS_DIR if missing.
+
+    After the first GUI start every agent, including the built-in flock, has a
+    file in the same directory as custom agents. Existing files are left alone
+    so operators can edit them.
+    """
+    source = _default_agents_dir()
+    if not source.is_dir():
+        logger.error("Default agents directory %s does not exist", source)
+        return 0
+    target = Path(settings.goose_job_agents_dir)
+    target.mkdir(parents=True, exist_ok=True)
+    written = 0
+    for path in sorted(source.glob("*.md")):
+        destination = target / path.name
+        if destination.exists():
+            continue
+        destination.write_bytes(path.read_bytes())
+        with contextlib.suppress(OSError):
+            os.chmod(destination, 0o666)
+        written += 1
+    if written:
+        logger.info("Seeded %s built-in agent profile(s) into %s", written, target)
+    return written
+
+
 def sync_agents(settings: Settings, producer: KafkaProducer) -> None:
-    """Seed defaults, persist custom registry agents, then apply profile files."""
+    """Seed profile files, seed the registry, export, then import files."""
+    seed_default_agent_profiles(settings)
     existing = _existing_agents(settings)
     seed_default_agents(settings, producer, existing=set(existing))
     export_agent_profiles(settings, existing)

@@ -36,6 +36,7 @@ x-app-environment: &app-environment
   GOOSE_JOB_SKILLS_DIR: ${GOOSE_JOB_SKILLS_DIR:-/var/lib/kafkallm/skills}
   # Optional drop-in agent profiles, imported by the GUI at startup.
   GOOSE_JOB_AGENTS_DIR: ${GOOSE_JOB_AGENTS_DIR:-/var/lib/kafkallm/agents}
+  GOOSE_JOB_DEFAULT_AGENTS_DIR: ${GOOSE_JOB_DEFAULT_AGENTS_DIR:-agents}
   GOOSE_JOB_TOOLS_DIR: ${GOOSE_JOB_TOOLS_DIR:-/var/lib/kafkallm/tools}
   GOOSE_JOB_CONFIG_DIR: ${GOOSE_JOB_CONFIG_DIR:-/var/lib/kafkallm/config}
   GOOSE_JOB_NETWORK: ${GOOSE_JOB_NETWORK:-kafkallm-jobs}
