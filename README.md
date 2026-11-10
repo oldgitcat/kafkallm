@@ -385,7 +385,7 @@ rendered from `.env` into `agentgateway/config.generated.yaml`.
   rotatable virtual key. agentgateway validates it, checks model access, and
   replaces it with the provider key before forwarding upstream.
 - The job uses `GOOSE_PROVIDER=openai` and
-  `OPENAI_HOST=http://host.containers.internal:8091`. goose 1.57 calls
+  `OPENAI_HOST=http://host.containers.internal:8091`. goose 1.59 calls
   `/v1/chat/completions`, which agentgateway serves.
 - agentgateway is the only upstream the job proxy can reach. The job network
   has no route to the internet, the LAN, other container networks, or other Podman
@@ -795,7 +795,7 @@ The job image is built with `goose_job/Dockerfile`:
 
 - Debian bookworm slim, with bash, git, jq, Python 3, ripgrep, binutils, file,
   less, unzip/zip, and xxd
-- Pinned goose `1.57.0` release, verified with SHA-256 at build time
+- Pinned goose `1.59.0` release, verified with SHA-256 at build time
 - No `curl`, `wget`, or other network clients in the final image
 - goosetown template and skills under `/opt/goosetown`
 - Read-only tools and goose config mounts for sandbox extensions

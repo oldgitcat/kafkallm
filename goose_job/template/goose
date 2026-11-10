@@ -10,7 +10,7 @@ if [[ -z "${GOOSE_BIN:-}" ]]; then
 fi
 
 if [[ -z "$GOOSE_BIN" ]]; then
-    echo "Error: goose not found. Install from https://github.com/block/goose/releases" >&2
+    echo "Error: goose not found. Install from https://github.com/aaif-goose/goose/releases" >&2
     echo "       or set GOOSE_BIN to the path of your goose binary." >&2
     exit 1
 fi
