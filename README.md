@@ -365,6 +365,7 @@ the provider key is the only required secret.
 | `AGENTGATEWAY_CORS_ORIGINS` | local playground origins | Browser origins allowed to call the LLM listener; empty disables CORS |
 | `S3_ENDPOINT_URL` | `http://rustfs:9000` (storage profile) | Uploads and artifacts |
 | `MLFLOW_ENABLED` | `true` | OTLP traces to MLflow |
+| `MLFLOW_GATEWAY_EXPERIMENT_ID` | `1` | Dedicated MLflow experiment for agentgateway LLM traces; `make up` creates it |
 
 See `.env.example` for every setting and
 `agentgateway/config.template.yaml` for the gateway policy template. The active
@@ -1060,14 +1061,26 @@ are truncated and capped per span. Set `TELEMETRY_CAPTURE_CONTENT=true` to also
 attach the prompt and result as span inputs/outputs; otherwise the Input/Output
 columns stay empty.
 
-MLflow receives two kinds of traces:
+MLflow receives two kinds of traces, in separate experiments so the LLM calls
+do not drown out the job traces:
 
-- **Job traces** from the worker: `job.submit`, `job.handle`, `agent.run`, and
-  `goose.job.vm.run`, with steps, token usage, artifacts, and errors.
-- **LLM request traces** from agentgateway: request model, status, duration, and
-  token usage for every call that passes through the gateway. These are separate
-  traces without a session ID, so they appear as extra rows in the Sessions view
-  and are not grouped into the job session.
+- **Job traces** from the worker, in experiment `Default`
+  (`MLFLOW_EXPERIMENT_ID=0`): `job.submit`, `job.handle`, `agent.run`, and
+  `goose.job.vm.run`, with steps, token usage, artifacts, and errors. Every job
+  is one trace and one session; the **Sessions** view groups it under the
+  `job_id`.
+- **LLM request traces** from agentgateway, in experiment `agentgateway`
+  (`MLFLOW_GATEWAY_EXPERIMENT_ID`): request model, status, duration, and token
+  usage for every call that passes through the gateway. These are separate
+  traces without a job session, so they no longer clutter the job session view.
+  `make up` creates the experiment and writes its actual ID to `.env`; run
+  `make mlflow-init` to recreate it after wiping the MLflow volume.
+
+In the MLflow **Traces** tab, select the experiment first. Use the filter
+`service.name = 'agent-worker'` for one trace per job and
+`service.name = 'agentgateway'` for the individual LLM calls. The worker trace
+also carries `job.id` (span attribute) and `kafkallm.trace_id`, while the
+gateway trace carries the request model and token usage.
 
 MLflow is configured with:
 
@@ -1077,6 +1090,7 @@ MLFLOW_TRACKING_URI=http://mlflow:5000
 MLFLOW_OTLP_HOST=mlflow
 MLFLOW_OTLP_PORT=5000
 MLFLOW_EXPERIMENT_ID=0
+MLFLOW_GATEWAY_EXPERIMENT_ID=1
 ```
 
 Prompts, responses, and tool input/output are not captured by default because
