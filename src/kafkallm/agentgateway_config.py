@@ -162,8 +162,10 @@ def render_config(
             )
 
     lines = [
+        "gateways:",
+        "  default:",
+        f"    port: {llm_port}",
         "llm:",
-        f"  port: {llm_port}",
         "  policies:",
         "    apiKey:",
         "      mode: strict",

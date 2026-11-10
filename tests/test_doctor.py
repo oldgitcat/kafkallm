@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 
+from kafkallm import doctor
 from kafkallm.doctor import (
     Check,
     configuration_checks,
     format_report,
+    gateway_config_check,
     valid_virtual_key,
 )
 from kafkallm.settings import Settings
@@ -94,3 +97,68 @@ def test_report_includes_hints_and_summary() -> None:
     assert "FAIL  Podman socket" in report
     assert "-> Enable podman.socket." in report
     assert "Summary: 1 passed, 0 warnings, 1 failed" in report
+
+
+def test_gateway_config_check_reports_missing(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    check = gateway_config_check({})
+
+    assert check.status == "warn"
+    assert "not rendered" in check.detail
+
+
+def test_gateway_config_check_validates_with_agentgateway(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config = tmp_path / "agentgateway" / "config.generated.yaml"
+    config.parent.mkdir()
+    config.write_text("llm: {}\n", encoding="utf-8")
+    monkeypatch.setattr(doctor.shutil, "which", lambda _: "/usr/bin/podman")
+    calls: list[list[str]] = []
+
+    def fake_run(args, timeout=10):
+        del timeout
+        calls.append(args)
+        if args[:3] == ["podman", "image", "exists"]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(
+            returncode=0, stdout="Configuration is valid!", stderr=""
+        )
+
+    monkeypatch.setattr(doctor, "_run", fake_run)
+
+    check = gateway_config_check(
+        {
+            "LLM_GATEWAY_VIRTUAL_KEY": "k" * 64,
+            "LLM_UPSTREAM_API_KEY": "sk-test",
+        }
+    )
+
+    assert check.status == "ok"
+    assert check.detail == "valid"
+    validate_command = calls[-1]
+    assert "LLM_UPSTREAM_API_KEY" in validate_command
+    assert not any("sk-test" in str(argument) for argument in validate_command)
+
+
+def test_gateway_config_check_reports_an_invalid_config(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    config = tmp_path / "agentgateway" / "config.generated.yaml"
+    config.parent.mkdir()
+    config.write_text("llm: {}\n", encoding="utf-8")
+    monkeypatch.setattr(doctor.shutil, "which", lambda _: "/usr/bin/podman")
+
+    def fake_run(args, timeout=10):
+        del timeout
+        if args[:3] == ["podman", "image", "exists"]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="bad config")
+
+    monkeypatch.setattr(doctor, "_run", fake_run)
+
+    check = gateway_config_check({})
+
+    assert check.status == "fail"
+    assert "bad config" in check.detail

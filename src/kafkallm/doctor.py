@@ -28,6 +28,10 @@ from kafkallm.agentgateway_config import (
 from kafkallm.dotenv import load_dotenv
 from kafkallm.settings import Settings
 
+AGENTGATEWAY_IMAGE = os.getenv(
+    "AGENTGATEWAY_IMAGE", "cr.agentgateway.dev/agentgateway:v1.7.0"
+)
+
 STATUSES = ("ok", "warn", "fail")
 LABELS = {"ok": "PASS", "warn": "WARN", "fail": "FAIL"}
 PLACEHOLDER_KEYS = {
@@ -182,6 +186,92 @@ def _command_check(name: str, command: str, version_args: list[str]) -> Check:
     return Check(name, "ok", detail[0] if detail else path)
 
 
+def gateway_config_check(values: Mapping[str, str]) -> Check:
+    """Validate the rendered agentgateway config with the real binary."""
+    config_path = Path("agentgateway/config.generated.yaml")
+    if not config_path.is_file():
+        return Check(
+            "Gateway config",
+            "warn",
+            "not rendered",
+            "Run 'make gateway-config' (or 'make up').",
+        )
+    env_file = Path(".env")
+    stale = (
+        env_file.is_file() and env_file.stat().st_mtime > config_path.stat().st_mtime
+    )
+    stale_note = " (older than .env)" if stale else ""
+    hint = "Run 'make gateway-config' after changing provider settings."
+
+    if shutil.which("podman") is None:
+        return Check(
+            "Gateway config",
+            "warn",
+            f"rendered{stale_note}; Podman unavailable for validation",
+            hint,
+        )
+    image = _run(["podman", "image", "exists", AGENTGATEWAY_IMAGE], timeout=10)
+    if image is None or image.returncode != 0:
+        return Check(
+            "Gateway config",
+            "warn",
+            f"rendered{stale_note}; agentgateway image not local",
+            f"Run 'podman pull {AGENTGATEWAY_IMAGE}' or 'make up'.",
+        )
+
+    env_args: list[str] = []
+    for key in ("LLM_GATEWAY_VIRTUAL_KEY", "LLM_UPSTREAM_API_KEY"):
+        if values.get(key, "").strip():
+            # Pass by name so the secret never appears in the process argv.
+            env_args.extend(["-e", key])
+    env_args.extend(
+        [
+            "-e",
+            f"MLFLOW_OTLP_HOST={values.get('MLFLOW_OTLP_HOST') or 'mlflow'}",
+            "-e",
+            f"MLFLOW_OTLP_PORT={values.get('MLFLOW_OTLP_PORT') or '5000'}",
+            "-e",
+            f"MLFLOW_EXPERIMENT_ID={values.get('MLFLOW_EXPERIMENT_ID') or '0'}",
+        ]
+    )
+    result = _run(
+        [
+            "podman",
+            "run",
+            "--rm",
+            *env_args,
+            "-v",
+            f"{config_path.resolve()}:/config/config.yaml:ro,z",
+            AGENTGATEWAY_IMAGE,
+            "--validate-only",
+            "-f",
+            "/config/config.yaml",
+        ],
+        timeout=30,
+    )
+    if result is None:
+        return Check(
+            "Gateway config",
+            "warn",
+            f"rendered{stale_note}; validation timed out",
+            hint,
+        )
+    if result.returncode == 0:
+        return Check(
+            "Gateway config",
+            "warn" if stale else "ok",
+            f"valid{stale_note}",
+            hint,
+        )
+    detail = (result.stderr or result.stdout).strip().splitlines()
+    return Check(
+        "Gateway config",
+        "fail",
+        (detail[0] if detail else f"validation failed ({result.returncode})")[:300],
+        hint,
+    )
+
+
 def host_checks(
     settings: Settings, env: Mapping[str, str] | None = None
 ) -> list[Check]:
@@ -243,30 +333,7 @@ def host_checks(
             )
         )
 
-    gateway_config = Path("agentgateway/config.generated.yaml")
-    if not gateway_config.is_file():
-        checks.append(
-            Check(
-                "Gateway config",
-                "warn",
-                "not rendered",
-                "Run 'make gateway-config' (or 'make up').",
-            )
-        )
-    else:
-        env_file = Path(".env")
-        stale = (
-            env_file.is_file()
-            and env_file.stat().st_mtime > gateway_config.stat().st_mtime
-        )
-        checks.append(
-            Check(
-                "Gateway config",
-                "warn" if stale else "ok",
-                "older than .env" if stale else str(gateway_config),
-                "Run 'make gateway-config' after changing provider settings.",
-            )
-        )
+    checks.append(gateway_config_check(values))
 
     docker = shutil.which("docker")
     checks.append(

@@ -440,7 +440,9 @@ The admin UI and LLM playground are published on
 listener from the browser, so `AGENTGATEWAY_CORS_ORIGINS` includes the admin UI
 origins by default. Add your reverse-proxy origin there if you publish the UI
 elsewhere. The playground derives the LLM URL from `LLM_GATEWAY_PORT`, so the
-container listener and the host-published port are intentionally the same.
+container listener and the host-published port are intentionally the same. The
+renderer binds the LLM routes to the `default` gateway on that port instead of
+using the deprecated `llm.port` field.
 
 The generated config is mounted read-write so the admin UI can save CORS and
 model changes. It contains no provider key; the provider key stays in the
@@ -1319,9 +1321,9 @@ make doctor
 ```
 
 It checks Python, Podman and Podman Compose, the rootless socket, KVM, the job
-network, the job image, the required `.env` values, the gateway, the GUI, and
-the selected LLM provider. Use `./scripts/doctor.sh --offline` to skip network
-checks.
+network, the job image, the required `.env` values, the rendered gateway config,
+the gateway, the GUI, and the selected LLM provider. Use
+`./scripts/doctor.sh --offline` to skip network checks.
 
 Common failures:
 
