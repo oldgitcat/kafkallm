@@ -1,110 +1,326 @@
 name: kafkallm
 
 x-app-environment: &app-environment
-  KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+  KAFKA_BOOTSTRAP_SERVERS: kafka:9092
   JOBS_TOPIC: ${JOBS_TOPIC:-jobs.in}
   RESULTS_TOPIC: ${RESULTS_TOPIC:-jobs.out}
+  STATE_TOPIC: ${STATE_TOPIC:-jobs.state}
   EVENTS_TOPIC: ${EVENTS_TOPIC:-agent.events}
+  AGENTS_TOPIC: ${AGENTS_TOPIC:-agents.state}
+  SANDBOXES_TOPIC: ${SANDBOXES_TOPIC:-sandboxes.state}
+  CANCELS_TOPIC: ${CANCELS_TOPIC:-jobs.cancel}
+  LOGS_TOPIC: ${LOGS_TOPIC:-jobs.logs}
   KAFKA_GROUP_ID: ${KAFKA_GROUP_ID:-agent-workers}
   KAFKA_TOPIC_PARTITIONS: ${KAFKA_TOPIC_PARTITIONS:-3}
   KAFKA_TOPIC_RETENTION_MS: ${KAFKA_TOPIC_RETENTION_MS:-604800000}
   KAFKA_STARTUP_TIMEOUT_SECONDS: ${KAFKA_STARTUP_TIMEOUT_SECONDS:-300}
-  LLM_PROVIDER: ${LLM_PROVIDER:-echo}
-  LLM_MODEL: ${LLM_MODEL:-}
-  LLM_API_KEY: ${LLM_API_KEY:-}
-  LLM_BASE_URL: ${LLM_BASE_URL:-}
-  WORKSPACE_ROOT: /workspace
-  MAX_JOB_TIMEOUT_SECONDS: ${MAX_JOB_TIMEOUT_SECONDS:-900}
+  WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-1}
+  GOOSE_MODEL: ${GOOSE_MODEL:-}
+  GOOSE_PROVIDER: ${GOOSE_PROVIDER:-}
+  GOOSE_STARTUP_TIMEOUT_SECONDS: ${GOOSE_STARTUP_TIMEOUT_SECONDS:-300}
+  GOOSE_IMAGE: ${GOOSE_IMAGE:-kafkallm-goose-job:latest}
+  # Optional reverse-engineering sandbox (REA + Ghidra).
+  GOOSE_RE_IMAGE: ${GOOSE_RE_IMAGE:-kafkallm-rea-job:latest}
+  GOOSE_JOB_DOCKER_HOST: ${GOOSE_JOB_DOCKER_HOST:-tcp://127.0.0.1:2375}
+  GOOSE_JOB_RAM_MIB: ${GOOSE_JOB_RAM_MIB:-2048}
+  GOOSE_JOB_CPUS: ${GOOSE_JOB_CPUS:-2}
+  GOOSE_JOB_MEMORY_LIMIT: ${GOOSE_JOB_MEMORY_LIMIT:-4g}
+  GOOSE_JOB_PIDS_LIMIT: ${GOOSE_JOB_PIDS_LIMIT:-512}
+  GOOSE_JOB_TMPFS_SIZE: ${GOOSE_JOB_TMPFS_SIZE:-1g}
+  GOOSE_JOB_MAX_TURNS: ${GOOSE_JOB_MAX_TURNS:-60}
+  GOOSE_JOB_SUBAGENT_MAX_TURNS: ${GOOSE_JOB_SUBAGENT_MAX_TURNS:-40}
+  GOOSE_JOB_REFLECT_ENABLED: ${GOOSE_JOB_REFLECT_ENABLED:-true}
+  GOOSE_JOB_REFLECT_TIMEOUT_SECONDS: ${GOOSE_JOB_REFLECT_TIMEOUT_SECONDS:-300}
+  GOOSE_JOB_USE_PASST: ${GOOSE_JOB_USE_PASST:-false}
+  GOOSE_JOB_WORKSPACE_ROOT: ${GOOSE_JOB_WORKSPACE_ROOT:-/var/lib/kafkallm/jobs}
+  GOOSE_JOB_SKILLS_DIR: ${GOOSE_JOB_SKILLS_DIR:-/var/lib/kafkallm/skills}
+  # Optional drop-in agent profiles, imported by the GUI at startup.
+  GOOSE_JOB_AGENTS_DIR: ${GOOSE_JOB_AGENTS_DIR:-/var/lib/kafkallm/agents}
+  GOOSE_JOB_TOOLS_DIR: ${GOOSE_JOB_TOOLS_DIR:-/var/lib/kafkallm/tools}
+  GOOSE_JOB_CONFIG_DIR: ${GOOSE_JOB_CONFIG_DIR:-/var/lib/kafkallm/config}
+  GOOSE_JOB_NETWORK: ${GOOSE_JOB_NETWORK:-kafkallm-jobs}
+  GOOSE_JOB_NETWORK_SUBNET: ${GOOSE_JOB_NETWORK_SUBNET:-fd00:6b61:666b:616c::/64}
+  # The network definition lives in the host's rootless Podman storage and is
+  # created by scripts/init-job-network.sh. The worker only verifies it.
+  GOOSE_JOB_NETWORK_AUTOCREATE: "false"
+  GOOSE_JOB_PROXY_NETWORK: ${GOOSE_JOB_PROXY_NETWORK:-podman}
+  GOOSE_JOB_PROXY_UPSTREAM_HOST: ${GOOSE_JOB_PROXY_UPSTREAM_HOST:-host.containers.internal}
+  GOOSE_JOB_PROXY_UPSTREAM_PORT: ${GOOSE_JOB_PROXY_UPSTREAM_PORT:-8091}
+  WORKSPACE_ROOT: ${WORKSPACE_ROOT:-/var/lib/kafkallm/staging}
+  MAX_JOB_TIMEOUT_SECONDS: ${MAX_JOB_TIMEOUT_SECONDS:-1800}
   MAX_AGENT_STEPS: ${MAX_AGENT_STEPS:-8}
+  ALLOW_UNLIMITED_JOBS: ${ALLOW_UNLIMITED_JOBS:-false}
+  MAX_RESULT_BYTES: ${MAX_RESULT_BYTES:-500000}
+  MAX_OUTPUT_FILES: ${MAX_OUTPUT_FILES:-100}
+  UNLIMITED_MAX_TURNS: ${UNLIMITED_MAX_TURNS:-100000}
+  UNLIMITED_MAX_SUBAGENT_TURNS: ${UNLIMITED_MAX_SUBAGENT_TURNS:-100000}
+  UNLIMITED_MAX_POLL_INTERVAL_MS: ${UNLIMITED_MAX_POLL_INTERVAL_MS:-86400000}
+  GUI_HOST: ${GUI_HOST:-0.0.0.0}
+  GUI_PORT: ${GUI_PORT:-8090}
+  GUI_MAX_REQUEST_BYTES: ${GUI_MAX_REQUEST_BYTES:-2097152}
+  UPLOAD_MAX_FILES: ${UPLOAD_MAX_FILES:-16}
+  UPLOAD_MAX_FILE_BYTES: ${UPLOAD_MAX_FILE_BYTES:-52428800}
+  UPLOAD_MAX_TOTAL_BYTES: ${UPLOAD_MAX_TOTAL_BYTES:-104857600}
   S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-}
   S3_REGION: ${S3_REGION:-local}
   S3_BUCKET: ${S3_BUCKET:-jobs}
   S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-rustfs}
   S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-kafkallm-secret}
   AGENT_NAME: ${AGENT_NAME:-agent-worker}
-  PHOENIX_ENABLED: ${PHOENIX_ENABLED:-true}
-  PHOENIX_COLLECTOR_ENDPOINT: ${PHOENIX_COLLECTOR_ENDPOINT:-http://phoenix:6006}
-  PHOENIX_PROJECT_NAME: ${PHOENIX_PROJECT_NAME:-kafkallm}
-  PHOENIX_CAPTURE_CONTENT: ${PHOENIX_CAPTURE_CONTENT:-false}
+  TELEMETRY_CAPTURE_CONTENT: ${TELEMETRY_CAPTURE_CONTENT:-false}
+  # MLflow is the default observability backend. It ingests OTLP/HTTP traces.
+  MLFLOW_ENABLED: ${MLFLOW_ENABLED:-true}
+  MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://mlflow:5000}
+  MLFLOW_EXPERIMENT_ID: ${MLFLOW_EXPERIMENT_ID:-0}
+
+x-worker-environment: &worker-environment
+  <<: *app-environment
+  # The job-facing URL is resolved inside the microVM to the IPv6 address of
+  # the allowlisting proxy. Do not point this at a Compose service name: the
+  # microVM cannot reach the Docker network.
+  LLM_GATEWAY_URL: ${LLM_GATEWAY_URL:-http://host.containers.internal:8091}
+  LLM_GATEWAY_VIRTUAL_KEY: ${LLM_GATEWAY_VIRTUAL_KEY:-}
+  # The worker polls the agentgateway readiness listener over the Compose
+  # network. agentgateway has no shell, so Compose cannot healthcheck it.
+  LLM_GATEWAY_READY_URL: ${LLM_GATEWAY_READY_URL:-http://llm-gateway:15021/healthz/ready}
+  LLM_GATEWAY_PORT: ${LLM_GATEWAY_PORT:-8091}
 
 services:
-  redpanda:
-    image: docker.redpanda.com/redpandadata/redpanda:v26.2.6
-    command:
-      - redpanda
-      - start
-      - --mode=dev-container
-      - --smp=1
-      - --default-log-level=info
-      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
-      - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:19092
+  # Apache Kafka in KRaft mode: no ZooKeeper, no separate license terms.
+  # Internal clients use kafka:9092; host tools use localhost:19092.
+  kafka:
+    image: apache/kafka:4.4.0
+    environment:
+      CLUSTER_ID: ${KAFKA_CLUSTER_ID:-kafkallm-local-cluster}
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: INTERNAL://:9092,EXTERNAL://:19092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:19092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: ${KAFKA_TOPIC_PARTITIONS:-3}
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
     ports:
-      - "19092:19092"
+      - "127.0.0.1:19092:19092"
     volumes:
-      - redpanda-data:/var/lib/redpanda/data
+      - kafka-data:/var/lib/kafka/data
     healthcheck:
-      test: ["CMD", "rpk", "cluster", "info", "-X", "brokers=localhost:9092"]
-      interval: 5s
-      timeout: 10s
-      retries: 20
-      start_period: 10s
+      test:
+        - CMD-SHELL
+        - /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1
+      interval: 10s
+      timeout: 15s
+      retries: 12
+      start_period: 20s
     restart: unless-stopped
 
-  console:
-    image: docker.redpanda.com/redpandadata/console:v3.13.1
-    entrypoint: /bin/sh
-    command: -c 'echo "$$CONSOLE_CONFIG_FILE" > /tmp/config.yml && /app/console'
+  # kafbat/kafka-ui is Apache-2.0 and replaces the source-available
+  # Redpanda Console for topic inspection.
+  kafka-ui:
+    image: ghcr.io/kafbat/kafka-ui:v1.5.0
     environment:
-      CONFIG_FILEPATH: /tmp/config.yml
-      CONSOLE_CONFIG_FILE: |
-        kafka:
-          brokers: ["redpanda:9092"]
+      KAFKA_CLUSTERS_0_NAME: kafkallm
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     depends_on:
-      redpanda:
+      kafka:
         condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
 
-  phoenix:
-    image: arizephoenix/phoenix:21.0.0
-    environment:
-      PHOENIX_WORKING_DIR: /mnt/data
-      PHOENIX_ENABLE_AUTH: "false"
-      PHOENIX_TELEMETRY_ENABLED: "false"
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v3.18.0
+    command:
+      - mlflow
+      - server
+      - --backend-store-uri
+      - sqlite:////mlflow/mlflow.db
+      - --default-artifact-root
+      - /mlflow/artifacts
+      - --host
+      - 0.0.0.0
+      - --port
+      - "5000"
+      # OTLP exporters in the Compose network use the service name as Host.
+      - --allowed-hosts
+      - "mlflow,mlflow:5000,localhost,localhost:5000,127.0.0.1,127.0.0.1:5000"
     ports:
-      - "127.0.0.1:${PHOENIX_UI_PORT:-6006}:6006"
-      - "127.0.0.1:${OTLP_GRPC_PORT:-4317}:4317"
+      - "127.0.0.1:${MLFLOW_UI_PORT:-5000}:5000"
     volumes:
-      - phoenix-data:/mnt/data
+      - mlflow-data:/mlflow
     restart: unless-stopped
+
+  kafkallm-job-init:
+    image: busybox:1.37
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        mkdir -p /var/lib/kafkallm/jobs /var/lib/kafkallm/staging \
+          /var/lib/kafkallm/skills /var/lib/kafkallm/agents \
+          /var/lib/kafkallm/tools/bin /var/lib/kafkallm/config
+        chmod -R 777 /var/lib/kafkallm 2>/dev/null || true
+    volumes:
+      - ${KAFKALLM_JOB_ROOT:-/var/lib/kafkallm}:/var/lib/kafkallm:z
+    restart: "no"
+
+  podman-proxy:
+    image: tecnativa/docker-socket-proxy:v0.5.0
+    # Share the worker's network namespace and listen on its loopback only, so
+    # the root-equivalent Podman API is reachable by the worker and by nothing
+    # else (the job microVMs run in a different namespace).
+    network_mode: "service:agent-worker"
+    environment:
+      SOCKET_PATH: ${PODMAN_SOCKET:-/run/user/1000/podman/podman.sock}
+      BIND_CONFIG: "127.0.0.1:2375"
+      CONTAINERS: "1"
+      EXEC: "1"
+      IMAGES: "1"
+      NETWORKS: "1"
+      VOLUMES: "1"
+      VERSION: "1"
+      PING: "1"
+      POST: "1"
+      ALLOW_START: "1"
+      ALLOW_STOP: "1"
+    volumes:
+      # Rootless Podman API (systemctl --user enable --now podman.socket).
+      # Adjust PODMAN_SOCKET if your UID is not 1000.
+      - ${PODMAN_SOCKET:-/run/user/1000/podman/podman.sock}:${PODMAN_SOCKET:-/run/user/1000/podman/podman.sock}
+    security_opt:
+      - label=disable
+    depends_on:
+      agent-worker:
+        condition: service_started
+    restart: unless-stopped
+
+  llm-gateway:
+    image: cr.agentgateway.dev/agentgateway:v1.7.0
+    command: ["-f", "/config/config.yaml"]
+    environment:
+      # The provider key lives only in this service. The worker and the job
+      # microVM receive the virtual key, which the gateway validates and
+      # replaces with the provider key before forwarding upstream.
+      # Provider selection is rendered into the config before startup.
+      LLM_UPSTREAM_API_KEY: ${LLM_UPSTREAM_API_KEY:-${OPENROUTER_API_KEY:-}}
+      LLM_GATEWAY_VIRTUAL_KEY: ${LLM_GATEWAY_VIRTUAL_KEY:-}
+      MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://mlflow:5000}
+      MLFLOW_OTLP_HOST: ${MLFLOW_OTLP_HOST:-mlflow}
+      MLFLOW_OTLP_PORT: ${MLFLOW_OTLP_PORT:-5000}
+      MLFLOW_EXPERIMENT_ID: ${MLFLOW_EXPERIMENT_ID:-0}
+    volumes:
+      # The admin UI saves CORS/model changes to this file. It contains no
+      # secrets; the provider key stays in the process environment.
+      - ./agentgateway/config.generated.yaml:/config/config.yaml:rw,z
+    ports:
+      # Rootless Podman cannot reach a host service bound only to loopback:
+      # host.containers.internal is mapped to the host-side pasta address.
+      # The virtual key still gates every request.
+      # The LLM listener and the published port are the same value so the
+      # browser playground, jobs, and external clients all use one port.
+      - "${LLM_GATEWAY_BIND:-0.0.0.0}:${LLM_GATEWAY_PORT:-8091}:${LLM_GATEWAY_PORT:-8091}"
+      # agentgateway admin UI; localhost only.
+      - "127.0.0.1:${AGENTGATEWAY_UI_PORT:-15000}:15000"
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
 
   agent-worker:
+    image: ${KAFKALLM_APP_IMAGE:-kafkallm-app:latest}
     build: .
-    environment: *app-environment
+    environment: *worker-environment
+    init: true
     volumes:
-      - agent-workspace:/workspace
+      - ${KAFKALLM_JOB_ROOT:-/var/lib/kafkallm}:/var/lib/kafkallm:z
     depends_on:
-      redpanda:
+      kafka:
         condition: service_healthy
+      kafkallm-job-init:
+        condition: service_completed_successfully
+      llm-gateway:
+        condition: service_started
+      mlflow:
+        condition: service_started
     restart: unless-stopped
     read_only: true
     tmpfs:
       - /tmp:size=256m
     security_opt:
       - no-new-privileges:true
+      # The job microVMs create files with private SELinux categories. The
+      # worker is the trusted control plane and must be able to remove them.
+      - label=disable
     cap_drop:
       - ALL
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import pathlib,sys; sys.exit(0 if pathlib.Path('/tmp/kafkallm-worker-ready').exists() else 1)"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
     stop_grace_period: 30s
 
+  gui:
+    image: ${KAFKALLM_APP_IMAGE:-kafkallm-app:latest}
+    build: .
+    command: ["kafkallm", "gui"]
+    environment: *app-environment
+    volumes:
+      # The GUI reads and writes custom agent profiles here.
+      - ${GOOSE_JOB_AGENTS_DIR:-/var/lib/kafkallm/agents}:${GOOSE_JOB_AGENTS_DIR:-/var/lib/kafkallm/agents}:z
+    ports:
+      - "127.0.0.1:${GUI_PORT:-8090}:${GUI_PORT:-8090}"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.getenv('GUI_PORT', '8090') + '/healthz', timeout=2)"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
   jobctl:
+    image: ${KAFKALLM_APP_IMAGE:-kafkallm-app:latest}
     build: .
     profiles: ["cli"]
     entrypoint: ["kafkallm"]
     command: ["--help"]
     environment: *app-environment
     depends_on:
-      redpanda:
+      kafka:
         condition: service_healthy
 
   rustfs:
@@ -116,8 +332,8 @@ services:
       RUSTFS_CONSOLE_ENABLE: "true"
       RUSTFS_REGION: ${S3_REGION:-local}
     ports:
-      - "${RUSTFS_API_PORT:-9000}:9000"
-      - "${RUSTFS_CONSOLE_PORT:-9001}:9001"
+      - "127.0.0.1:${RUSTFS_API_PORT:-9000}:9000"
+      - "127.0.0.1:${RUSTFS_CONSOLE_PORT:-9001}:9001"
     volumes:
       - rustfs-data:/data
     healthcheck:
@@ -129,7 +345,6 @@ services:
     restart: unless-stopped
 
 volumes:
-  redpanda-data:
-  agent-workspace:
+  kafka-data:
   rustfs-data:
-  phoenix-data:
+  mlflow-data:

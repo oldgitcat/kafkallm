@@ -1,0 +1,26 @@
+# Example custom sandbox image. Extend either the normal job image or the
+# reverse-engineering image (REA + Ghidra) with extra packages.
+#
+# Build it with:
+#   GOOSE_JOB_BASE_IMAGE=kafkallm-rea-job:latest \
+#   GOOSE_IMAGE=kafkallm-custom-job:latest \
+#   GOOSE_JOB_DOCKERFILE=goose_job/Dockerfile.example \
+#     ./scripts/build-goose-image.sh
+#
+# For small additions, prefer GOOSE_JOB_EXTRA_PACKAGES in the main Dockerfile;
+# for static binaries, drop them into GOOSE_JOB_TOOLS_DIR
+# (/var/lib/kafkallm/tools) on the host instead of rebuilding.
+
+ARG BASE_IMAGE=kafkallm-goose-job:latest
+FROM ${BASE_IMAGE}
+
+USER root
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        gdb \
+        binwalk \
+        yara \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace

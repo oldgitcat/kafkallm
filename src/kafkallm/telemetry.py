@@ -6,13 +6,12 @@ from typing import Any
 from opentelemetry import propagate, trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace import SpanLimits, TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace import Span, Status, StatusCode
 
 from kafkallm import __version__
 from kafkallm.settings import Settings
-
 
 _provider: TracerProvider | None = None
 _capture_content = False
@@ -20,7 +19,7 @@ _capture_content = False
 
 def configure_telemetry(settings: Settings) -> None:
     global _provider, _capture_content
-    _capture_content = settings.phoenix_capture_content
+    _capture_content = settings.telemetry_capture_content
     if _provider is not None:
         return
 
@@ -29,20 +28,33 @@ def configure_telemetry(settings: Settings) -> None:
             "service.name": settings.agent_name,
             "service.version": __version__,
             "service.instance.id": settings.worker_id,
-            "openinference.project.name": settings.phoenix_project_name,
         }
     )
-    provider = TracerProvider(resource=resource)
-    if settings.phoenix_enabled:
-        endpoint = settings.phoenix_collector_endpoint.rstrip("/")
-        if not endpoint.endswith("/v1/traces"):
-            endpoint = f"{endpoint}/v1/traces"
-        exporter = OTLPSpanExporter(endpoint=endpoint, timeout=2)
+    # Goose stream activity is recorded as span events, so allow more than the
+    # SDK default of 128 events per span.
+    provider = TracerProvider(
+        resource=resource,
+        span_limits=SpanLimits(max_events=512),
+    )
+    if settings.mlflow_enabled:
+        endpoint = _traces_endpoint(settings.mlflow_tracking_uri)
+        exporter = OTLPSpanExporter(
+            endpoint=endpoint,
+            headers={"x-mlflow-experiment-id": settings.mlflow_experiment_id},
+            timeout=2,
+        )
         provider.add_span_processor(
             BatchSpanProcessor(exporter, schedule_delay_millis=500)
         )
     trace.set_tracer_provider(provider)
     _provider = provider
+
+
+def _traces_endpoint(base: str) -> str:
+    endpoint = base.rstrip("/")
+    if not endpoint.endswith("/v1/traces"):
+        endpoint = f"{endpoint}/v1/traces"
+    return endpoint
 
 
 def shutdown_telemetry() -> None:
@@ -63,6 +75,15 @@ def capture_content() -> bool:
 def set_content(span: Span, key: str, value: str | None) -> None:
     if _capture_content and value is not None:
         span.set_attribute(key, value)
+
+
+def set_session(span: Span, session_id: str) -> None:
+    """Group all spans of one job into an MLflow trace session.
+
+    MLflow maps the OpenTelemetry ``session.id`` attribute to the trace metadata
+    key ``mlflow.trace.session``, which drives the Sessions view.
+    """
+    span.set_attribute("session.id", session_id)
 
 
 def set_error(span: Span, error: Exception) -> None:

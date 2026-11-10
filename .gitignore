@@ -1,8 +1,21 @@
 .env
+.env.*
+!.env.example
 .venv/
 __pycache__/
 .pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 *.py[cod]
 *.egg-info/
 dist/
 build/
+# Generated from .env by scripts/render-agentgateway-config.sh.
+agentgateway/config.generated.yaml
+# Stray directories from a mis-parsed podman invocation.
+--time=*/
+.DS_Store
+
+# Local screenshots
+Screenshot*.png

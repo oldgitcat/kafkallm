@@ -8,8 +8,8 @@ from confluent_kafka.admin import AdminClient, NewTopic
 from pydantic import BaseModel
 
 from kafkallm.models import to_json_bytes
+from kafkallm.retry import RetryTimeout, retry_until
 from kafkallm.settings import Settings
-
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +28,29 @@ def ensure_topics(settings: Settings) -> None:
             replication_factor=1,
             config={"retention.ms": str(settings.kafka_retention_ms)},
         )
-        for name in {settings.jobs_topic, settings.results_topic, settings.events_topic}
+        for name in {
+            settings.jobs_topic,
+            settings.results_topic,
+            settings.events_topic,
+            settings.cancels_topic,
+            settings.logs_topic,
+        }
     }
+    for name in {
+        settings.state_topic,
+        settings.agents_topic,
+        settings.sandboxes_topic,
+    }:
+        topics[name] = NewTopic(
+            name,
+            num_partitions=settings.kafka_topic_partitions,
+            replication_factor=1,
+            config={
+                "cleanup.policy": "compact",
+                "retention.ms": "-1",
+                "min.cleanable.dirty.ratio": "0.01",
+            },
+        )
     futures = admin.create_topics(list(topics.values()))
     for name, future in futures.items():
         try:
@@ -43,30 +64,18 @@ def ensure_topics(settings: Settings) -> None:
 
 def wait_for_kafka(settings: Settings) -> None:
     deadline = time.monotonic() + max(0, settings.kafka_startup_timeout_seconds)
-    delay = 1.0
-    last_error: Exception | None = None
-
-    while time.monotonic() < deadline:
-        try:
-            _check_broker(settings)
-            ensure_topics(settings)
-            logger.info("Redpanda is reachable and topics are ready")
-            return
-        except (KafkaException, TimeoutError, OSError) as exc:
-            last_error = exc
-            remaining = max(0.0, deadline - time.monotonic())
-            logger.warning(
-                "Redpanda not ready yet (%s); retrying in %.1fs",
-                exc,
-                min(delay, remaining),
-            )
-        time.sleep(min(delay, max(0.0, deadline - time.monotonic())))
-        delay = min(delay * 2, 10.0)
-
-    message = "Redpanda did not become available within the startup timeout"
-    if last_error is not None:
-        raise RuntimeError(message) from last_error
-    raise RuntimeError(message)
+    try:
+        retry_until(
+            deadline,
+            lambda: (_check_broker(settings), ensure_topics(settings)),
+            description="Kafka",
+            logger=logger,
+        )
+    except RetryTimeout as exc:
+        raise RuntimeError(
+            "Kafka did not become available within the startup timeout"
+        ) from exc
+    logger.info("Kafka is reachable and topics are ready")
 
 
 class KafkaProducer:
@@ -126,6 +135,21 @@ class KafkaProducer:
             headers=headers or [],
             on_delivery=self._log_delivery_error,
         )
+
+    def send_tombstones(self, topic: str, keys: list[str]) -> None:
+        """Delete compacted records by writing null values for their keys."""
+        if not keys:
+            return
+        for key in keys:
+            self.producer.produce(
+                topic=topic,
+                key=key.encode("utf-8"),
+                value=None,
+                on_delivery=self._log_delivery_error,
+            )
+        remaining = self.producer.flush(timeout=30)
+        if remaining:
+            raise TimeoutError("Kafka tombstones could not be confirmed.")
 
     def close(self) -> None:
         self.producer.flush(timeout=10)

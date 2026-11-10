@@ -4,11 +4,12 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from opentelemetry import trace as otel_trace
+
 from kafkallm.kafka import KafkaProducer
 from kafkallm.models import AgentEvent, Job
 from kafkallm.settings import Settings
 from kafkallm.telemetry import inject_trace_headers, new_trace_id
-
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,7 @@ class AuditLogger:
         self.settings = settings
         self.producer = producer
 
-    def for_job(self, job: Job) -> "JobAudit":
+    def for_job(self, job: Job) -> JobAudit:
         return JobAudit(
             producer=self.producer,
             topic=self.settings.events_topic,
@@ -62,6 +63,7 @@ class JobAudit:
             attributes=attributes or {},
             error=error[:4000] if error else None,
         )
+        self._record_span_event(event_type, status, event.attributes, event.error)
         try:
             self.producer.send_async(
                 topic=self.topic,
@@ -78,3 +80,22 @@ class JobAudit:
             return None
         self.last_event_id = event.event_id
         return event.event_id
+
+    @staticmethod
+    def _record_span_event(
+        event_type: str,
+        status: str,
+        attributes: dict[str, Any],
+        error: str | None,
+    ) -> None:
+        """Mirror the audit event into the active span for the MLflow timeline."""
+        span = otel_trace.get_current_span()
+        if not span.is_recording():
+            return
+        event_attributes: dict[str, Any] = {"status": status}
+        for key, value in attributes.items():
+            if isinstance(value, (str, bool, int, float)):
+                event_attributes[f"kafkallm.{key}"] = value
+        if error:
+            event_attributes["error"] = error[:1000]
+        span.add_event(event_type, attributes=event_attributes)
