@@ -13,7 +13,11 @@ from pathlib import Path
 from typing import Any
 
 from kafkallm.audit import JobAudit
-from kafkallm.goose_output import parse_goose_output, stream_event_log_records
+from kafkallm.goose_output import (
+    NO_OUTPUT_ERROR,
+    parse_goose_output_file,
+    stream_event_log_records,
+)
 from kafkallm.job_network import ensure_job_network
 from kafkallm.models import AgentResult, AgentSpec, Job, SandboxSpec
 from kafkallm.retry import RetryTimeout, retry_until
@@ -804,11 +808,15 @@ class GooseJobRunner:
                 exit_code, timed_out = self._wait(
                     main_container, deadline, heartbeat=heartbeat
                 )
-                raw = self._read_text(workdir, "main.jsonl")
-                if not raw.strip():
-                    raw = self._read_text(workdir, "main.json")
                 main_error = self._read_text(workdir, "main.err")
-                if not raw.strip():
+                output, usage, steps, event_error = parse_goose_output_file(
+                    workdir / ".kafkallm" / "main.jsonl"
+                )
+                if event_error == NO_OUTPUT_ERROR:
+                    output, usage, steps, event_error = parse_goose_output_file(
+                        workdir / ".kafkallm" / "main.json"
+                    )
+                if event_error == NO_OUTPUT_ERROR:
                     if timed_out:
                         raise GooseJobRuntimeError(
                             "goose job exceeded the job deadline before "
@@ -819,8 +827,6 @@ class GooseJobRunner:
                         "goose microVM produced no result "
                         f"(exit code {exit_code}). {detail[:4000]}"
                     )
-
-                output, usage, steps, event_error = parse_goose_output(raw)
                 if event_error:
                     raise GooseJobRuntimeError(event_error[:4000])
                 if exit_code not in (None, 0):
@@ -1690,11 +1696,15 @@ class GooseJobRunner:
         returns true. The reflect container runs in a separate microVM and its
         writable skill tree is created by the worker after the main VM exits.
         """
-        raw = self._read_text(workdir, "reflect.jsonl")
-        if not raw.strip():
-            raw = self._read_text(workdir, "reflect.json")
+        text, usage, steps, error = parse_goose_output_file(
+            workdir / ".kafkallm" / "reflect.jsonl"
+        )
+        if error == NO_OUTPUT_ERROR:
+            text, usage, steps, error = parse_goose_output_file(
+                workdir / ".kafkallm" / "reflect.json"
+            )
         exit_raw = self._read_text(workdir, "reflect.exit").strip()
-        if not raw.strip():
+        if error == NO_OUTPUT_ERROR:
             stderr = self._read_text(workdir, "reflect.err").strip()
             if exit_raw == "124":
                 if audit:
@@ -1718,7 +1728,6 @@ class GooseJobRunner:
                     attributes={"status": "skipped"},
                 )
             return False
-        text, usage, steps, error = parse_goose_output(raw)
         if error or (exit_raw and exit_raw != "0"):
             if audit:
                 audit.emit(

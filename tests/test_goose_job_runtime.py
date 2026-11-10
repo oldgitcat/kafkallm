@@ -27,7 +27,11 @@ from kafkallm.goose_job_runtime import (
     _parse_bytes,
     _SpanActivity,
     _stream_event_log_records,
+)
+from kafkallm.goose_output import (
+    NO_OUTPUT_ERROR,
     parse_goose_output,
+    parse_goose_output_file,
 )
 from kafkallm.harness import Harness
 from kafkallm.models import AgentResult, AgentSpec, Job, SandboxSpec
@@ -1194,6 +1198,116 @@ def test_parse_goose_output_accepts_stream_json() -> None:
     }
     assert steps == 1
     assert error is None
+
+
+def test_parse_goose_output_file_reads_past_the_control_file_limit(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "main.jsonl"
+    tools = [f"tool_{index}" for index in range(180)]
+    filler = json.dumps(
+        {
+            "type": "message",
+            "message": {
+                "id": "m0",
+                "role": "assistant",
+                "content": [{"type": "thinking", "thinking": "..."}],
+                "metadata": {"operations": {"llm": {"advertised_tools": tools}}},
+            },
+        }
+    )
+    with path.open("w", encoding="utf-8") as stream:
+        stream.write(
+            json.dumps(
+                {
+                    "type": "message",
+                    "message": {
+                        "id": "m0",
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "STALE"}],
+                    },
+                }
+            )
+            + "\n"
+        )
+        written = stream.tell()
+        while written < 17 * 1024 * 1024:
+            stream.write(filler + "\n")
+            written += len(filler) + 1
+        stream.write(
+            json.dumps(
+                {
+                    "type": "message",
+                    "message": {
+                        "id": "m1",
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "FINAL ANSWER"}],
+                    },
+                }
+            )
+            + "\n"
+        )
+        stream.write(
+            json.dumps(
+                {
+                    "type": "complete",
+                    "input_tokens": 1,
+                    "output_tokens": 2,
+                    "total_tokens": 3,
+                }
+            )
+            + "\n"
+        )
+
+    text, usage, steps, error = parse_goose_output_file(path)
+
+    assert text == "FINAL ANSWER"
+    assert usage == {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
+    assert steps == 2
+    assert error is None
+
+
+def test_parse_goose_output_file_accepts_legacy_document(tmp_path: Path) -> None:
+    path = tmp_path / "main.json"
+    path.write_text(_goose_result(text="PONG"), encoding="utf-8")
+
+    text, usage, steps, error = parse_goose_output_file(path)
+
+    assert text == "PONG"
+    assert usage["total_tokens"] == 15
+    assert steps == 1
+    assert error is None
+
+
+def test_parse_goose_output_file_reports_missing_output(tmp_path: Path) -> None:
+    assert parse_goose_output_file(tmp_path / "main.jsonl") == (
+        "",
+        {},
+        0,
+        NO_OUTPUT_ERROR,
+    )
+
+
+def test_parse_goose_output_file_rejects_oversized_lines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("kafkallm.goose_output._MAX_STREAM_LINE_BYTES", 128)
+    path = tmp_path / "main.jsonl"
+    event = {
+        "type": "message",
+        "message": {
+            "id": "m1",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "x" * 500}],
+        },
+    }
+    path.write_text(json.dumps(event) + "\n", encoding="utf-8")
+
+    text, _, _, error = parse_goose_output_file(path)
+
+    assert text == ""
+    assert error is not None
+    assert "larger than" in error
 
 
 def test_stream_event_log_records_extract_tool_activity() -> None:
