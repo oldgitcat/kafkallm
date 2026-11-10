@@ -1,0 +1,30 @@
+# Locked transitive dependencies for the kafkallm app image.
+# Regenerate intentionally with: make lock
+annotated-types==0.8.0
+boto3==1.43.127
+botocore==1.43.127
+certifi==2026.10.23
+charset-normalizer==3.5.2
+confluent-kafka==2.16.1
+docker==7.2.0
+googleapis-common-protos==1.76.0
+idna==3.20
+jmespath==1.1.0
+opentelemetry-api==1.45.2
+opentelemetry-exporter-http-transport==0.66b2
+opentelemetry-exporter-otlp-common==0.66b2
+opentelemetry-exporter-otlp-proto-common==1.45.2
+opentelemetry-exporter-otlp-proto-http==1.45.2
+opentelemetry-proto==1.45.2
+opentelemetry-sdk==1.45.2
+opentelemetry-semantic-conventions==0.66b2
+protobuf==7.36.2
+pydantic==2.14.3
+pydantic_core==2.50.4
+python-dateutil==2.9.0.post0
+requests==2.34.2
+s3transfer==0.19.3
+six==1.17.0
+typing-inspection==0.4.5
+typing_extensions==4.16.0
+urllib3==2.8.0

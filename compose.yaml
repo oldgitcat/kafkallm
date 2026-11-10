@@ -90,7 +90,7 @@ services:
   # Apache Kafka in KRaft mode: no ZooKeeper, no separate license terms.
   # Internal clients use kafka:9092; host tools use localhost:19092.
   kafka:
-    image: apache/kafka:4.4.0
+    image: apache/kafka:4.4.0@sha256:76af3d0116abbb33b4cd964af410d4921c33d1f663e7a95d5453a9c35a84869b
     environment:
       CLUSTER_ID: ${KAFKA_CLUSTER_ID:-kafkallm-local-cluster}
       KAFKA_NODE_ID: 1
@@ -125,7 +125,7 @@ services:
   # kafbat/kafka-ui is Apache-2.0 and replaces the source-available
   # Redpanda Console for topic inspection.
   kafka-ui:
-    image: ghcr.io/kafbat/kafka-ui:v1.5.0
+    image: ghcr.io/kafbat/kafka-ui:v1.5.0@sha256:2fc9a60b223de6d8cb45a64175afcbb79207ae19306a0b99c558aeaa1b22b6e9
     environment:
       KAFKA_CLUSTERS_0_NAME: kafkallm
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
@@ -139,7 +139,7 @@ services:
     restart: unless-stopped
 
   mlflow:
-    image: ghcr.io/mlflow/mlflow:v3.18.0
+    image: ghcr.io/mlflow/mlflow:v3.18.0@sha256:19f9de44741318515fc3a992429f177420c32d40d971a25f6ae4621a1b9c8516
     command:
       - mlflow
       - server
@@ -161,7 +161,7 @@ services:
     restart: unless-stopped
 
   kafkallm-job-init:
-    image: busybox:1.37
+    image: busybox:1.37@sha256:6138aaead614269ad0f4a6a36f888a256a4c62c02409de656f5e468ee625ddeb
     command:
       - sh
       - -c
@@ -176,7 +176,7 @@ services:
     restart: "no"
 
   podman-proxy:
-    image: tecnativa/docker-socket-proxy:v0.5.0
+    image: tecnativa/docker-socket-proxy:v0.5.0@sha256:1f5038b54f06c3e18422902cf00ba21803d1c97805aae032e5e6673d532d3459
     # Share the worker's network namespace and listen on its loopback only, so
     # the root-equivalent Podman API is reachable by the worker and by nothing
     # else (the job microVMs run in a different namespace).
@@ -206,7 +206,7 @@ services:
     restart: unless-stopped
 
   llm-gateway:
-    image: cr.agentgateway.dev/agentgateway:v1.7.0
+    image: cr.agentgateway.dev/agentgateway:v1.7.0@sha256:460dda874be2dfa95fa5713c1f46f26079dce78df576008df704e54a59d5780d
     command: ["-f", "/config/config.yaml"]
     environment:
       # The provider key lives only in this service. The worker and the job
@@ -218,9 +218,9 @@ services:
       MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://mlflow:5000}
       MLFLOW_OTLP_HOST: ${MLFLOW_OTLP_HOST:-mlflow}
       MLFLOW_OTLP_PORT: ${MLFLOW_OTLP_PORT:-5000}
-      # Gateway LLM traces go to their own experiment so they do not drown
-      # out the one-trace-per-job worker traces.
-      MLFLOW_EXPERIMENT_ID: ${MLFLOW_GATEWAY_EXPERIMENT_ID:-1}
+      # Gateway spans continue the job trace via the per-job proxy traceparent,
+      # so both exporters write to the same MLflow experiment.
+      MLFLOW_EXPERIMENT_ID: ${MLFLOW_EXPERIMENT_ID:-0}
     volumes:
       # The admin UI saves CORS/model changes to this file. It contains no
       # secrets; the provider key stays in the process environment.
@@ -327,7 +327,7 @@ services:
         condition: service_healthy
 
   rustfs:
-    image: rustfs/rustfs:1.0.0
+    image: rustfs/rustfs:1.0.0@sha256:8cc9801755448b71a786705ce76692c77e14936cccd87cf2fc31842e58f4d1ff
     profiles: ["storage"]
     environment:
       RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY_ID:-rustfs}

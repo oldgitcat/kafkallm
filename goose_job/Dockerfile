@@ -4,7 +4,7 @@
 # The image intentionally contains no curl, wget, or other network clients in
 # its final stage. The only outbound path is the Kafkallm LLM gateway used by
 # goose; the provider credentials stay in the gateway.
-FROM debian:bookworm-slim AS goose-download
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS goose-download
 
 ARG GOOSE_VERSION=1.59.0
 ARG GOOSE_SHA256=a774667de6c20206a60d78d7bece2d9dda8389667e4f5c2fc8aaa758d1e81ef3
@@ -20,7 +20,7 @@ RUN curl -fsSL -o /tmp/goose.tar.gz \
     && tar -xzf /tmp/goose.tar.gz -C /opt/goose \
     && install -D -m 0755 /opt/goose/goose /usr/local/goose/bin/goose
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 
 # Add extra Debian packages here or at build time, for example:
 #   GOOSE_JOB_EXTRA_PACKAGES="openjdk-17-jre-headless" ./scripts/build-goose-image.sh

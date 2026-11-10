@@ -11,7 +11,7 @@ PYTEST := $(VENV)/bin/pytest
 RUFF := $(VENV)/bin/ruff
 VENV_STAMP := $(VENV)/.kafkallm-installed
 
-.PHONY: help setup gateway-config mlflow-init doctor bootstrap network images app-image rea-image up down restart logs ps test lint format venv clean reset
+.PHONY: help setup gateway-config doctor bootstrap network images app-image rea-image up down restart logs ps test lint format venv clean prune lock reset
 
 help: ## Show this help
 	@printf "%-14s %s\n" "target" "description"
@@ -22,9 +22,6 @@ setup: ## Create .env, generate the gateway key, and check required settings
 
 gateway-config: ## Render the agentgateway provider config from .env
 	./scripts/render-agentgateway-config.sh
-
-mlflow-init: ## Create/get the gateway MLflow experiment and update .env
-	./scripts/init-mlflow.sh
 
 doctor: ## Check host prerequisites, configuration, and services
 	./scripts/doctor.sh
@@ -46,8 +43,6 @@ rea-image: ## Build the optional REA + Ghidra job image
 up: gateway-config ## Build the app image and start the control plane
 	$(CONTAINER) build -t $(APP_IMAGE) .
 	-$(COMPOSE) --profile storage down --remove-orphans
-	$(COMPOSE) --profile storage up -d mlflow
-	./scripts/init-mlflow.sh
 	$(COMPOSE) --profile storage up -d --remove-orphans
 
 down: ## Stop the stack without deleting volumes
@@ -67,7 +62,7 @@ $(VENV_STAMP): pyproject.toml
 	@test -x $(VENV)/bin/python || $(PYTHON) -m venv $(VENV)
 	@$(VENV)/bin/python -m pip --version >/dev/null 2>&1 || \
 		$(VENV)/bin/python -m ensurepip --upgrade
-	$(VENV)/bin/python -m pip install -e '.[dev]'
+	$(VENV)/bin/python -m pip install -c constraints.txt -e '.[dev]'
 	@touch $(VENV_STAMP)
 
 test: venv ## Run the unit tests
@@ -89,4 +84,12 @@ reset: ## Stop the stack and delete all Kafka, trace, and storage data
 clean: ## Remove local caches and build output (keeps .env and .venv)
 	rm -rf build dist .pytest_cache .ruff_cache
 	find src tests -name '__pycache__' -type d -prune -exec rm -rf {} +
-	find . -maxdepth 1 -name '*.egg-info' -type d -prune -exec rm -rf {} +
+	find src . -maxdepth 1 -name '*.egg-info' -type d -prune -exec rm -rf {} +
+
+prune: ## Remove dangling images and local caches
+	$(CONTAINER) image prune -f
+	$(MAKE) clean
+
+lock: ## Regenerate constraints.txt from the current app image
+	{ printf '%s\n' '# Locked transitive dependencies for the kafkallm app image.' '# Regenerate intentionally with: make lock'; \
+	  $(CONTAINER) run --rm --entrypoint pip $(APP_IMAGE) freeze | grep -v '^kafkallm'; } > constraints.txt

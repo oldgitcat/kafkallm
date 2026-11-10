@@ -454,6 +454,9 @@ class JobHandler(BaseHTTPRequestHandler):
         if self.path == "/api/uploads":
             self._handle_upload()
             return
+        if self.path == "/api/agents/reload":
+            self._handle_agents_reload()
+            return
         if self.path == "/api/agents":
             self._handle_agent_save()
             return
@@ -622,6 +625,19 @@ class JobHandler(BaseHTTPRequestHandler):
             return
         self.server.sandboxes.put(updated)
         self._send_json(updated.model_dump(mode="json"))
+
+    def _handle_agents_reload(self) -> None:
+        try:
+            with self.server.producer_lock:
+                sync_agents(self.server.settings, self.server.producer)
+        except Exception as exc:
+            logger.exception("Could not reload agent profiles")
+            self._send_json(
+                {"error": f"Could not reload agents: {exc}"},
+                status=HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+            return
+        self._send_json({"status": "ok"})
 
     def _handle_agent_save(self) -> None:
         try:
