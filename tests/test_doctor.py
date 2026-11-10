@@ -20,9 +20,46 @@ def _settings() -> Settings:
 
 
 def test_configuration_checks_accept_a_complete_environment() -> None:
+    checks = configuration_checks(
+        _settings(),
+        {
+            "LLM_UPSTREAM_PROVIDER": "openrouter",
+            "LLM_UPSTREAM_API_KEY": "sk-or-v1-test",
+        },
+    )
+
+    assert [check.name for check in checks] == [
+        "Goose model",
+        "LLM provider",
+        "Provider API key",
+        "Provider base URL",
+        "Gateway virtual key",
+    ]
+    assert [check.status for check in checks] == ["ok"] * 5
+
+
+def test_configuration_checks_accept_the_legacy_openrouter_key() -> None:
     checks = configuration_checks(_settings(), {"OPENROUTER_API_KEY": "sk-or-v1-test"})
 
-    assert [check.status for check in checks] == ["ok", "ok", "ok"]
+    assert all(check.status == "ok" for check in checks)
+
+
+def test_configuration_checks_accept_ollama_without_a_key() -> None:
+    checks = configuration_checks(_settings(), {"LLM_UPSTREAM_PROVIDER": "ollama"})
+    by_name = {check.name: check for check in checks}
+
+    assert all(check.status == "ok" for check in checks)
+    assert "11434" in by_name["Provider base URL"].detail
+
+
+def test_custom_provider_requires_a_base_url() -> None:
+    checks = configuration_checks(
+        _settings(),
+        {"LLM_UPSTREAM_PROVIDER": "custom", "LLM_UPSTREAM_API_KEY": "key"},
+    )
+    by_name = {check.name: check for check in checks}
+
+    assert by_name["Provider base URL"].status == "fail"
 
 
 def test_configuration_checks_report_missing_values() -> None:
@@ -32,7 +69,9 @@ def test_configuration_checks_report_missing_values() -> None:
     by_name = {check.name: check for check in checks}
 
     assert by_name["Goose model"].status == "fail"
-    assert by_name["OpenRouter API key"].status == "fail"
+    assert by_name["LLM provider"].status == "ok"
+    assert by_name["Provider API key"].status == "fail"
+    assert by_name["Provider base URL"].status == "ok"
     assert by_name["Gateway virtual key"].status == "fail"
 
 

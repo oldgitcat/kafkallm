@@ -11,6 +11,8 @@ htmlcov/
 *.egg-info/
 dist/
 build/
+# Generated from .env by scripts/render-agentgateway-config.sh.
+agentgateway/config.generated.yaml
 # Stray directories from a mis-parsed podman invocation.
 --time=*/
 .DS_Store

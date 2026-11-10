@@ -46,7 +46,7 @@ Browser / CLI ──→ jobs.in ──→ worker ──→ rootless Podman (krun
                                   │      └─ /workspace bind mount
                                   │            │
                                   │            ▼
-                                  │      allowlisting proxy ──→ agentgateway ──→ OpenRouter
+                                  │      allowlisting proxy ──→ agentgateway ──→ LLM provider
                                   │      (agentgateway holds the real provider key)
                                   │
                                   ├─→ jobs.out      (results)
@@ -102,7 +102,7 @@ compacted; the other topics expire after `KAFKA_TOPIC_RETENTION_MS`.
 - GUI-managed sandbox/environment registry stored in compacted Kafka state, so
   new images appear in the job dropdown without a code change
 - An **[agentgateway](https://agentgateway.dev/)** LLM gateway that holds the
-  OpenRouter key and accepts only a rotatable virtual key from jobs
+  provider key and accepts only a rotatable virtual key from jobs
 - An IPv6-only internal Podman network where the HTTP allowlisting proxy is the
   only reachable peer; it accepts only the OpenAI chat-completions and model-list
   endpoints and forwards them to agentgateway
@@ -147,7 +147,8 @@ compacted; the other topics expire after `KAFKA_TOPIC_RETENTION_MS`.
 - Optional: Docker with the Compose plugin, when you prefer
   `make ENGINE=docker ...`
 - Python 3.12+ and `make` for the host-side scripts
-- An OpenRouter API key
+- An API key or reachable endpoint for your LLM provider (OpenRouter, OpenAI,
+  Ollama, or a custom OpenAI-compatible service)
 - Network access while building the job images
 - About 4 GiB of disk for the default image, more for the optional reverse image
 
@@ -162,9 +163,11 @@ make setup
 ```
 
 This creates `.env` from `.env.example`, generates
-`LLM_GATEWAY_VIRTUAL_KEY`, and checks the required values. If it reports a
-missing key, add your `OPENROUTER_API_KEY` to `.env`, choose a `GOOSE_MODEL`,
-and run `make setup` again. Then check the host:
+`LLM_GATEWAY_VIRTUAL_KEY`, validates the selected provider, and renders
+`agentgateway/config.generated.yaml`. Set `LLM_UPSTREAM_PROVIDER` and either
+`LLM_UPSTREAM_API_KEY` (OpenRouter, OpenAI, most hosted providers) or
+`LLM_UPSTREAM_BASE_URL` (Ollama, self-hosted/custom endpoints), choose a
+`GOOSE_MODEL`, and run `make setup` again. Then check the host:
 
 ```bash
 make doctor
@@ -318,7 +321,7 @@ The Kafka UI runs at <http://localhost:8080>. MLflow runs at
    `GET /v1/models/<id>`, allows one request per connection, and forwards to
    agentgateway on the host; the job cannot reach the internet, the LAN, Compose
    services, or the Podman API. agentgateway verifies the virtual key, replaces
-   it with the OpenRouter key, and streams the upstream response back.
+   it with the configured provider key, and streams the upstream response back.
 7. The goosetown orchestrator decomposes the job, dispatches parallel subagents
    through goose's `delegate`/`load` tools, coordinates them over `gtwall`, and
    writes result files to `outputs/`.
@@ -333,13 +336,17 @@ The microVM never talks to Kafka. The worker is the only Kafka participant.
 ## Configuration
 
 All runtime settings live in `.env`, created from `.env.example`. The file is
-gitignored. `make setup` generates the virtual gateway key and validates the
-required values; `OPENROUTER_API_KEY` is the only required secret.
+gitignored. `make setup` generates the virtual gateway key, validates the
+selected provider, and renders the agentgateway config. For hosted providers,
+the provider key is the only required secret.
 
 | Setting | Default | Purpose |
 |---|---|---|
-| `GOOSE_MODEL` | `nvidia/nemotron-3.5-lightning:free` | Model used inside the job |
-| `OPENROUTER_API_KEY` | — | Provider credential; only agentgateway sees it |
+| `GOOSE_MODEL` | `nvidia/nemotron-3.5-lightning:free` | Model used inside the job; must exist at the selected provider |
+| `LLM_UPSTREAM_PROVIDER` | `openrouter` | Upstream provider (`openrouter`, `openai`, `ollama`, `custom`, provider presets) |
+| `LLM_UPSTREAM_API_KEY` | — | Provider credential; only agentgateway sees it. `OPENROUTER_API_KEY` is accepted as a legacy alias for OpenRouter |
+| `LLM_UPSTREAM_BASE_URL` | provider default | Endpoint override; required for `custom`, defaults to host Ollama for `ollama` |
+| `LLM_UPSTREAM_FORMAT` | `completions` | Wire format for `custom` (see the module's `PROVIDER_FORMATS`) |
 | `LLM_GATEWAY_VIRTUAL_KEY` | generated | Rotatable key used by jobs |
 | `KAFKALLM_JOB_ROOT` | `/var/lib/kafkallm` | Host directory for workspaces, skills, tools, and config |
 | `GOOSE_IMAGE` | `kafkallm-goose-job:latest` | Default job microVM image |
@@ -350,20 +357,24 @@ required values; `OPENROUTER_API_KEY` is the only required secret.
 | `GUI_PORT` | `8090` | GUI listener |
 | `GUI_MAX_REQUEST_BYTES` | `2097152` | Limit for JSON request bodies (uploads use `UPLOAD_MAX_*`) |
 | `LLM_GATEWAY_PORT` | `8091` | LLM gateway listener |
+| `AGENTGATEWAY_UI_PORT` | `15000` | agentgateway admin UI / LLM playground (localhost only) |
 | `S3_ENDPOINT_URL` | `http://rustfs:9000` (storage profile) | Uploads and artifacts |
 | `MLFLOW_ENABLED` | `true` | OTLP traces to MLflow |
 
-See `.env.example` for every setting and `agentgateway/config.yaml` for the
-gateway policy.
+See `.env.example` for every setting and
+`agentgateway/config.template.yaml` for the gateway policy template. The active
+file is `agentgateway/config.generated.yaml` (gitignored), rendered by
+`make gateway-config` or automatically by `make up`.
 
 ## agentgateway and provider keys
 
 The `llm-gateway` Compose service runs
-[agentgateway](https://agentgateway.dev/) `v1.7.0`. Its config is committed at
-`agentgateway/config.yaml`.
+[agentgateway](https://agentgateway.dev/) `v1.7.0`. The committed
+`agentgateway/config.template.yaml` is provider-neutral; the LLM section is
+rendered from `.env` into `agentgateway/config.generated.yaml`.
 
-- The real OpenRouter key is configured only on agentgateway
-  (`OPENROUTER_API_KEY`). It is not passed to the worker, the job, or the GUI.
+- The real provider key is configured only on agentgateway
+  (`LLM_UPSTREAM_API_KEY`). It is not passed to the worker, the job, or the GUI.
 - Jobs authenticate to agentgateway with `LLM_GATEWAY_VIRTUAL_KEY`, a static,
   rotatable virtual key. agentgateway validates it, checks model access, and
   replaces it with the provider key before forwarding upstream.
@@ -377,10 +388,57 @@ The `llm-gateway` Compose service runs
   never logs it. Rotate the virtual key without rotating the provider key by
   editing `.env` and restarting the worker and gateway.
 
-The gateway is published on `${LLM_GATEWAY_BIND:-0.0.0.0}:${LLM_GATEWAY_PORT}`
-because rootless Podman reaches host services through a non-loopback pasta
-address. The virtual key is the access control. The listener is plain HTTP, so
-keep it on a trusted network or put it behind a TLS reverse proxy.
+### Provider examples
+
+Set these values in `.env`, then run `make setup` (or `make up`):
+
+**OpenRouter**
+```dotenv
+LLM_UPSTREAM_PROVIDER=openrouter
+LLM_UPSTREAM_BASE_URL=
+LLM_UPSTREAM_API_KEY=sk-or-v1-...
+GOOSE_MODEL=openai/gpt-4.1-mini
+```
+
+**OpenAI**
+```dotenv
+LLM_UPSTREAM_PROVIDER=openai
+LLM_UPSTREAM_BASE_URL=
+LLM_UPSTREAM_API_KEY=sk-...
+GOOSE_MODEL=gpt-4.1-mini
+```
+
+**Ollama on the host**
+```dotenv
+LLM_UPSTREAM_PROVIDER=ollama
+LLM_UPSTREAM_BASE_URL=http://host.containers.internal:11434/v1
+LLM_UPSTREAM_API_KEY=
+GOOSE_MODEL=llama3.2
+```
+
+**Custom OpenAI-compatible or self-hosted endpoint**
+```dotenv
+LLM_UPSTREAM_PROVIDER=openai
+LLM_UPSTREAM_BASE_URL=https://llm.example.com/v1
+LLM_UPSTREAM_API_KEY=...
+GOOSE_MODEL=my-model
+```
+
+**Custom non-OpenAI wire format**
+```dotenv
+LLM_UPSTREAM_PROVIDER=custom
+LLM_UPSTREAM_FORMAT=completions
+LLM_UPSTREAM_BASE_URL=https://llm.example.com/v1
+LLM_UPSTREAM_API_KEY=...
+GOOSE_MODEL=my-model
+```
+
+The admin UI and LLM playground are published on
+`http://127.0.0.1:${AGENTGATEWAY_UI_PORT:-15000}`. The OpenAI-compatible API is
+published on `${LLM_GATEWAY_BIND:-0.0.0.0}:${LLM_GATEWAY_PORT}` because rootless
+Podman reaches host services through a non-loopback pasta address. The virtual
+key is the access control. The listener is plain HTTP, so keep it on a trusted
+network or put it behind a TLS reverse proxy.
 
 Check it with the virtual key:
 
@@ -1243,7 +1301,7 @@ make doctor
 
 It checks Python, Podman and Podman Compose, the rootless socket, KVM, the job
 network, the job image, the required `.env` values, the gateway, the GUI, and
-OpenRouter connectivity. Use `./scripts/doctor.sh --offline` to skip network
+the selected LLM provider. Use `./scripts/doctor.sh --offline` to skip network
 checks.
 
 Common failures:
@@ -1254,8 +1312,11 @@ Common failures:
 | `Podman socket` fails | `systemctl --user enable --now podman.socket` |
 | `Job network` warns | Run `make network` on the host, not inside a container |
 | `Goose job image` warns | Run `make images` |
-| Worker waits for the gateway | Check `OPENROUTER_API_KEY` in `.env`, then `make restart` |
+| Worker waits for the gateway | Check `LLM_UPSTREAM_PROVIDER`/`LLM_UPSTREAM_API_KEY` in `.env`, run `make gateway-config`, then `make restart` |
 | Gateway rejects the virtual key | Rerun `make setup`, then `make restart` |
+| `Gateway config` warns | Run `make gateway-config` after changing provider settings |
+| Provider key rejected | Create a new key and update `LLM_UPSTREAM_API_KEY` |
+| Ollama unreachable from the gateway | Use `LLM_UPSTREAM_BASE_URL=http://host.containers.internal:11434/v1` |
 | `podman compose config` fails | Fix the reported `.env` or `compose.yaml` value |
 
 Logs:
@@ -1273,8 +1334,8 @@ podman compose logs -f llm-gateway
 src/kafkallm/       worker, GUI, job store, doctor, Kafka, state, agents,
                     sandboxes, goose runtime, output parsing, models
 goose_job/          job image, goosetown template, skills, config and tool examples
-agentgateway/       LLM gateway policy
-scripts/            setup, doctor, image builds, network init, sandbox helpers
+agentgateway/       LLM gateway template and generated provider config
+scripts/            setup, doctor, config render, image builds, network init, sandbox helpers
 tests/              unit tests
 .github/workflows/  CI (lint, tests, Compose validation)
 Makefile            one-command setup, diagnostics, build, and run targets

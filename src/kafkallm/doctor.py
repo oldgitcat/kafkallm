@@ -19,6 +19,12 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from kafkallm.agentgateway_config import (
+    DEFAULT_OLLAMA_BASE_URL,
+)
+from kafkallm.agentgateway_config import (
+    KEY_OPTIONAL_PROVIDERS as PROVIDER_KEY_OPTIONAL,
+)
 from kafkallm.dotenv import load_dotenv
 from kafkallm.settings import Settings
 
@@ -29,6 +35,16 @@ PLACEHOLDER_KEYS = {
     "change-me-to-a-long-random-string",
     "replace-with-openssl-rand-hex-32",
 }
+
+
+def provider_settings(values: Mapping[str, str]) -> tuple[str, str, str]:
+    """Return (provider, api_key, base_url) with legacy fallbacks applied."""
+    provider = (values.get("LLM_UPSTREAM_PROVIDER") or "openrouter").strip().lower()
+    key = values.get("LLM_UPSTREAM_API_KEY", "").strip()
+    if not key and provider == "openrouter":
+        key = values.get("OPENROUTER_API_KEY", "").strip()
+    base_url = values.get("LLM_UPSTREAM_BASE_URL", "").strip()
+    return provider, key, base_url
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,15 +101,59 @@ def configuration_checks(
         )
     )
 
-    provider_key = values.get("OPENROUTER_API_KEY", "").strip()
+    provider, provider_key, base_url = provider_settings(values)
     checks.append(
         Check(
-            "OpenRouter API key",
-            "ok" if provider_key else "fail",
-            "configured" if provider_key else "not set",
-            "Get a key at https://openrouter.ai/keys and put it in .env.",
+            "LLM provider",
+            "ok",
+            provider,
+            "Set LLM_UPSTREAM_PROVIDER (openrouter, openai, ollama, custom, ...).",
         )
     )
+    key_required = provider not in PROVIDER_KEY_OPTIONAL
+    if provider_key:
+        key_status, key_detail = "ok", "configured"
+    elif key_required:
+        key_status, key_detail = "fail", "not set"
+    else:
+        key_status, key_detail = "ok", "not required"
+    checks.append(
+        Check(
+            "Provider API key",
+            key_status,
+            key_detail,
+            "Set LLM_UPSTREAM_API_KEY; OpenRouter also accepts the legacy "
+            "OPENROUTER_API_KEY. Get an OpenRouter key at "
+            "https://openrouter.ai/keys.",
+        )
+    )
+    if provider == "custom" and not base_url:
+        checks.append(
+            Check(
+                "Provider base URL",
+                "fail",
+                "not set",
+                "Set LLM_UPSTREAM_BASE_URL for provider=custom.",
+            )
+        )
+    elif provider == "ollama" and not base_url:
+        checks.append(
+            Check(
+                "Provider base URL",
+                "ok",
+                f"default {DEFAULT_OLLAMA_BASE_URL}",
+                "Override LLM_UPSTREAM_BASE_URL if Ollama runs elsewhere.",
+            )
+        )
+    else:
+        checks.append(
+            Check(
+                "Provider base URL",
+                "ok",
+                base_url or "provider default",
+                "Set LLM_UPSTREAM_BASE_URL for a custom or self-hosted endpoint.",
+            )
+        )
 
     virtual_key = settings.llm_gateway_virtual_key.strip()
     key_ok = valid_virtual_key(virtual_key)
@@ -180,6 +240,31 @@ def host_checks(
                     )
                 ),
                 "Fix compose.yaml or .env.",
+            )
+        )
+
+    gateway_config = Path("agentgateway/config.generated.yaml")
+    if not gateway_config.is_file():
+        checks.append(
+            Check(
+                "Gateway config",
+                "warn",
+                "not rendered",
+                "Run 'make gateway-config' (or 'make up').",
+            )
+        )
+    else:
+        env_file = Path(".env")
+        stale = (
+            env_file.is_file()
+            and env_file.stat().st_mtime > gateway_config.stat().st_mtime
+        )
+        checks.append(
+            Check(
+                "Gateway config",
+                "warn" if stale else "ok",
+                "older than .env" if stale else str(gateway_config),
+                "Run 'make gateway-config' after changing provider settings.",
             )
         )
 
@@ -306,37 +391,83 @@ def service_checks(settings: Settings, offline: bool = False) -> list[Check]:
         )
     )
 
-    provider_key = os.getenv("OPENROUTER_API_KEY", "").strip()
-    if not provider_key:
+    provider, provider_key, base_url = provider_settings(os.environ)
+    upstream_url = ""
+    if provider == "openrouter":
+        upstream_url = "https://openrouter.ai/api/v1/key"
+    elif provider == "openai":
+        upstream_url = "https://api.openai.com/v1/models"
+    elif provider == "ollama":
+        ollama_url = (base_url or DEFAULT_OLLAMA_BASE_URL).replace(
+            "host.containers.internal", "127.0.0.1"
+        )
+        upstream_url = ollama_url.rstrip("/") + "/models"
+    elif base_url:
+        upstream_url = base_url.replace("host.containers.internal", "127.0.0.1").rstrip(
+            "/"
+        )
+        if not upstream_url.endswith("/models"):
+            upstream_url += "/models"
+
+    if not upstream_url:
         checks.append(
             Check(
-                "OpenRouter reachability",
+                "LLM upstream",
+                "warn",
+                "not probed (no base URL)",
+                "Set LLM_UPSTREAM_BASE_URL to enable a reachability check.",
+            )
+        )
+    elif not provider_key and provider not in PROVIDER_KEY_OPTIONAL:
+        checks.append(
+            Check(
+                "LLM upstream",
                 "warn",
                 "skipped (no provider key)",
+                "Set LLM_UPSTREAM_API_KEY in .env.",
             )
         )
     else:
-        status = _http_status("https://openrouter.ai/api/v1/key", provider_key)
-        if status == 200:
+        status = _http_status(upstream_url, provider_key)
+        if status in {200, 204}:
             checks.append(
-                Check("OpenRouter reachability", "ok", "provider key accepted")
+                Check("LLM upstream", "ok", f"{provider} accepted the request")
             )
         elif status in {401, 403}:
             checks.append(
                 Check(
-                    "OpenRouter reachability",
+                    "LLM upstream",
                     "fail",
-                    "provider key rejected",
-                    "Create a new key and update OPENROUTER_API_KEY in .env.",
+                    f"{provider} rejected the provider key",
+                    "Create a new key and update LLM_UPSTREAM_API_KEY in .env.",
+                )
+            )
+        elif status == 404:
+            checks.append(
+                Check(
+                    "LLM upstream",
+                    "warn",
+                    f"{provider} does not expose /models",
+                    "The provider may still work for chat completions.",
+                )
+            )
+        elif status is None:
+            checks.append(
+                Check(
+                    "LLM upstream",
+                    "warn",
+                    f"could not reach {provider}",
+                    "Check LLM_UPSTREAM_BASE_URL and your network, or run "
+                    "with --offline.",
                 )
             )
         else:
             checks.append(
                 Check(
-                    "OpenRouter reachability",
+                    "LLM upstream",
                     "warn",
-                    "could not reach OpenRouter",
-                    "Check your internet connection or run with --offline.",
+                    f"{provider} returned HTTP {status}",
+                    "Check the provider settings and 'make logs'.",
                 )
             )
 
@@ -400,7 +531,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--offline",
         action="store_true",
-        help="Skip network checks against the gateway and OpenRouter.",
+        help="Skip network checks against the gateway and LLM provider.",
     )
     parser.add_argument(
         "--json", action="store_true", help="Print machine-readable JSON."

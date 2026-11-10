@@ -66,7 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument(
         "--offline",
         action="store_true",
-        help="Skip network checks against the gateway and OpenRouter",
+        help="Skip network checks against the gateway and LLM provider",
     )
     doctor.add_argument(
         "--json",

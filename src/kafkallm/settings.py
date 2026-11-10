@@ -177,7 +177,9 @@ class Settings:
                 "UNLIMITED_MAX_POLL_INTERVAL_MS", 86_400_000
             ),
             goose_model=os.getenv("GOOSE_MODEL", ""),
-            goose_provider=os.getenv("GOOSE_PROVIDER", ""),
+            goose_provider=(
+                os.getenv("GOOSE_PROVIDER") or os.getenv("LLM_UPSTREAM_PROVIDER", "")
+            ),
             goose_startup_timeout_seconds=_int_env(
                 "GOOSE_STARTUP_TIMEOUT_SECONDS", 300
             ),

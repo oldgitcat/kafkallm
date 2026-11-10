@@ -21,19 +21,9 @@ frontendPolicies:
               header:
                 name: x-mlflow-experiment-id
 #
-# agentgateway holds the real OpenRouter key. Clients authenticate with a
-# virtual key and never see the provider credential. The virtual key comes from
-# .env, so this file is safe to commit.
-llm:
-  policies:
-    apiKey:
-      mode: strict
-      keys:
-        - key: "$LLM_GATEWAY_VIRTUAL_KEY"
-          metadata:
-            name: kafkallm-worker
-  models:
-    - name: "*"
-      provider: openrouter
-      params:
-        apiKey: "$OPENROUTER_API_KEY"
+# The upstream provider is rendered from .env by
+# scripts/render-agentgateway-config.sh. This template stays provider-neutral.
+# agentgateway holds the real provider key. Clients authenticate with a virtual
+# key and never see the provider credential. The virtual key comes from .env,
+# so this file is safe to commit.
+# __LLM_SECTION__

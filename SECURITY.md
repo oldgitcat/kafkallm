@@ -22,6 +22,11 @@ Before exposing it to anyone else:
 - Keep the GUI on `127.0.0.1`. It has no authentication or authorization.
 - Treat `LLM_GATEWAY_VIRTUAL_KEY` as a secret. Rotate it when a job or worker is
   untrusted.
+- The upstream provider key lives only in agentgateway
+  (`LLM_UPSTREAM_API_KEY`). Jobs see only the virtual key. When you switch
+  providers, remove the old provider key from `.env`; generated Ollama configs
+  never send an API key upstream. Use `provider=custom` if an authenticated
+  Ollama-compatible endpoint needs one.
 - Keep the agentgateway listener on a trusted network. It speaks plain HTTP.
 - Never commit `.env`. Only `.env.example` belongs in Git.
 - Treat the persistent skill store as untrusted input. The main job cannot write

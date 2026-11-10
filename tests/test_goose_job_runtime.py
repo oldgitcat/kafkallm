@@ -877,6 +877,7 @@ def test_vm_does_not_pass_provider_credentials(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "real-provider-key")
+    monkeypatch.setenv("LLM_UPSTREAM_API_KEY", "real-provider-key")
     client = FakeDockerClient()
     client.results = {"main.json": _goose_result()}
     runner = GooseJobRunner(_settings_for(tmp_path), client=client)
@@ -892,6 +893,7 @@ def test_vm_does_not_pass_provider_credentials(
     environment = client.create_body["Env"]
     assert not any("real-provider-key" in item for item in environment)
     assert not any(item.startswith("OPENROUTER_API_KEY=") for item in environment)
+    assert not any(item.startswith("LLM_UPSTREAM_API_KEY=") for item in environment)
     assert not any(item.startswith("OPENAI_API_KEY=real") for item in environment)
 
 
