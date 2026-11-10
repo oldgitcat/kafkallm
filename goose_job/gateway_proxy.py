@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import re
 import sys
 from urllib.parse import unquote, urlsplit
 
@@ -24,6 +25,20 @@ _READ_SIZE = 64 * 1024
 _MAX_HEAD_BYTES = 32 * 1024
 _MAX_BODY_BYTES = 16 * 1024 * 1024
 _HEAD_TIMEOUT_SECONDS = 15.0
+
+# Per-job proxies receive the job span's W3C trace context and job id. They
+# overwrite any client-supplied values so a job cannot spoof another job's trace
+# or attach itself to a different session.
+_TRACEPARENT = os.getenv("KAFKALLM_TRACEPARENT", "").strip()
+_JOB_ID = os.getenv("KAFKALLM_JOB_ID", "").strip()
+_TRACEPARENT_RE = re.compile(r"^[0-9a-f]{2}-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$")
+_JOB_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+if _TRACEPARENT and not _TRACEPARENT_RE.fullmatch(_TRACEPARENT):
+    print("gateway proxy: ignoring malformed KAFKALLM_TRACEPARENT", file=sys.stderr)
+    _TRACEPARENT = ""
+if _JOB_ID and not _JOB_ID_RE.fullmatch(_JOB_ID):
+    print("gateway proxy: ignoring malformed KAFKALLM_JOB_ID", file=sys.stderr)
+    _JOB_ID = ""
 
 # goose uses the OpenAI chat-completions protocol. Some versions probe the
 # model list; nothing else is needed by a job.
@@ -193,9 +208,17 @@ def _rewrite_request(
     kept: list[bytes] = []
     for line in lines:
         name = line.split(b":", 1)[0].strip().lower()
-        if name in _HOP_BY_HOP or name == b"content-length":
+        if name in _HOP_BY_HOP or name in {
+            b"content-length",
+            b"traceparent",
+            b"x-kafkallm-job-id",
+        }:
             continue
         kept.append(line)
+    if _TRACEPARENT:
+        kept.append(f"traceparent: {_TRACEPARENT}".encode("ascii"))
+    if _JOB_ID:
+        kept.append(f"x-kafkallm-job-id: {_JOB_ID}".encode("ascii"))
     if method == "POST":
         kept.append(f"Content-Length: {content_length}".encode("ascii"))
     target = path + (f"?{query}" if query else "")

@@ -169,7 +169,7 @@ class FakeApi:
                 text=str(self.client.create_error),
             )
         container_id = (
-            "proxy-container-id"
+            f"proxy-container-id-{len(self.client.containers.items)}"
             if name
             else f"vm-container-id-{len(self.client.containers.items)}"
         )

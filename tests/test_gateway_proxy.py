@@ -142,6 +142,34 @@ def test_rewrite_forces_one_connection_close_and_one_content_length() -> None:
     assert b"Proxy-Connection" not in rewritten
 
 
+def test_rewrite_injects_the_job_trace_context(monkeypatch) -> None:
+    monkeypatch.setattr(
+        gateway_proxy,
+        "_TRACEPARENT",
+        "00-11111111111111111111111111111111-2222222222222222-01",
+    )
+    monkeypatch.setattr(gateway_proxy, "_JOB_ID", "job-123")
+    head = _head(
+        "POST",
+        "/v1/chat/completions",
+        [
+            "Content-Type: application/json",
+            "Content-Length: 2",
+            "traceparent: 00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+            "X-Kafkallm-Job-Id: spoofed",
+        ],
+    )
+    method, path, query, length = _parse(head)
+
+    rewritten = gateway_proxy._rewrite_request(head, method, path, query, length)
+
+    assert rewritten.count(b"traceparent:") == 1
+    assert b"traceparent: 00-11111111111111111111111111111111-" in rewritten
+    assert b"x-kafkallm-job-id: job-123" in rewritten
+    assert b"spoofed" not in rewritten
+    assert b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" not in rewritten
+
+
 class _RecordingWriter:
     def __init__(self) -> None:
         self.data = bytearray()

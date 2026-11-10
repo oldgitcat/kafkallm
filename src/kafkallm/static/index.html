@@ -606,7 +606,10 @@
     <section id="agents-panel">
       <div class="panel-head">
         <h2>Goosetown agents</h2>
-        <button id="agent-new" type="button" class="compact">+ New agent</button>
+        <div class="agent-actions">
+          <button id="agent-reload" type="button" class="compact secondary">Reload from files</button>
+          <button id="agent-new" type="button" class="compact">+ New agent</button>
+        </div>
       </div>
       <div id="agents" class="agent-list"><span class="muted">Loading agents…</span></div>
       <details>
@@ -631,7 +634,7 @@
           <label for="agent-instructions">Instructions</label>
           <textarea id="agent-instructions" class="small" placeholder="Role-specific instructions passed to the delegate."></textarea>
           <label class="check"><input id="agent-enabled" type="checkbox" checked> Enabled</label>
-          <div class="hint">Custom agents are saved as markdown profiles in the configured agents directory. The five built-in goosetown roles are read-only.</div>
+          <div class="hint">Built-in agents are seeded from the app image; edit their files in the configured agents directory and click <strong>Reload from files</strong>. Custom agents are saved as markdown profiles there. Built-in roles stay read-only in this form.</div>
           <div class="agent-actions">
             <button id="agent-save" type="submit">Save agent</button>
             <button id="agent-reset" type="button" class="secondary">New</button>
@@ -1303,6 +1306,21 @@
     $("clear-finished").addEventListener("click", clearFinishedJobs);
 
     $("agent-new").addEventListener("click", openNewAgent);    $("agent-new-inline").addEventListener("click", openNewAgent);
+    $("agent-reload").addEventListener("click", async () => {
+      const button = $("agent-reload");
+      button.disabled = true;
+      button.textContent = "Reloading…";
+      try {
+        await api("/api/agents/reload", { method: "POST" });
+        await new Promise((resolve) => setTimeout(resolve, 1200));
+        await loadAgents();
+      } catch (error) {
+        $("agents").innerHTML = `<span class="message error">${esc(error.message)}</span>`;
+      } finally {
+        button.disabled = false;
+        button.textContent = "Reload from files";
+      }
+    });
     $("agent-reset").addEventListener("click", resetAgentForm);
 
     $("agent-form").addEventListener("submit", async (event) => {

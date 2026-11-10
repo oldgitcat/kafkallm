@@ -41,6 +41,7 @@ _WORKDIR_LABEL = "kafkallm.workdir"
 
 _PROXY_NAME = "kafkallm-gateway-proxy"
 _PROXY_LABEL = "kafkallm.gateway_proxy"
+_JOB_PROXY_LABEL = "kafkallm.job_proxy"
 _PROXY_SCRIPT = "/opt/kafkallm/gateway_proxy.py"
 
 _REFLECT_MIN_REMAINING_SECONDS = 60
@@ -730,6 +731,7 @@ class GooseJobRunner:
             "session.id": job.job_id,
         }
         main_container: Any | None = None
+        job_proxy: Any | None = None
         collector: _LogCollector | None = None
         run_started = time.perf_counter()
 
@@ -741,7 +743,15 @@ class GooseJobRunner:
                 self._ensure_image(image)
                 self._prepare_workdir(workdir, workspace, prompt, job)
                 self._ensure_extension_dirs()
+                span_context = span.get_span_context()
+                traceparent = (
+                    f"00-{span_context.trace_id:032x}-{span_context.span_id:016x}-01"
+                    if span_context.is_valid
+                    else ""
+                )
                 proxy_ipv6 = self._ensure_proxy()
+                if traceparent:
+                    job_proxy, proxy_ipv6 = self._create_job_proxy(job, traceparent)
                 main_container = self._create_container(
                     image=image,
                     environment=environment,
@@ -919,6 +929,8 @@ class GooseJobRunner:
                         self._active_container = None
                 self._remove_container(main_container)
                 self._remove_workdir(workdir)
+                if job_proxy is not None:
+                    self._remove_container(job_proxy)
 
     def _set_active(self, container: Any) -> None:
         with self._active_lock:
@@ -1228,17 +1240,26 @@ class GooseJobRunner:
         expected_id = getattr(expected, "id", None)
         return bool(actual) and bool(expected_id) and actual == expected_id
 
-    def _create_proxy(self) -> Any:
+    def _create_proxy(
+        self,
+        *,
+        name: str = _PROXY_NAME,
+        extra_env: dict[str, str] | None = None,
+        labels: dict[str, str] | None = None,
+    ) -> Any:
+        environment = [
+            f"LISTEN_PORT={self.settings.llm_gateway_port}",
+            f"UPSTREAM_HOST={self.settings.goose_job_proxy_upstream_host}",
+            f"UPSTREAM_PORT={self.settings.goose_job_proxy_upstream_port}",
+            "PYTHONDONTWRITEBYTECODE=1",
+        ]
+        if extra_env:
+            environment.extend(f"{key}={value}" for key, value in extra_env.items())
         body = {
             "Image": self.settings.goose_image,
             "Cmd": ["/usr/bin/python3", _PROXY_SCRIPT],
-            "Env": [
-                f"LISTEN_PORT={self.settings.llm_gateway_port}",
-                f"UPSTREAM_HOST={self.settings.goose_job_proxy_upstream_host}",
-                f"UPSTREAM_PORT={self.settings.goose_job_proxy_upstream_port}",
-                "PYTHONDONTWRITEBYTECODE=1",
-            ],
-            "Labels": {_PROXY_LABEL: "1"},
+            "Env": environment,
+            "Labels": {_PROXY_LABEL: "1", **(labels or {})},
             "WorkingDir": "/",
             "HostConfig": {
                 # Create on the normal Podman network first so the default
@@ -1255,7 +1276,7 @@ class GooseJobRunner:
             api._url("/containers/create"),
             data=json.dumps(body),
             headers={"Content-Type": "application/json"},
-            params={"name": _PROXY_NAME},
+            params={"name": name},
         )
         if response.status_code >= 300:
             raise GooseJobRuntimeError(
@@ -1263,6 +1284,33 @@ class GooseJobRunner:
                 f"{response.status_code} {response.text[:1000]}"
             )
         return self.client.containers.get(response.json()["Id"])
+
+    def _create_job_proxy(self, job: Job, traceparent: str) -> tuple[Any, str]:
+        """Create a per-job allowlisting proxy that injects the job trace context."""
+        container = self._create_proxy(
+            name=f"{_PROXY_NAME}-{job.run_id[:8]}",
+            extra_env={
+                "KAFKALLM_TRACEPARENT": traceparent,
+                "KAFKALLM_JOB_ID": job.job_id,
+            },
+            labels={
+                _JOB_PROXY_LABEL: "1",
+                _JOB_ID_LABEL: job.job_id,
+                _RUN_ID_LABEL: job.run_id,
+                _CREATED_AT_LABEL: str(int(time.time())),
+            },
+        )
+        try:
+            self._connect_proxy(container)
+            container.reload()
+            if container.status != "running":
+                container.start()
+                time.sleep(0.5)
+            ipv6 = self._wait_proxy_ipv6(container)
+        except Exception:
+            self._remove_container(container)
+            raise
+        return container, ipv6
 
     def _connect_proxy(self, container: Any) -> None:
         network = self.client.networks.get(self.settings.goose_job_network)
@@ -1337,6 +1385,33 @@ class GooseJobRunner:
             if workdir.exists():
                 logger.warning(
                     "Could not remove orphaned goose job directory %s", workdir
+                )
+        try:
+            proxies = self.client.containers.list(
+                all=True, filters={"label": f"{_JOB_PROXY_LABEL}=1"}
+            )
+        except Exception:
+            logger.warning("Could not list orphaned job proxy containers")
+            proxies = []
+        for container in proxies:
+            labels = getattr(container, "labels", None) or {}
+            if labels.get(_JOB_PROXY_LABEL) != "1":
+                continue
+            created = self._label_age(labels, now)
+            status = getattr(container, "status", "")
+            if status == "running" and created is not None and created < max_age:
+                continue
+            logger.warning(
+                "Removing orphaned job proxy container %s", container.id[:12]
+            )
+            try:
+                if status == "running":
+                    container.stop(timeout=5)
+                container.remove(force=True)
+            except Exception:
+                logger.warning(
+                    "Could not remove orphaned job proxy container %s",
+                    container.id[:12],
                 )
 
     def _orphan_workdirs(self) -> list[Path]:

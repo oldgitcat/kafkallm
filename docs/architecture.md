@@ -1,0 +1,452 @@
+# Architecture and job lifecycle
+
+[Back to the main README](../README.md)
+
+## How a job runs
+
+1. The GUI or CLI writes a JSON job to `jobs.in` and a `queued` state to
+   `jobs.state`.
+2. The worker consumes `jobs.in`, publishes `running`, and prepares a unique
+   directory under `GOOSE_JOB_WORKSPACE_ROOT`.
+3. Files uploaded through the GUI or attached with `submit --upload` are
+   downloaded from RustFS into `inputs/`. The job sees them under
+   `/workspace/inputs`.
+4. The worker creates a per-job allowlisting proxy on the IPv6-only
+   `kafkallm-jobs` network, carrying the job's W3C `traceparent`, then starts a
+   goose microVM through the rootless Podman API. The job is attached only to
+   that internal network, and `host.containers.internal` is overridden to the
+   per-job proxy's IPv6 address. The job directory is bind mounted at
+   `/workspace`, the prompt at `/jobboot`, and the persistent skill store
+   read-only at `/opt/kafkallm/skills-persistent`. Inside the guest, the
+   entrypoint copies the store into a disposable `/workspace/.claude/skills`
+   tree. The microVM receives `OPENAI_HOST` and the gateway virtual key, never
+   the provider key.
+5. Inside the microVM, the entrypoint seeds the workspace with goosetown
+   (`AGENTS.md`, the `goose` wrapper, `gtwall`, and the role skills) and runs:
+
+   ```bash
+   stdbuf -oL -eL ./goose run --no-session -q --output-format stream-json \
+     --with-builtin developer --max-turns "$GOOSE_MAX_TURNS" \
+     -i /jobboot/main-prompt.txt
+   ```
+
+   In multi-agent mode the worker additionally enables the `summon` and
+   `skills` builtins and writes the selected flock to `.claude/agents/*.md`,
+   so `delegate(source: "...")` can resolve the role names.
+
+   The worker tails the line-delimited stream-json file and publishes live
+   activity to `jobs.logs` for the GUI.
+
+6. goose talks the OpenAI protocol to `http://host.containers.internal:8091`,
+   which resolves to the proxy. The proxy accepts only
+   `POST /v1/chat/completions`, `GET /v1/models`, and
+   `GET /v1/models/<id>`, allows one request per connection, and forwards to
+   agentgateway on the host; the job cannot reach the internet, the LAN, Compose
+   services, or the Podman API. agentgateway verifies the virtual key, replaces
+   it with the configured provider key, and streams the upstream response back.
+7. The goosetown orchestrator decomposes the job, dispatches parallel subagents
+   through goose's `delegate`/`load` tools, coordinates them over `gtwall`, and
+   writes result files to `outputs/`.
+8. The worker parses the structured goose output, copies `outputs/` back
+   (skipping symlinks and special files), runs the optional learning pass in a
+   separate microVM, validates and merges any skill changes, publishes `jobs.out`
+   and the final `jobs.state`, uploads artifacts, and commits the Kafka offset.
+9. Audit events go to `agent.events`; traces go to MLflow.
+
+The microVM never talks to Kafka. The worker is the only Kafka participant.
+
+
+## Kafka topics
+
+| Topic | Cleanup | Purpose |
+|---|---|---|
+| `jobs.in` | delete, 7 days | Jobs submitted by the GUI or CLI |
+| `jobs.out` | delete, 7 days | Final `JobResult` records |
+| `jobs.state` | **compact** | Latest materialized `JobState` per `job_id`; the GUI's database |
+| `agents.state` | **compact** | Latest goosetown `AgentSpec` per `agent_id` |
+| `sandboxes.state` | **compact** | Latest `SandboxSpec` per `sandbox_id`; the environment registry |
+| `jobs.cancel` | delete, 7 days | Cancellation requests published by the GUI |
+| `jobs.logs` | delete, 7 days | Live job activity from goose stream-json and stderr |
+| `agent.events` | delete, 7 days | Audit events for each job |
+
+The GUI consumes `jobs.state`, `agents.state`, `sandboxes.state`, `jobs.logs`,
+and `agent.events` from the beginning with unique consumer groups. Compaction keeps
+the latest state per key, so a restart rebuilds the view without a local store.
+State transitions are published by both the GUI/CLI (`queued`) and the worker
+(`running`, `succeeded`/`failed`).
+
+
+## Job format
+
+```json
+{
+  "job_id": "optionally-set-by-producer",
+  "run_id": "optionally-set-by-producer",
+  "trace_id": "generated-automatically-via-opentelemetry",
+  "type": "llm_task",
+  "instruction": "Analyze the input data",
+  "input": {"arbitrary": "JSON data"},
+  "input_files": [],
+  "sandbox": "default",
+  "sandbox_image": "kafkallm-goose-job:latest",
+  "multi_agent": true,
+  "agents": [],
+  "unlimited": false,
+  "timeout_seconds": 300,
+  "max_steps": 6,
+  "reflect": true
+}
+```
+
+`job_id` and `run_id` are generated as UUIDs if omitted. Messages use `job_id`
+as the Kafka key. `sandbox` is a registry ID such as `default`, `reverse`, or a
+custom environment added in the GUI. `max_steps` is advisory; goose is bounded
+by `GOOSE_JOB_MAX_TURNS` and the job timeout. `input` is limited to 256 KB per
+job; put larger payloads in a file and attach it with `input_files`.
+
+`sandbox_image` is the OCI reference the worker runs. The GUI fills it from the
+selected registry entry; a producer can also submit any pullable reference
+directly. The worker checks local Podman storage first and pulls the image from
+its registry if it is missing. `env`, `extensions`, and `instructions` still
+come from the registry entry named by `sandbox`, and an unknown `sandbox` with
+an explicit `sandbox_image` runs with an empty environment. The supplied
+`agents` list travels with the job. Older payloads without `sandbox_image`
+still work; the worker then uses the image from the registry entry.
+
+### Unlimited jobs
+
+Unlimited jobs are opt-in and must be enabled on both the GUI and worker:
+
+```dotenv
+ALLOW_UNLIMITED_JOBS=true
+```
+
+Then use **Unlimited runtime and result size** in the GUI, add `--unlimited` to
+the CLI, or set `"unlimited": true` in a job document. In that mode:
+
+- the job timeout is ignored
+- `GOOSE_MAX_TURNS` and `GOOSE_SUBAGENT_MAX_TURNS` use the much higher
+  `UNLIMITED_MAX_TURNS` values (default `100000`)
+- the output-file count cap is disabled
+- if the result text exceeds `MAX_RESULT_BYTES`, the full text is written to
+  `result-full.md` and uploaded as an artifact; the Kafka state gets a bounded
+  truncated copy so Kafka cannot reject the message
+
+Kafka still has a transport limit, so a huge result is never placed wholesale
+in `jobs.state`. It lives in S3/RustFS and is downloadable from the GUI. Upload
+limits (`UPLOAD_MAX_*`) remain separately configurable.
+
+The worker raises `max.poll.interval.ms` to
+`UNLIMITED_MAX_POLL_INTERVAL_MS` (default 24 hours, the librdkafka maximum)
+when unlimited jobs are enabled. It also polls the consumer while the microVM
+runs, so the consumer group membership stays alive during long jobs. An
+unlimited job can still occupy a worker and consume provider budget
+indefinitely; supervise it or split truly enormous work.
+
+The exact schema is available from the CLI and the HTTP API:
+
+```bash
+kafkallm schema job
+curl -fsS http://localhost:8090/api/schema/job | jq .
+```
+
+`kafkallm submit --job-json job.json` (or `--job-json -` for stdin) accepts the
+same complete document, validates it, publishes it to `jobs.in`, and records
+the initial `queued` state. The JSON defines the whole job, so do not combine
+it with instruction/sandbox flags. `agent_ids` is a GUI-only convenience; raw
+job documents must contain the full `agents` list.
+
+A result includes:
+
+- `status`: `succeeded` or `failed`
+- `result` or `error`
+- `artifacts`: uploaded files
+- `artifact_error`: optional upload failure; does not change job status
+- `trace_id`, `worker_id`, timestamps, steps, and token usage
+
+
+## MicroVM job image
+
+The job image is built with `goose_job/Dockerfile`:
+
+- Debian bookworm slim, with bash, git, jq, Python 3, ripgrep, binutils, file,
+  less, unzip/zip, and xxd
+- Pinned goose `1.59.0` release, verified with SHA-256 at build time
+- No `curl`, `wget`, or other network clients in the final image
+- goosetown template and skills under `/opt/goosetown`
+- Read-only tools and goose config mounts for sandbox extensions
+- Optional extra Debian packages through `GOOSE_JOB_EXTRA_PACKAGES`
+
+Build it with `./scripts/build-goose-image.sh`. The worker expects it in the
+rootless Podman storage and verifies it at startup (it can pull a registry
+image if `GOOSE_IMAGE` points to one).
+
+### Reverse-engineering sandbox
+
+`sandbox=reverse` selects a second image, built from
+`goose_job/Dockerfile.rea`, instead of the default image. It adds:
+
+- **REA** `6.8.0` as a local stdio MCP server (`rea mcp`), wired into goose as
+  the `rea` extension. The `rea` CLI is also on `PATH`. The MCP input schema
+  profile is `compact`; output schemas are set to `off` to keep the tool list
+  small (`full` is the other valid output profile).
+- **Ghidra** `12.1.4` with **Temurin JDK 21.0.13+9**, the combination verified
+  by REA.
+- **Kuna** `1.833`, pinned to the release REA verifies, as an alternative
+  decompiler provider (`REA_KUNA_COMMAND`). The static musl build avoids glibc
+  compatibility warnings on Debian bookworm. Kuna's bundled skill is seeded
+  into reverse jobs.
+- **JADX** via `jadx-headless-mcp` `0.7.1` (`REA_JADX_MCP_JAR`) for Android
+  APK/DEX analysis, plus `apktool` and `apksigner` for packaging and signing.
+- **Frida** `17.26.1` with `frida-tools` for local dynamic instrumentation.
+  REA's bundled Frida bindings expose the full session/script tool set; the
+  standalone `frida`, `frida-ps`, and `frida-trace` CLIs are also on `PATH`.
+- Static RE tools: GDB, binutils, binwalk, YARA, strace, ltrace, nasm,
+  patchelf, 7-Zip, and Python libraries for Capstone, pyelftools, pefile, and
+  pwntools. REA can also use the bundled objdump and GDB.
+
+The reverse image starts from `kafkallm-goose-job:latest`, so build the normal
+image first. `scripts/build-rea-image.sh` does that automatically if the base
+image is missing. Both images are pinned and verified with SHA-256 at build
+time. The reverse image is roughly 4.1 GiB on disk. Verify the REA integration
+offline with:
+
+```bash
+podman run --rm --network none localhost/kafkallm-rea-job:latest \
+  rea doctor --json
+```
+
+REA's `doctor` still reports Hopper and IDA as missing because those are
+proprietary engines that cannot be redistributed. All open-source providers
+shipped in the image are available.
+
+Use it from the GUI (sandbox selector) or the CLI:
+
+```bash
+podman compose run --rm -v "$PWD:/data:ro" jobctl submit \
+  "Analyze the uploaded binary under /workspace/inputs with REA and explain its network behavior" \
+  --sandbox reverse --upload /data/tool.bin
+```
+
+The job image is selected from the GUI-managed sandbox registry, not supplied
+in the job payload. Job submissions carry only a sandbox ID, and the worker
+resolves that ID to the image stored in the registry. The worker still mounts
+only `/workspace`, `/jobboot`, the tools/config directories, and the persistent
+skills. The microVM still has no internet access; REA and Ghidra run fully
+offline against uploaded files. Ghidra is JVM-heavy, so set
+`GOOSE_JOB_RAM_MIB=4096` (or more) and raise `GOOSE_JOB_MEMORY_LIMIT` to leave
+room for the hypervisor overhead (for example `6g`) when using reverse jobs.
+The per-job reservation is the same for all sandboxes, so a larger value
+applies to all jobs on that worker.
+
+REA is MIT-licensed. Ghidra and Kuna are Apache 2.0. Frida is LGPL-2.1.
+`jadx-headless-mcp` and `apktool`/`apksigner` are Apache 2.0. The image also
+installs the Debian packages above under their respective licenses. Frida is
+included for local instrumentation; a remote Frida server for physical Android
+devices is not bundled.
+
+Per-job layout. The main job VM:
+
+| Mount | Type | Purpose |
+|---|---|---|
+| `/workspace` | bind mount `goose-vm-<run_id>` | `inputs/`, `outputs/`, `.scratch/`, the goosetown workspace, and a disposable skill copy; removed after collection |
+| `/jobboot` | read-only bind mount | main run script and prompt |
+| `/opt/kafkallm/skills-persistent` | read-only bind mount `GOOSE_JOB_SKILLS_DIR` | shared goosetown skills; never writable by the job |
+| `/opt/kafkallm/tools`, `/opt/kafkallm/config` | read-only bind mounts | tools and goose/MCP config |
+| `/opt/data` | tmpfs | goose config, sessions, and wall state; discarded with the microVM |
+
+The learning pass runs after the main VM exits, in its own microVM with a fresh
+random workspace:
+
+| Mount | Type | Purpose |
+|---|---|---|
+| `/workspace` | bind mount `<job-workdir>/.reflect-<random>` | disposable skill copy and reflect control files |
+| `/workspace/outputs` | read-only bind mount of collected outputs | review material |
+| `/jobboot` | read-only bind mount | reflect run script and prompt |
+| `/opt/data` | tmpfs | goose config and sessions; discarded with the microVM |
+
+The microVM costs more than a container: each job reserves `GOOSE_JOB_RAM_MIB`
+of memory and boots a guest kernel. With the learning pass enabled, the two
+microVMs run sequentially, not at the same time.
+
+
+## Editing the sandbox
+
+The job image is intentionally small, but you have four extension points. None
+of them weakens the network isolation: the job still reaches only the
+allowlisting proxy.
+
+### 1. Host-mounted tools
+
+Put static binaries or extracted tools under `GOOSE_JOB_TOOLS_DIR`
+(`/var/lib/kafkallm/tools` by default). The worker mounts this directory
+read-only at `/opt/kafkallm/tools` and prepends `/opt/kafkallm/tools/bin` to
+`PATH`.
+
+```bash
+mkdir -p /var/lib/kafkallm/tools/bin
+cp my-analyzer /var/lib/kafkallm/tools/bin/
+```
+
+### 2. Goose config and MCP servers
+
+Put a `config.yaml` in `GOOSE_JOB_CONFIG_DIR`
+(`/var/lib/kafkallm/config/config.yaml` by default). The worker mounts it
+read-only at `/opt/kafkallm/config` and copies it into goose's tmpfs config
+directory before each run. See `goose_job/config/config.example.yaml` for a
+stdio MCP example.
+
+MCP servers must already exist in the image or in the tools directory. Jobs
+have no web access, so remote MCP servers and `npx` downloads do not work.
+
+### 3. Skills
+
+Skills live in `GOOSE_JOB_SKILLS_DIR` (`/var/lib/kafkallm/skills`). Add a
+directory with a regular `SKILL.md`; later jobs receive a copy. A job's edits to
+its disposable `.claude/skills` tree do not persist automatically. The isolated
+learning pass may propose changes, and the worker merges only validated,
+non-deleting updates.
+
+### 4. Build a custom image
+
+Install extra Debian packages into the normal image:
+
+```bash
+GOOSE_JOB_EXTRA_PACKAGES="openjdk-17-jre-headless" \
+  ./scripts/build-goose-image.sh
+```
+
+For larger changes, use a custom Dockerfile that extends either job image:
+
+```bash
+GOOSE_JOB_BASE_IMAGE=kafkallm-rea-job:latest \
+GOOSE_IMAGE=kafkallm-custom-job:latest \
+GOOSE_JOB_DOCKERFILE=goose_job/Dockerfile.example \
+  ./scripts/build-goose-image.sh
+```
+
+`goose_job/Dockerfile.example` shows the pattern. If you extend the reverse
+image, it already contains REA, Ghidra, and JDK 21; add only the extra tools
+you need. The standard reverse sandbox itself is `goose_job/Dockerfile.rea`.
+
+To inspect the exact sandbox interactively, without a job and without network:
+
+```bash
+./scripts/sandbox-shell.sh
+```
+
+
+## Why Podman
+
+Both the control plane and the job microVMs run under **rootless Podman** by
+default. `make up` builds the worker/GUI image with `podman build` and runs the
+stack with `podman compose`.
+
+- **Podman runs the microVMs.** Only Podman's `crun` krun runtime can start a
+  libkrun microVM, selected through the `run.oci.handler=krun` annotation.
+  Docker's runc has no krun handler.
+- **The control plane also runs under rootless Podman.** The worker, GUI,
+  Apache Kafka, RustFS, MLflow, the Kafka UI, and the socket proxy are ordinary
+  containers. One engine means one image store.
+- **Rootless Podman is required.** Rootful Podman can break libkrun's TSI
+  networking, leaving the microVMs without an outbound path and stalling every
+  job on the LLM provider. Use the rootless socket.
+
+The control plane uses Podman Compose because some host interfaces expose
+unusual netmasks (for example a `/0` netmask from a mobile hotspot) that make
+netavark reject every IPv4 bridge subnet. Gänsestall therefore writes an
+IPv6-only internal job network directly into rootless Podman's network store
+instead of asking netavark to derive one. Other container bridges are
+unaffected.
+
+Docker remains supported for the control plane: run
+`make ENGINE=docker up`. The job microVMs still use rootless Podman, so both
+engines must be installed for that combination.
+
+The worker reaches the rootless Podman API through the internal `podman-proxy`,
+which shares the worker's network namespace and listens on loopback only. The
+job directory and skills live on the host under `/var/lib/kafkallm`, which both
+the worker and the microVMs see.
+
+
+## Workspace and artifacts
+
+The worker runs as UID/GID `10001`. It stages each job under its staging
+directory and copies inputs into the job directory under
+`GOOSE_JOB_WORKSPACE_ROOT`, which is shared between the worker container and the
+microVMs. After the job, the worker copies `outputs/` back for upload and
+deletes the job directory.
+
+Artifacts are uploaded only from `outputs/`. A missing or unreachable artifact
+store does not turn a successful run into a failed job; the job remains
+`succeeded` with an `artifact_error`. Uploads are retried three times.
+
+### Downloading results and artifacts
+
+The job detail in the GUI has **Download result** for the text result and a
+**Download** link for every uploaded artifact. Downloads are proxied through
+the GUI, so the browser does not need S3 credentials.
+
+The same files are available over HTTP:
+
+```bash
+# Result text as Markdown
+curl -fL "http://localhost:8090/api/jobs/<job_id>/result" -o result.md
+
+# Artifact by index, in the same order as the artifacts list
+curl -fL "http://localhost:8090/api/jobs/<job_id>/artifacts/0" -o artifact.bin
+```
+
+
+## RustFS and input files
+
+Start with the storage profile:
+
+```bash
+podman compose --profile storage up -d --build
+```
+
+```dotenv
+S3_ENDPOINT_URL=http://rustfs:9000
+```
+
+Local RustFS defaults:
+
+- S3 API: <http://localhost:9000> (or `RUSTFS_API_PORT`)
+- Console: <http://localhost:9001/rustfs/console/>
+- Account: `rustfs`
+- Secret: `kafkallm-secret`
+
+These credentials are for local development only.
+
+Submit a job with an existing S3 object:
+
+```bash
+podman compose run --rm jobctl submit \
+  "Read the input file and summarize it" \
+  --input-file jobs/example.txt
+```
+
+The bucket must already contain the file.
+
+Upload local files or binaries:
+
+- **GUI:** use **Input files or binaries** in the submit form. The browser
+  uploads to `POST /api/uploads`; the files are stored under
+  `uploads/<uuid>/<filename>` in RustFS and attached to the job as
+  `input_files`. The job copies them into `/workspace/inputs` as
+  `NN-<filename>` (for example `00-tool.bin`).
+- **CLI:**
+
+  ```bash
+  podman compose run --rm -v "$PWD:/data:ro" jobctl submit \
+    "Inspect the uploaded files" \
+    --upload /data/data.csv \
+    --upload /data/tool.bin
+  ```
+
+Uploads require `S3_ENDPOINT_URL` and the S3 credentials. Limits are
+`UPLOAD_MAX_FILES` (default 16), `UPLOAD_MAX_FILE_BYTES` (default 50 MiB), and
+`UPLOAD_MAX_TOTAL_BYTES` (default 100 MiB).
+
+
