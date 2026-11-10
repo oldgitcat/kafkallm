@@ -577,16 +577,23 @@ The body becomes the `instructions` field. The parser accepts the flat subset
 used by goose agent sources: strings (optionally quoted), booleans, and lists in
 `- item` or `[a, b]` form.
 
-The directory is the durable store for custom agents:
+The directory is the durable store for agents:
 
-- The five built-in roles are defined in code and cannot be edited, disabled, or
-  overridden by a file. A file named like a built-in role is ignored.
+- The five built-in roles are defined as files in the repository/app image at
+  `agents/*.md`. On GUI start they are copied into `GOOSE_JOB_AGENTS_DIR` if
+  missing, so every agent is file-defined. They use the same format as custom
+  profiles.
+- The GUI still marks the built-in IDs as read-only and blocks disable/delete.
+  To change a built-in agent, edit its seeded file in `GOOSE_JOB_AGENTS_DIR` and
+  restart the GUI. Delete the runtime file and restart to restore the shipped
+  default.
 - **+ New agent** writes `<agent-id>.md` and publishes the profile to
   `agents.state`. **Edit** and **Disable** update both the file and Kafka;
   disabling sets `enabled: false` instead of deleting the file.
-- On every GUI start the defaults are seeded, custom agents that exist only in
-  Kafka are exported to files, and then the files are imported. Files win over
-  Kafka for their `agent_id`.
+- On every GUI start the built-in profile files are seeded into the directory,
+  the defaults are seeded into Kafka, custom agents that exist only in Kafka are
+  exported to files, and then all files are imported. Files win over Kafka for
+  their `agent_id`, including edits to built-in profiles.
 - Files edited outside the GUI are picked up on the next GUI restart. There is
   no file watcher.
 - The directory is mounted read-write into the GUI container. Kafka remains the
@@ -1372,6 +1379,7 @@ podman compose logs -f llm-gateway
 src/kafkallm/       worker, GUI, job store, doctor, Kafka, state, agents,
                     sandboxes, goose runtime, output parsing, models
 goose_job/          job image, goosetown template, skills, config and tool examples
+agents/             built-in agent profile defaults
 agentgateway/       LLM gateway template and generated provider config
 scripts/            setup, doctor, config render, image builds, network init, sandbox helpers
 tests/              unit tests

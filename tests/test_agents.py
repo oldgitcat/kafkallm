@@ -12,6 +12,7 @@ from kafkallm.agents import (
     export_agent_profiles,
     import_agents_from_dir,
     new_agent_id,
+    seed_default_agent_profiles,
 )
 from kafkallm.models import AgentSpec
 from kafkallm.settings import Settings
@@ -162,7 +163,7 @@ def test_agent_profile_text_round_trips(tmp_path: Path) -> None:
     assert parsed.enabled is False
 
 
-def test_import_skips_builtin_agent_ids(tmp_path: Path) -> None:
+def test_import_applies_builtin_file_overrides(tmp_path: Path) -> None:
     (tmp_path / "worker.md").write_text(
         "---\nname: My worker\nrole: worker\n---\nMine.\n",
         encoding="utf-8",
@@ -174,9 +175,34 @@ def test_import_skips_builtin_agent_ids(tmp_path: Path) -> None:
         def save(self, agent: AgentSpec) -> None:
             saved.append(agent)
 
-    assert import_agents_from_dir(settings, Publisher()) == 0  # type: ignore[arg-type]
-    assert saved == []
+    assert import_agents_from_dir(settings, Publisher()) == 1  # type: ignore[arg-type]
+    assert [agent.agent_id for agent in saved] == ["worker"]
+    assert saved[0].name == "My worker"
     assert "worker" in default_agent_ids()
+
+
+def test_seed_default_agent_profiles_copies_only_missing_files(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "defaults"
+    source.mkdir()
+    (source / "worker.md").write_text(
+        "---\nname: Worker\nrole: worker\n---\nDo work.\n",
+        encoding="utf-8",
+    )
+    target = tmp_path / "agents"
+    target.mkdir()
+    monkeypatch.setattr("kafkallm.agents._default_agents_dir", lambda: source)
+    settings = replace(Settings.from_env(), goose_job_agents_dir=str(target))
+
+    assert seed_default_agent_profiles(settings) == 1
+    destination = target / "worker.md"
+    assert destination.is_file()
+    assert (destination.stat().st_mode & 0o777) == 0o666
+
+    destination.write_text("edited", encoding="utf-8")
+    assert seed_default_agent_profiles(settings) == 0
+    assert destination.read_text(encoding="utf-8") == "edited"
 
 
 def test_export_writes_missing_custom_profiles(tmp_path: Path) -> None:

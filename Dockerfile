@@ -12,6 +12,7 @@ WORKDIR /app
 
 COPY pyproject.toml README.md ./
 COPY src ./src
+COPY agents ./agents
 
 RUN pip install --no-cache-dir . \
     && useradd --create-home --uid 10001 appuser
