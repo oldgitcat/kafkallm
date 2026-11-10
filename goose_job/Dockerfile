@@ -6,15 +6,15 @@
 # goose; the provider credentials stay in the gateway.
 FROM debian:bookworm-slim AS goose-download
 
-ARG GOOSE_VERSION=1.57.0
-ARG GOOSE_SHA256=10eb96cb6a159b6e1d38eeedbef6ab64cd28168aad91948f1fa5c34eefdf98e3
+ARG GOOSE_VERSION=1.59.0
+ARG GOOSE_SHA256=a774667de6c20206a60d78d7bece2d9dda8389667e4f5c2fc8aaa758d1e81ef3
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -fsSL -o /tmp/goose.tar.gz \
-      "https://github.com/block/goose/releases/download/v${GOOSE_VERSION}/goose-x86_64-unknown-linux-gnu.tar.gz" \
+      "https://github.com/aaif-goose/goose/releases/download/v${GOOSE_VERSION}/goose-x86_64-unknown-linux-gnu.tar.gz" \
     && echo "${GOOSE_SHA256}  /tmp/goose.tar.gz" | sha256sum -c - \
     && mkdir -p /opt/goose \
     && tar -xzf /tmp/goose.tar.gz -C /opt/goose \

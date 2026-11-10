@@ -1,0 +1,5 @@
+# Optional Python CLI dependencies for the REA image (goose_job/Dockerfile.rea).
+# Installed into /opt/frida so the standalone Frida tools are available for
+# manual analysis alongside REA's bundled Node bindings.
+frida==17.26.1
+frida-tools==14.13.0

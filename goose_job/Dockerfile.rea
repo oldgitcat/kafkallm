@@ -122,13 +122,16 @@ RUN mkdir -p /opt/kuna \
 
 # Keep the standalone Frida CLI available alongside REA's bundled Frida
 # bindings. REA uses its own Node integration; this is for manual analysis.
+# The REA image is optional; the pinned Python deps live in
+# goose_job/requirements-rea.txt.
+COPY goose_job/requirements-rea.txt /tmp/requirements-rea.txt
 RUN python3 -m venv /opt/frida \
     && /opt/frida/bin/pip install --no-cache-dir --disable-pip-version-check \
-        frida==17.26.1 \
-        frida-tools==14.13.0 \
+        --timeout 120 --retries 10 -r /tmp/requirements-rea.txt \
     && for tool in /opt/frida/bin/frida*; do \
         ln -sf "$tool" /usr/local/bin/; \
-    done
+    done \
+    && rm -f /tmp/requirements-rea.txt
 
 # Goose starts this as a local stdio MCP server with
 # --with-extension rea:/opt/kafkallm/rea-mcp.
