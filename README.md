@@ -163,11 +163,14 @@ make setup
 ```
 
 This creates `.env` from `.env.example`, generates
-`LLM_GATEWAY_VIRTUAL_KEY`, validates the selected provider, and renders
-`agentgateway/config.generated.yaml`. Set `LLM_UPSTREAM_PROVIDER` and either
-`LLM_UPSTREAM_API_KEY` (OpenRouter, OpenAI, most hosted providers) or
-`LLM_UPSTREAM_BASE_URL` (Ollama, self-hosted/custom endpoints), choose a
-`GOOSE_MODEL`, and run `make setup` again. Then check the host:
+`LLM_GATEWAY_VIRTUAL_KEY`, and renders `agentgateway/config.generated.yaml`.
+When a terminal is attached, `make setup` asks which provider to use
+(OpenRouter, OpenAI, Ollama, a custom OpenAI-compatible endpoint, or another
+provider preset), then prompts for the key/base URL and model. In a
+non-interactive shell it validates the existing values instead. You can also
+edit `LLM_UPSTREAM_PROVIDER`, `LLM_UPSTREAM_API_KEY`,
+`LLM_UPSTREAM_BASE_URL`, and `GOOSE_MODEL` directly in `.env`. Then check the
+host:
 
 ```bash
 make doctor

@@ -84,6 +84,11 @@ if not has("LLM_UPSTREAM_API_KEY"):
 path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 PY
 
+# Ask which LLM provider to use when a terminal is attached. In scripts/CI
+# this validates the existing values instead of prompting.
+PYTHONPATH="$ROOT_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
+    python3 -m kafkallm.setup_wizard --env-file "$ROOT_DIR/.env"
+
 load_env "$ROOT_DIR"
 
 provider="${LLM_UPSTREAM_PROVIDER:-openrouter}"
