@@ -62,7 +62,7 @@ def test_ollama_wizard_needs_no_key_and_sets_the_defaults(
     tmp_path, monkeypatch
 ) -> None:
     path = _env(tmp_path)
-    answers = _answers(["3", "", ""])
+    answers = _answers(["2", "", ""])
     monkeypatch.setattr("builtins.input", lambda _: next(answers))
 
     assert setup_wizard.run(path, interactive=True) == 0
@@ -76,11 +76,9 @@ def test_ollama_wizard_needs_no_key_and_sets_the_defaults(
     assert values["GOOSE_MODEL"] == "llama3.2"
 
 
-def test_custom_wizard_writes_the_base_url_format_and_model(
-    tmp_path, monkeypatch
-) -> None:
+def test_custom_wizard_writes_the_base_url_and_model(tmp_path, monkeypatch) -> None:
     path = _env(tmp_path)
-    answers = _answers(["5", "https://llm.example/v1", "", "my-model"])
+    answers = _answers(["3", "https://llm.example/v1", "my-model"])
     monkeypatch.setattr("builtins.input", lambda _: next(answers))
     monkeypatch.setattr(setup_wizard.getpass, "getpass", lambda _: "")
 
@@ -90,7 +88,21 @@ def test_custom_wizard_writes_the_base_url_format_and_model(
     assert values["LLM_UPSTREAM_PROVIDER"] == "custom"
     assert values["LLM_UPSTREAM_BASE_URL"] == "https://llm.example/v1"
     assert values["LLM_UPSTREAM_FORMAT"] == "completions"
+    assert values["LLM_UPSTREAM_API_KEY"] == ""
     assert values["GOOSE_MODEL"] == "my-model"
+
+
+def test_custom_endpoint_accepts_an_optional_key(tmp_path, monkeypatch) -> None:
+    path = _env(tmp_path)
+    answers = _answers(["3", "https://llm.example/v1", "my-model"])
+    monkeypatch.setattr("builtins.input", lambda _: next(answers))
+    monkeypatch.setattr(setup_wizard.getpass, "getpass", lambda _: "custom-key")
+
+    assert setup_wizard.run(path, interactive=True) == 0
+    values = _values(path)
+
+    assert values["LLM_UPSTREAM_PROVIDER"] == "custom"
+    assert values["LLM_UPSTREAM_API_KEY"] == "custom-key"
 
 
 def test_switching_provider_does_not_reuse_the_old_key(tmp_path, monkeypatch) -> None:
@@ -100,16 +112,15 @@ def test_switching_provider_does_not_reuse_the_old_key(tmp_path, monkeypatch) ->
             "LLM_UPSTREAM_API_KEY=", "LLM_UPSTREAM_API_KEY=old-openrouter-key"
         ),
     )
-    answers = _answers(["2", "", ""])
+    answers = _answers(["3", "https://llm.example/v1", "my-model"])
     monkeypatch.setattr("builtins.input", lambda _: next(answers))
-    monkeypatch.setattr(setup_wizard.getpass, "getpass", lambda _: "sk-openai-test")
+    monkeypatch.setattr(setup_wizard.getpass, "getpass", lambda _: "")
 
     assert setup_wizard.run(path, interactive=True) == 0
     values = _values(path)
 
-    assert values["LLM_UPSTREAM_PROVIDER"] == "openai"
-    assert values["LLM_UPSTREAM_API_KEY"] == "sk-openai-test"
-    assert values["GOOSE_MODEL"] == "gpt-4.1-mini"
+    assert values["LLM_UPSTREAM_PROVIDER"] == "custom"
+    assert values["LLM_UPSTREAM_API_KEY"] == ""
 
 
 def test_env_editor_preserves_comments_and_replaces_a_value(tmp_path) -> None:
@@ -152,7 +163,13 @@ def test_wizard_cancels_on_eof(tmp_path, monkeypatch) -> None:
 
 @pytest.mark.parametrize(
     ("provider", "expected"),
-    [("openrouter", "1"), ("openai", "2"), ("ollama", "3"), ("custom", "5")],
+    [
+        ("openrouter", "1"),
+        ("ollama", "2"),
+        ("custom", "3"),
+        ("openai", "3"),
+        ("anthropic", "3"),
+    ],
 )
 def test_menu_default_matches_the_current_provider(provider, expected) -> None:
     assert setup_wizard._menu_default(provider) == expected
