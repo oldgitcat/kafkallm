@@ -458,6 +458,39 @@ def service_checks(settings: Settings, offline: bool = False) -> list[Check]:
         )
     )
 
+    mlflow_port = os.getenv("MLFLOW_UI_PORT") or "5000"
+    mlflow_experiment_url = (
+        f"http://127.0.0.1:{mlflow_port}/api/2.0/mlflow/experiments/"
+        "get-by-name?experiment_name=agentgateway"
+    )
+    experiment_status = _http_status(mlflow_experiment_url)
+    if experiment_status == 200:
+        checks.append(
+            Check(
+                "MLflow gateway experiment",
+                "ok",
+                "agentgateway",
+            )
+        )
+    elif experiment_status == 404:
+        checks.append(
+            Check(
+                "MLflow gateway experiment",
+                "warn",
+                "missing",
+                "Run 'make mlflow-init' (or 'make up').",
+            )
+        )
+    else:
+        checks.append(
+            Check(
+                "MLflow gateway experiment",
+                "warn",
+                "could not verify",
+                "Check MLflow on port 5000 and run 'make mlflow-init'.",
+            )
+        )
+
     provider, provider_key, base_url = provider_settings(os.environ)
     upstream_url = ""
     if provider == "openrouter":

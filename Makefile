@@ -11,7 +11,7 @@ PYTEST := $(VENV)/bin/pytest
 RUFF := $(VENV)/bin/ruff
 VENV_STAMP := $(VENV)/.kafkallm-installed
 
-.PHONY: help setup gateway-config doctor bootstrap network images app-image rea-image up down restart logs ps test lint format venv clean reset
+.PHONY: help setup gateway-config mlflow-init doctor bootstrap network images app-image rea-image up down restart logs ps test lint format venv clean reset
 
 help: ## Show this help
 	@printf "%-14s %s\n" "target" "description"
@@ -22,6 +22,9 @@ setup: ## Create .env, generate the gateway key, and check required settings
 
 gateway-config: ## Render the agentgateway provider config from .env
 	./scripts/render-agentgateway-config.sh
+
+mlflow-init: ## Create/get the gateway MLflow experiment and update .env
+	./scripts/init-mlflow.sh
 
 doctor: ## Check host prerequisites, configuration, and services
 	./scripts/doctor.sh
@@ -43,6 +46,8 @@ rea-image: ## Build the optional REA + Ghidra job image
 up: gateway-config ## Build the app image and start the control plane
 	$(CONTAINER) build -t $(APP_IMAGE) .
 	-$(COMPOSE) --profile storage down --remove-orphans
+	$(COMPOSE) --profile storage up -d mlflow
+	./scripts/init-mlflow.sh
 	$(COMPOSE) --profile storage up -d --remove-orphans
 
 down: ## Stop the stack without deleting volumes

@@ -217,7 +217,9 @@ services:
       MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://mlflow:5000}
       MLFLOW_OTLP_HOST: ${MLFLOW_OTLP_HOST:-mlflow}
       MLFLOW_OTLP_PORT: ${MLFLOW_OTLP_PORT:-5000}
-      MLFLOW_EXPERIMENT_ID: ${MLFLOW_EXPERIMENT_ID:-0}
+      # Gateway LLM traces go to their own experiment so they do not drown
+      # out the one-trace-per-job worker traces.
+      MLFLOW_EXPERIMENT_ID: ${MLFLOW_GATEWAY_EXPERIMENT_ID:-1}
     volumes:
       # The admin UI saves CORS/model changes to this file. It contains no
       # secrets; the provider key stays in the process environment.
