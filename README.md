@@ -28,6 +28,8 @@ usable, but configuration and APIs may change between minor releases.
 - [Setup and configuration](docs/setup.md)
 - [LLM providers and agentgateway](docs/providers.md)
 - [Architecture and job lifecycle](docs/architecture.md)
+- [Jobs and manual Kafka submission](docs/jobs.md)
+- [Container and process map](docs/services.md)
 - [Agents, skills, and the learning pass](docs/agents.md)
 - [Observability with MLflow](docs/observability.md)
 - [Operations, testing, and troubleshooting](docs/operations.md)

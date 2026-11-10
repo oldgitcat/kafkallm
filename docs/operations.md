@@ -188,6 +188,24 @@ podman compose logs -f llm-gateway
 ```
 
 
+## Goose 1.59 update review
+
+The 1.58/1.59 release notes, the Goose CLI help, and the job image were checked
+after the update. Relevant upstream changes are deferred MCP tools, subagent
+resume/follow-ups, a context-window report, and provider/voice improvements.
+
+None of them replaces the goosetown pieces that this stack relies on:
+
+- `gtwall` and the MOIM/telepathy wrapper for orchestrator/delegate coordination
+- the `summon` and `skills` builtins for delegation and role skills
+- the per-job wrapper that sets the telepathy/wall files
+
+The 1.59 CLI flags and `stream-json` output were verified with a real job. Keep
+the wrapper and builtins. Possible future work, not required now:
+
+- use native subagent resume instead of restarting a whole job
+- surface Goose's context-window report in the GUI
+
 ## Repository layout
 
 ```text

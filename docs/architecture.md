@@ -4,6 +4,9 @@
 
 ## How a job runs
 
+See [Container and process map](services.md) for the services, networks, ports,
+and worker-created containers.
+
 1. The GUI or CLI writes a JSON job to `jobs.in` and a `queued` state to
    `jobs.state`.
 2. The worker consumes `jobs.in`, publishes `running`, and prepares a unique
@@ -76,94 +79,10 @@ State transitions are published by both the GUI/CLI (`queued`) and the worker
 (`running`, `succeeded`/`failed`).
 
 
-## Job format
+## Jobs
 
-```json
-{
-  "job_id": "optionally-set-by-producer",
-  "run_id": "optionally-set-by-producer",
-  "trace_id": "generated-automatically-via-opentelemetry",
-  "type": "llm_task",
-  "instruction": "Analyze the input data",
-  "input": {"arbitrary": "JSON data"},
-  "input_files": [],
-  "sandbox": "default",
-  "sandbox_image": "kafkallm-goose-job:latest",
-  "multi_agent": true,
-  "agents": [],
-  "unlimited": false,
-  "timeout_seconds": 300,
-  "max_steps": 6,
-  "reflect": true
-}
-```
-
-`job_id` and `run_id` are generated as UUIDs if omitted. Messages use `job_id`
-as the Kafka key. `sandbox` is a registry ID such as `default`, `reverse`, or a
-custom environment added in the GUI. `max_steps` is advisory; goose is bounded
-by `GOOSE_JOB_MAX_TURNS` and the job timeout. `input` is limited to 256 KB per
-job; put larger payloads in a file and attach it with `input_files`.
-
-`sandbox_image` is the OCI reference the worker runs. The GUI fills it from the
-selected registry entry; a producer can also submit any pullable reference
-directly. The worker checks local Podman storage first and pulls the image from
-its registry if it is missing. `env`, `extensions`, and `instructions` still
-come from the registry entry named by `sandbox`, and an unknown `sandbox` with
-an explicit `sandbox_image` runs with an empty environment. The supplied
-`agents` list travels with the job. Older payloads without `sandbox_image`
-still work; the worker then uses the image from the registry entry.
-
-### Unlimited jobs
-
-Unlimited jobs are opt-in and must be enabled on both the GUI and worker:
-
-```dotenv
-ALLOW_UNLIMITED_JOBS=true
-```
-
-Then use **Unlimited runtime and result size** in the GUI, add `--unlimited` to
-the CLI, or set `"unlimited": true` in a job document. In that mode:
-
-- the job timeout is ignored
-- `GOOSE_MAX_TURNS` and `GOOSE_SUBAGENT_MAX_TURNS` use the much higher
-  `UNLIMITED_MAX_TURNS` values (default `100000`)
-- the output-file count cap is disabled
-- if the result text exceeds `MAX_RESULT_BYTES`, the full text is written to
-  `result-full.md` and uploaded as an artifact; the Kafka state gets a bounded
-  truncated copy so Kafka cannot reject the message
-
-Kafka still has a transport limit, so a huge result is never placed wholesale
-in `jobs.state`. It lives in S3/RustFS and is downloadable from the GUI. Upload
-limits (`UPLOAD_MAX_*`) remain separately configurable.
-
-The worker raises `max.poll.interval.ms` to
-`UNLIMITED_MAX_POLL_INTERVAL_MS` (default 24 hours, the librdkafka maximum)
-when unlimited jobs are enabled. It also polls the consumer while the microVM
-runs, so the consumer group membership stays alive during long jobs. An
-unlimited job can still occupy a worker and consume provider budget
-indefinitely; supervise it or split truly enormous work.
-
-The exact schema is available from the CLI and the HTTP API:
-
-```bash
-kafkallm schema job
-curl -fsS http://localhost:8090/api/schema/job | jq .
-```
-
-`kafkallm submit --job-json job.json` (or `--job-json -` for stdin) accepts the
-same complete document, validates it, publishes it to `jobs.in`, and records
-the initial `queued` state. The JSON defines the whole job, so do not combine
-it with instruction/sandbox flags. `agent_ids` is a GUI-only convenience; raw
-job documents must contain the full `agents` list.
-
-A result includes:
-
-- `status`: `succeeded` or `failed`
-- `result` or `error`
-- `artifacts`: uploaded files
-- `artifact_error`: optional upload failure; does not change job status
-- `trace_id`, `worker_id`, timestamps, steps, and token usage
-
+See [Jobs and manual Kafka submission](jobs.md) for the Job schema, the
+Kafka message envelope, and manual producer examples.
 
 ## MicroVM job image
 
