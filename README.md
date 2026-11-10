@@ -348,6 +348,7 @@ the provider key is the only required secret.
 | `LLM_UPSTREAM_BASE_URL` | provider default | Endpoint override; required for `custom`, defaults to host Ollama for `ollama` |
 | `LLM_UPSTREAM_FORMAT` | `completions` | Wire format for `custom` (see the module's `PROVIDER_FORMATS`) |
 | `LLM_GATEWAY_VIRTUAL_KEY` | generated | Rotatable key used by jobs |
+| `AGENTGATEWAY_INLINE_VIRTUAL_KEY` | `true` | Write the local virtual key into the gitignored config so the playground's saved key works; `false` keeps only the environment reference |
 | `KAFKALLM_JOB_ROOT` | `/var/lib/kafkallm` | Host directory for workspaces, skills, tools, and config |
 | `GOOSE_IMAGE` | `kafkallm-goose-job:latest` | Default job microVM image |
 | `GOOSE_RE_IMAGE` | `kafkallm-rea-job:latest` | Reverse-engineering image |
