@@ -14,33 +14,22 @@ import sys
 from pathlib import Path
 
 from kafkallm.agentgateway_config import (
-    ALL_PROVIDERS,
     DEFAULT_CORS_ORIGINS,
     DEFAULT_PROVIDER,
     KEY_OPTIONAL_PROVIDERS,
-    PROVIDER_FORMATS,
 )
 
 DEFAULT_FORMAT = "completions"
 DEFAULT_OLLAMA_BASE_URL = "http://host.containers.internal:11434/v1"
 DEFAULT_MODELS = {
     "openrouter": "nvidia/nemotron-3.5-lightning:free",
-    "openai": "gpt-4.1-mini",
     "ollama": "llama3.2",
 }
 
-# The sentinel values select a custom OpenAI-compatible endpoint or a free-form
-# provider preset without pretending they are real provider names.
-OPENAI_CUSTOM = "__openai_custom"
-OTHER = "__other"
-
 MENU = (
     ("1", "openrouter", "OpenRouter"),
-    ("2", "openai", "OpenAI"),
-    ("3", "ollama", "Ollama (local, no API key)"),
-    ("4", OPENAI_CUSTOM, "Custom OpenAI-compatible endpoint (no key required)"),
-    ("5", "custom", "Custom provider (choose API format)"),
-    ("6", OTHER, "Other provider preset (anthropic, gemini, ...)"),
+    ("2", "ollama", "Ollama (local, no API key)"),
+    ("3", "custom", "Custom OpenAI-compatible endpoint"),
 )
 
 
@@ -101,9 +90,7 @@ def _menu_default(current: str) -> str:
     for number, provider, _ in MENU:
         if provider == current:
             return number
-    if current not in {"", DEFAULT_PROVIDER}:
-        return "6"
-    return "1"
+    return "1" if current in {"", DEFAULT_PROVIDER} else "3"
 
 
 def _choose_provider(current: str) -> str:
@@ -112,32 +99,16 @@ def _choose_provider(current: str) -> str:
         print(f"  {number}) {label}")
     default = _menu_default(current)
     while True:
-        answer = input(f"Choose [1-6] (current: {current}): ").strip() or default
+        answer = input(f"Choose [1-3] (current: {current}): ").strip() or default
         for number, provider, _ in MENU:
             if answer == number:
                 return provider
-        print("Please enter a number from 1 to 6.")
-
-
-def _choose_other_provider(current: str) -> str:
-    default = current if current in ALL_PROVIDERS else "anthropic"
-    while True:
-        value = _ask("Provider preset", default).strip().lower()
-        if value in ALL_PROVIDERS:
-            return value
-        print(
-            "Unknown provider preset. Choose one of: "
-            + ", ".join(sorted(ALL_PROVIDERS))
-        )
+        print("Please enter a number from 1 to 3.")
 
 
 def _default_model(provider: str, current: str) -> str:
     if provider == "openrouter":
         return current or DEFAULT_MODELS["openrouter"]
-    if provider == "openai":
-        if current and "/" not in current:
-            return current
-        return DEFAULT_MODELS["openai"]
     if provider == "ollama":
         if current and "/" not in current:
             return current
@@ -148,6 +119,8 @@ def _default_model(provider: str, current: str) -> str:
 def _summary(provider: str, base_url: str, model: str, key: str) -> None:
     print("\nProvider configuration:")
     print(f"  provider:  {provider}")
+    if provider == "custom":
+        print("  endpoint:  OpenAI-compatible")
     print(f"  base URL:  {base_url or 'provider default'}")
     print(f"  model:     {model}")
     print(f"  API key:   {'configured' if key else 'not set'}")
@@ -161,7 +134,6 @@ def run(env_path: Path, *, interactive: bool | None = None) -> int:
     current_key = env.get("LLM_UPSTREAM_API_KEY") or env.get("OPENROUTER_API_KEY", "")
     current_base = env.get("LLM_UPSTREAM_BASE_URL", "")
     current_model = env.get("GOOSE_MODEL", "")
-    current_format = env.get("LLM_UPSTREAM_FORMAT", DEFAULT_FORMAT)
 
     if interactive is None:
         interactive = sys.stdin.isatty()
@@ -197,18 +169,10 @@ def run(env_path: Path, *, interactive: bool | None = None) -> int:
         _summary(provider, current_base, current_model, current_key)
         return 0
 
-    choice = _choose_provider(current_provider)
-    if choice == OPENAI_CUSTOM:
-        provider = "custom"
-        provider_format = DEFAULT_FORMAT
-    elif choice == OTHER:
-        provider = _choose_other_provider(current_provider)
-        provider_format = DEFAULT_FORMAT
-    else:
-        provider = choice
-        provider_format = DEFAULT_FORMAT
+    provider = _choose_provider(current_provider)
+    provider_format = DEFAULT_FORMAT
 
-    key = current_key
+    key = current_key if provider == current_provider else ""
     if provider == "ollama":
         key = ""
     else:
@@ -232,20 +196,9 @@ def run(env_path: Path, *, interactive: bool | None = None) -> int:
             break
         print("A base URL is required for the custom provider.")
 
-    if provider == "custom":
-        default_format = current_format or provider_format
-        while True:
-            provider_format = _ask(
-                "API format (" + ", ".join(sorted(PROVIDER_FORMATS)) + ")",
-                default_format,
-            )
-            if provider_format in PROVIDER_FORMATS:
-                break
-            print("Unknown API format.")
-    else:
-        provider_format = DEFAULT_FORMAT
-
     default_model = _default_model(provider, current_model)
+    if provider == "custom" and provider != current_provider:
+        default_model = ""
     while True:
         model = _ask("Model", default_model)
         if model:
