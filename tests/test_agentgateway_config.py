@@ -147,3 +147,16 @@ def test_llm_port_is_rendered_and_validated() -> None:
 
     with pytest.raises(ConfigError, match="outside 1-65535"):
         render_config(TEMPLATE, provider="openrouter", llm_port=70000)
+
+
+def test_virtual_key_can_be_inlined_for_the_playground() -> None:
+    rendered = render_config(
+        TEMPLATE, provider="openrouter", virtual_key="local-secret"
+    )
+    assert '- key: "local-secret"' in rendered
+    assert "$LLM_GATEWAY_VIRTUAL_KEY" not in rendered
+
+
+def test_virtual_key_defaults_to_the_environment_reference() -> None:
+    rendered = render_config(TEMPLATE, provider="openrouter")
+    assert '- key: "$LLM_GATEWAY_VIRTUAL_KEY"' in rendered

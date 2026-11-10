@@ -442,8 +442,13 @@ elsewhere. The playground derives the LLM URL from `LLM_GATEWAY_PORT`, so the
 container listener and the host-published port are intentionally the same.
 
 The generated config is mounted read-write so the admin UI can save CORS and
-model changes. It contains no secrets; the provider key stays in the gateway
-process environment. `make gateway-config` re-renders the file from `.env` and
+model changes. It contains no provider key; the provider key stays in the
+gateway process environment. It does contain the resolved local
+`LLM_GATEWAY_VIRTUAL_KEY` by default so the playground's saved-key selection
+works. The file is gitignored and local-only. Set
+`AGENTGATEWAY_INLINE_VIRTUAL_KEY=false` to keep only the
+`$LLM_GATEWAY_VIRTUAL_KEY` reference; the playground then needs the key under
+**Raw value**. `make gateway-config` re-renders the file from `.env` and
 `agentgateway/config.template.yaml`, so put durable settings there; UI-only
 changes survive until the next render.
 

@@ -27,6 +27,10 @@ Before exposing it to anyone else:
   providers, remove the old provider key from `.env`; generated Ollama configs
   never send an API key upstream. Use `provider=custom` if an authenticated
   Ollama-compatible endpoint needs one.
+- The generated agentgateway config contains the local virtual key when
+  `AGENTGATEWAY_INLINE_VIRTUAL_KEY=true` (the default) so the playground works.
+  It is gitignored but host- and container-readable; do not share or commit it.
+  Set the flag to `false` to keep only the environment reference.
 - Keep the agentgateway listener on a trusted network. It speaks plain HTTP.
 - Never commit `.env`. Only `.env.example` belongs in Git.
 - Treat the persistent skill store as untrusted input. The main job cannot write

@@ -138,6 +138,7 @@ def render_config(
     model: str = "",
     cors_origins: list[str] | None = None,
     llm_port: int = 8091,
+    virtual_key: str = "$LLM_GATEWAY_VIRTUAL_KEY",
 ) -> str:
     """Return the template with the generated ``llm:`` section filled in."""
     provider = (provider or DEFAULT_PROVIDER).strip().lower()
@@ -167,7 +168,7 @@ def render_config(
         "    apiKey:",
         "      mode: strict",
         "      keys:",
-        '        - key: "$LLM_GATEWAY_VIRTUAL_KEY"',
+        f"        - key: {json.dumps(virtual_key)}",
         "          metadata:",
         "            name: kafkallm-worker",
     ]
@@ -274,6 +275,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="LLM listener port (default: LLM_GATEWAY_PORT or 8091)",
     )
     parser.add_argument(
+        "--env-virtual-key",
+        action="store_true",
+        help=(
+            "Write $LLM_GATEWAY_VIRTUAL_KEY instead of the resolved key. "
+            "The admin playground then needs the Raw API key value."
+        ),
+    )
+    parser.add_argument(
         "--no-api-key",
         action="store_true",
         help="Do not emit an apiKey reference (for tests or unauthenticated endpoints)",
@@ -306,6 +315,14 @@ def main(argv: list[str] | None = None) -> int:
             llm_port = int(env.get("LLM_GATEWAY_PORT") or 8091)
         except ValueError as exc:
             raise ConfigError("LLM_GATEWAY_PORT must be an integer.") from exc
+    actual_virtual_key = env.get("LLM_GATEWAY_VIRTUAL_KEY", "").strip()
+    inline_virtual_key = env.get(
+        "AGENTGATEWAY_INLINE_VIRTUAL_KEY", "true"
+    ).strip().lower() not in {"0", "false", "no", "off"}
+    if args.env_virtual_key or not inline_virtual_key or not actual_virtual_key:
+        virtual_key = "$LLM_GATEWAY_VIRTUAL_KEY"
+    else:
+        virtual_key = actual_virtual_key
 
     if not args.no_api_key and not api_key and provider not in KEY_OPTIONAL_PROVIDERS:
         raise ConfigError(
@@ -330,6 +347,7 @@ def main(argv: list[str] | None = None) -> int:
         model=model,
         cors_origins=cors_origins,
         llm_port=llm_port,
+        virtual_key=virtual_key,
     )
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
