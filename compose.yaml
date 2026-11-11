@@ -287,7 +287,7 @@ services:
       # The GUI reads and writes custom agent profiles here.
       - ${GOOSE_JOB_AGENTS_DIR:-/var/lib/kafkallm/agents}:${GOOSE_JOB_AGENTS_DIR:-/var/lib/kafkallm/agents}:z
     ports:
-      - "127.0.0.1:${GUI_PORT:-8090}:${GUI_PORT:-8090}"
+      - "${GUI_BIND:-0.0.0.0}:${GUI_PORT:-8090}:${GUI_PORT:-8090}"
     depends_on:
       kafka:
         condition: service_healthy

@@ -73,15 +73,18 @@ make up
 
 Open:
 
-- GUI: <http://localhost:8090>
+- GUI: `http://<host-ip>:8090`
 - MLflow traces: <http://localhost:5000>
 - Kafka UI: <http://localhost:8080>
 
 Once `.env` is valid and the prerequisites are installed, `make bootstrap` runs
 setup, network creation, the default image build, and `make up` in one command.
 
-The GUI is published on `127.0.0.1` only. It submits to `jobs.in` and reads the
-state and audit topics. It has no local database.
+The GUI is published on `GUI_BIND` (default `0.0.0.0`, so it is reachable from
+other machines in the network). It has no authentication; use `GUI_BIND=127.0.0.1`
+for local-only access or put an authenticated TLS proxy in front of it. It
+submits to `jobs.in` and reads the state and audit topics. It has no local
+database.
 
 <details>
 <summary>Manual setup without make</summary>
@@ -187,6 +190,7 @@ required secret.
 | `GOOSE_JOB_RAM_MIB` / `GOOSE_JOB_CPUS` | `2048` / `2` | Per-job resources |
 | `GOOSE_JOB_REFLECT_ENABLED` | `true` | Default for the per-job learning pass |
 | `GOOSE_JOB_AGENTS_DIR` | `/var/lib/kafkallm/agents` | Markdown agent profiles, built-in and custom (GUI reads/writes them) |
+| `GUI_BIND` | `0.0.0.0` | Host interface for the GUI; `127.0.0.1` for local-only access |
 | `GUI_PORT` | `8090` | GUI listener |
 | `GUI_MAX_REQUEST_BYTES` | `2097152` | Limit for JSON request bodies (uploads use `UPLOAD_MAX_*`) |
 | `LLM_GATEWAY_PORT` | `8091` | LLM listener port inside the container and published on the host; the playground uses it too |

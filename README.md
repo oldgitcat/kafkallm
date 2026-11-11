@@ -14,8 +14,10 @@ log. There is no PostgreSQL and no separate scheduler service.
 > [!IMPORTANT]
 > Gänsestall is a local development stack, not a hardened multi-tenant service.
 > The GUI has no authentication, the LLM gateway speaks plain HTTP, and skill
-> updates from the isolated learning pass are validated only structurally. Keep
-> the stack on localhost or a trusted network. See [SECURITY.md](SECURITY.md)
+> updates from the isolated learning pass are validated only structurally.
+> The GUI is reachable from the network by default (`GUI_BIND=0.0.0.0`), so run
+> the stack only on a trusted network or put an authenticated TLS proxy in
+> front of it. See [SECURITY.md](SECURITY.md)
 > and the [isolation model](docs/security.md#isolation-model) before exposing it.
 
 ## Project status
@@ -79,7 +81,7 @@ GUI ──→ jobs.in, jobs.state, agents.state, sandboxes.state, agent.events
 
 | Service | URL |
 |---|---|
-| GUI | <http://localhost:8090> |
+| GUI | `http://<host-ip>:8090` |
 | Kafka UI | <http://localhost:8080> |
 | MLflow | <http://localhost:5000> |
 | LLM gateway (OpenAI-compatible) | <http://localhost:8091/v1> |

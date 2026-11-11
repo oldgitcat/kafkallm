@@ -16,7 +16,7 @@ worker-created runtime container does.
 | `podman-proxy` | docker-socket-proxy | Filtered rootless Podman API for the worker | `127.0.0.1:2375` inside the worker namespace | Podman socket |
 | `agentgateway` | agentgateway 1.7.0 | OpenAI-compatible LLM gateway, provider key, CORS, playground | `8091` LLM, `15000` admin/playground, `15021` readiness | Generated config |
 | `agent-worker` | `kafkallm-app` | Consume `jobs.in`, run microVMs, own Podman API, publish results/state/logs/events | — | `/var/lib/kafkallm`, Podman storage |
-| `gui` | `kafkallm-app` | Browser UI/API, job submission, agents, sandboxes, live state | <http://localhost:8090> | `/var/lib/kafkallm` |
+| `gui` | `kafkallm-app` | Browser UI/API, job submission, agents, sandboxes, live state | `GUI_BIND:8090` (default all interfaces) | `/var/lib/kafkallm` |
 
 `rustfs` is behind the optional `storage` profile; `make up` enables it. The GUI
 and worker are always present in the stack. Host directories are created by
@@ -83,8 +83,8 @@ The worker is the only Kafka participant that starts jobs. It:
 
 The GUI is stateless: it rebuilds jobs, agents, and sandboxes from compacted
 Kafka topics. It submits jobs to `jobs.in`, manages the registries, and streams
-live activity. It has no authentication; keep it on localhost or a trusted
-network.
+live activity. It has no authentication and is reachable from the network by
+default; use a firewall, `GUI_BIND=127.0.0.1`, or an authenticated TLS proxy.
 
 ### Host CLI
 
