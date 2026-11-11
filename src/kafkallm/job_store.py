@@ -1,16 +1,10 @@
 from __future__ import annotations
 
-import json
-import logging
 import threading
-import uuid
 from typing import Any
 
-from confluent_kafka import Consumer, KafkaError, KafkaException
-
+from kafkallm.kafka_consumer import decode_json_value, iter_messages
 from kafkallm.settings import Settings
-
-logger = logging.getLogger(__name__)
 
 _MAX_EVENTS_PER_JOB = 200
 _MAX_LOGS_PER_JOB = 3000
@@ -117,38 +111,12 @@ class JobStore:
         self._consume_topic(self.settings.logs_topic, self.put_log)
 
     def _consume_topic(self, topic: str, handler: Any) -> None:
-        while not self._stop.is_set():
-            consumer = Consumer(
-                {
-                    "bootstrap.servers": self.settings.kafka_bootstrap_servers,
-                    "group.id": f"kafkallm-gui-{topic}-{uuid.uuid4()}",
-                    "auto.offset.reset": "earliest",
-                    "enable.auto.commit": False,
-                    "session.timeout.ms": 15000,
-                }
-            )
-            consumer.subscribe([topic])
-            try:
-                while not self._stop.is_set():
-                    message = consumer.poll(timeout=1.0)
-                    if message is None:
-                        continue
-                    if message.error():
-                        if message.error().code() == KafkaError._PARTITION_EOF:
-                            continue
-                        raise KafkaException(message.error())
-                    value = message.value()
-                    if value is None:
-                        continue
-                    try:
-                        payload = json.loads(value.decode("utf-8"))
-                    except (UnicodeDecodeError, ValueError):
-                        logger.warning("Skipping malformed message in %s", topic)
-                        continue
-                    if isinstance(payload, dict):
-                        handler(payload)
-            except Exception:
-                logger.exception("GUI consumer for %s failed; reconnecting", topic)
-                self._stop.wait(2)
-            finally:
-                consumer.close()
+        for message in iter_messages(
+            self.settings,
+            [topic],
+            f"kafkallm-gui-{topic}",
+            self._stop,
+        ):
+            payload = decode_json_value(message)
+            if isinstance(payload, dict):
+                handler(payload)

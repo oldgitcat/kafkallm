@@ -78,8 +78,6 @@ def test_instruction_payload_keeps_the_existing_cli_shape() -> None:
             "reverse",
             "--timeout",
             "120",
-            "--max-steps",
-            "4",
             "--job-id",
             "job-1",
         )
@@ -92,7 +90,6 @@ def test_instruction_payload_keeps_the_existing_cli_shape() -> None:
         "sandbox": "reverse",
         "unlimited": False,
         "timeout_seconds": 120,
-        "max_steps": 4,
         "job_id": "job-1",
     }
 

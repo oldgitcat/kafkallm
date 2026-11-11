@@ -7,5 +7,10 @@ __pycache__/
 .env
 .git/
 tests/
+docs/
+goose_job/
+agentgateway/
+scripts/
+.github/
 # Stray directories from a mis-parsed podman invocation.
 --time=*

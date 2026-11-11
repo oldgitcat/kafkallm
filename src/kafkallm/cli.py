@@ -4,24 +4,22 @@ import argparse
 import json
 import logging
 import sys
+import threading
 import time
-import uuid
 from pathlib import Path
 
-from confluent_kafka import Consumer, KafkaError, KafkaException
+from confluent_kafka import KafkaException
 
 from kafkallm.dotenv import load_dotenv
+from kafkallm.jobs import build_job, submit_job
 from kafkallm.kafka import KafkaProducer, ensure_topics
+from kafkallm.kafka_consumer import iter_messages
 from kafkallm.models import AgentSpec, FileRef, Job, SandboxSpec
 from kafkallm.sandboxes import resolve_sandbox
 from kafkallm.settings import Settings
-from kafkallm.state import StatePublisher
 from kafkallm.telemetry import (
     configure_telemetry,
-    current_trace_id,
     get_tracer,
-    inject_trace_headers,
-    new_trace_id,
     set_content,
     set_session,
     shutdown_telemetry,
@@ -114,7 +112,6 @@ def build_parser() -> argparse.ArgumentParser:
     submit.add_argument("--job-id")
     submit.add_argument("--run-id")
     submit.add_argument("--timeout", type=int, default=300)
-    submit.add_argument("--max-steps", type=int, default=6)
     submit.add_argument(
         "--unlimited",
         action="store_true",
@@ -167,7 +164,6 @@ def _job_payload(args: argparse.Namespace) -> dict:
                 ("--job-id", args.job_id, None),
                 ("--run-id", args.run_id, None),
                 ("--timeout", args.timeout, 300),
-                ("--max-steps", args.max_steps, 6),
                 ("--unlimited", args.unlimited, False),
                 ("--no-reflect", args.no_reflect, False),
             )
@@ -203,7 +199,6 @@ def _job_payload(args: argparse.Namespace) -> dict:
         "sandbox": args.sandbox,
         "unlimited": args.unlimited,
         "timeout_seconds": args.timeout,
-        "max_steps": args.max_steps,
     }
     if args.job_id:
         payload["job_id"] = args.job_id
@@ -271,31 +266,20 @@ def _attach_sandbox_image(
 def submit(settings: Settings, args: argparse.Namespace) -> None:
     payload = _job_payload(args)
     _attach_uploads(settings, args, payload)
-    if payload.get("unlimited") and not settings.allow_unlimited_jobs:
-        raise ValueError("Unlimited jobs are disabled. Set ALLOW_UNLIMITED_JOBS=true.")
-    if not payload.get("trace_id"):
-        payload["trace_id"] = current_trace_id() or new_trace_id()
     ensure_topics(settings)
     _attach_sandbox_image(settings, payload, args.image)
     producer = KafkaProducer(settings)
-    state = StatePublisher(settings, producer)
     try:
         with get_tracer().start_as_current_span(
             "job.submit",
             attributes={"openinference.span.kind": "CHAIN"},
         ) as span:
-            job = Job.model_validate(payload)
+            job = build_job(settings, payload)
             span.set_attribute("job.id", job.job_id)
             span.set_attribute("job.run_id", job.run_id)
             set_session(span, job.job_id)
             set_content(span, "input.value", job.instruction)
-            producer.send(
-                settings.jobs_topic,
-                job.job_id,
-                job,
-                headers=inject_trace_headers(),
-            )
-            state.queued(job, worker_id=settings.worker_id)
+            submit_job(settings, producer, job, worker_id=settings.worker_id)
     finally:
         producer.close()
     print(job.model_dump_json(indent=2))
@@ -314,31 +298,25 @@ def print_schema(model: str) -> None:
 
 def consume(settings: Settings, args: argparse.Namespace, topic: str) -> None:
     ensure_topics(settings)
-    consumer = Consumer(
-        {
-            "bootstrap.servers": settings.kafka_bootstrap_servers,
-            "group.id": f"kafkallm-topic-viewer-{uuid.uuid4()}",
-            "auto.offset.reset": "earliest" if args.from_beginning else "latest",
-            "enable.auto.commit": False,
-        }
-    )
-    consumer.subscribe([topic])
+    stop = threading.Event()
     received = 0
     last_message = time.monotonic()
+
+    def idle() -> bool:
+        return (
+            args.idle_timeout > 0
+            and time.monotonic() - last_message >= args.idle_timeout
+        )
+
     try:
-        while True:
-            message = consumer.poll(timeout=1.0)
-            if message is None:
-                if (
-                    args.idle_timeout > 0
-                    and time.monotonic() - last_message >= args.idle_timeout
-                ):
-                    break
-                continue
-            if message.error():
-                if message.error().code() == KafkaError._PARTITION_EOF:
-                    continue
-                raise KafkaException(message.error())
+        for message in iter_messages(
+            settings,
+            [topic],
+            "kafkallm-topic-viewer",
+            stop,
+            offset_reset="earliest" if args.from_beginning else "latest",
+            on_idle=idle,
+        ):
             value = message.value()
             print(value.decode("utf-8") if value is not None else "null", flush=True)
             received += 1
@@ -348,7 +326,7 @@ def consume(settings: Settings, args: argparse.Namespace, topic: str) -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        consumer.close()
+        stop.set()
 
 
 def main() -> None:

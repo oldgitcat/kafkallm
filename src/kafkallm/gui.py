@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import mimetypes
+import re
 import signal
 import threading
 from collections.abc import Callable
@@ -11,7 +12,7 @@ from email.policy import default as email_policy
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from urllib.parse import parse_qs, quote, urlsplit
 
 from pydantic import ValidationError
@@ -25,6 +26,7 @@ from kafkallm.agents import (
     write_agent_profile,
 )
 from kafkallm.job_store import JobStore
+from kafkallm.jobs import build_job, select_agents, submit_job
 from kafkallm.kafka import KafkaProducer, ensure_topics, wait_for_kafka
 from kafkallm.models import (
     AgentSpec,
@@ -43,11 +45,9 @@ from kafkallm.sandboxes import (
     seed_default_sandboxes,
 )
 from kafkallm.settings import Settings
-from kafkallm.state import StatePublisher
 from kafkallm.storage import S3Storage
 from kafkallm.telemetry import (
     current_trace_id,
-    inject_trace_headers,
     new_trace_id,
 )
 
@@ -117,6 +117,52 @@ class JobServer(ThreadingHTTPServer):
 class JobHandler(BaseHTTPRequestHandler):
     server: JobServer
 
+    _GET_EXACT: ClassVar[dict[str, str]] = {
+        "/": "_send_file",
+        "/index.html": "_send_file",
+        "/app.css": "_send_css",
+        "/app.js": "_send_js",
+        "/healthz": "_healthz",
+        "/api/jobs": "_send_jobs",
+        "/api/agents": "_send_agents",
+        "/api/sandboxes": "_send_sandboxes",
+        "/api/schema/job": "_send_job_schema",
+        "/api/schema/agent": "_send_agent_schema",
+        "/api/schema/sandbox": "_send_sandbox_schema",
+        "/api/features": "_send_features",
+    }
+    _GET_PATTERNS = tuple(
+        (re.compile(pattern), handler)
+        for pattern, handler in (
+            (r"/api/jobs/([^/]+)", "_send_job"),
+            (r"/api/jobs/([^/]+)/result", "_send_job_result"),
+            (r"/api/jobs/([^/]+)/logs", "_send_job_logs"),
+            (r"/api/jobs/([^/]+)/artifacts/([^/]+)", "_send_job_artifact"),
+        )
+    )
+    _POST_EXACT: ClassVar[dict[str, str]] = {
+        "/api/uploads": "_handle_upload",
+        "/api/agents/reload": "_handle_agents_reload",
+        "/api/agents": "_handle_agent_save",
+        "/api/sandboxes": "_handle_sandbox_save",
+        "/api/jobs": "_handle_job_submit",
+        "/api/jobs/clear-finished": "_handle_clear_finished",
+    }
+    _POST_PATTERNS = tuple(
+        (re.compile(pattern), handler)
+        for pattern, handler in (
+            (r"/api/jobs/([^/]+)/cancel", "_handle_job_cancel"),
+            (r"/api/jobs/([^/]+)/restart", "_handle_job_restart"),
+        )
+    )
+    _DELETE_PATTERNS = tuple(
+        (re.compile(pattern), handler)
+        for pattern, handler in (
+            (r"/api/agents/([^/]+)", "_handle_agent_delete"),
+            (r"/api/sandboxes/([^/]+)", "_handle_sandbox_delete"),
+        )
+    )
+
     def log_message(self, format: str, *args: Any) -> None:
         logger.info("%s - %s", self.address_string(), format % args)
 
@@ -157,63 +203,78 @@ class JobHandler(BaseHTTPRequestHandler):
             return None
         return payload
 
-    def do_GET(self) -> None:
+    def _dispatch(
+        self,
+        exact: dict[str, str],
+        patterns: tuple[tuple[re.Pattern[str], str], ...],
+    ) -> None:
         path = urlsplit(self.path).path
-        if path in {"/", "/index.html"}:
-            self._send_file()
-        elif path == "/healthz":
-            self._send_json({"status": "ok"})
-        elif path == "/api/jobs":
-            self._send_json({"jobs": self.server.store.jobs()})
-        elif path == "/api/agents":
-            builtin = default_agent_ids()
-            self._send_json(
-                {
-                    "agents": [
-                        {
-                            **agent.model_dump(mode="json"),
-                            "builtin": agent.agent_id in builtin,
-                        }
-                        for agent in self.server.agents.agents()
-                    ]
-                }
-            )
-        elif path == "/api/sandboxes":
-            self._send_json(
-                {
-                    "sandboxes": [
-                        sandbox.model_dump(mode="json")
-                        for sandbox in self.server.sandboxes.sandboxes()
-                    ]
-                }
-            )
-        elif path == "/api/schema/job":
-            self._send_json(Job.model_json_schema())
-        elif path == "/api/schema/agent":
-            self._send_json(AgentSpec.model_json_schema())
-        elif path == "/api/schema/sandbox":
-            self._send_json(SandboxSpec.model_json_schema())
-        elif path == "/api/features":
-            self._send_json(
-                {
-                    "unlimited_jobs": self.server.settings.allow_unlimited_jobs,
-                    "reflect_default": (self.server.settings.goose_job_reflect_enabled),
-                }
-            )
-        elif path.startswith("/api/jobs/"):
-            parts = path.strip("/").split("/")
-            if len(parts) == 3:
-                self._send_job(parts[2])
-            elif len(parts) == 4 and parts[3] == "result":
-                self._send_job_result(parts[2])
-            elif len(parts) == 4 and parts[3] == "logs":
-                self._send_job_logs(parts[2])
-            elif len(parts) == 5 and parts[3] == "artifacts":
-                self._send_job_artifact(parts[2], parts[4])
-            else:
-                self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
-        else:
-            self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
+        handler = exact.get(path)
+        if handler is not None:
+            getattr(self, handler)()
+            return
+        for pattern, handler_name in patterns:
+            match = pattern.fullmatch(path)
+            if match is not None:
+                getattr(self, handler_name)(*match.groups())
+                return
+        self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
+
+    def do_GET(self) -> None:
+        self._dispatch(self._GET_EXACT, self._GET_PATTERNS)
+
+    def do_POST(self) -> None:
+        self._dispatch(self._POST_EXACT, self._POST_PATTERNS)
+
+    def do_DELETE(self) -> None:
+        self._dispatch({}, self._DELETE_PATTERNS)
+
+    def _healthz(self) -> None:
+        self._send_json({"status": "ok"})
+
+    def _send_jobs(self) -> None:
+        self._send_json({"jobs": self.server.store.jobs()})
+
+    def _send_agents(self) -> None:
+        builtin = default_agent_ids()
+        self._send_json(
+            {
+                "agents": [
+                    {
+                        **agent.model_dump(mode="json"),
+                        "builtin": agent.agent_id in builtin,
+                    }
+                    for agent in self.server.agents.agents()
+                ]
+            }
+        )
+
+    def _send_sandboxes(self) -> None:
+        self._send_json(
+            {
+                "sandboxes": [
+                    sandbox.model_dump(mode="json")
+                    for sandbox in self.server.sandboxes.sandboxes()
+                ]
+            }
+        )
+
+    def _send_job_schema(self) -> None:
+        self._send_json(Job.model_json_schema())
+
+    def _send_agent_schema(self) -> None:
+        self._send_json(AgentSpec.model_json_schema())
+
+    def _send_sandbox_schema(self) -> None:
+        self._send_json(SandboxSpec.model_json_schema())
+
+    def _send_features(self) -> None:
+        self._send_json(
+            {
+                "unlimited_jobs": self.server.settings.allow_unlimited_jobs,
+                "reflect_default": (self.server.settings.goose_job_reflect_enabled),
+            }
+        )
 
     def _send_job(self, job_id: str) -> None:
         job = self.server.store.job(job_id)
@@ -291,12 +352,7 @@ class JobHandler(BaseHTTPRequestHandler):
         finally:
             body.close()
 
-    def _handle_job_cancel(self) -> None:
-        parts = self.path.strip("/").split("/")
-        if len(parts) != 4 or parts[0] != "api" or parts[1] != "jobs":
-            self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
-            return
-        job_id = parts[2]
+    def _handle_job_cancel(self, job_id: str) -> None:
         job = self.server.store.job(job_id)
         if job is None:
             self._send_json({"error": "job not found"}, status=HTTPStatus.NOT_FOUND)
@@ -373,13 +429,8 @@ class JobHandler(BaseHTTPRequestHandler):
             self.server.store.remove_job(str(job["job_id"]))
         self._send_json({"removed": len(finished)})
 
-    def _handle_job_restart(self) -> None:
+    def _handle_job_restart(self, job_id: str) -> None:
         """Queue a new job with the stored instruction, inputs, and settings."""
-        parts = urlsplit(self.path).path.strip("/").split("/")
-        if len(parts) != 4 or parts[0] != "api" or parts[1] != "jobs":
-            self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
-            return
-        job_id = parts[2]
         job = self.server.store.job(job_id)
         if job is None:
             self._send_json({"error": "job not found"}, status=HTTPStatus.NOT_FOUND)
@@ -425,21 +476,12 @@ class JobHandler(BaseHTTPRequestHandler):
             agents=state.agents,
             unlimited=state.unlimited,
             timeout_seconds=state.timeout_seconds,
-            max_steps=state.max_steps,
             reflect=state.reflect,
             trace_id=current_trace_id() or new_trace_id(),
         )
         try:
             with self.server.producer_lock:
-                self.server.producer.send(
-                    self.server.settings.jobs_topic,
-                    restarted.job_id,
-                    restarted,
-                    headers=inject_trace_headers(),
-                )
-                StatePublisher(self.server.settings, self.server.producer).queued(
-                    restarted, worker_id=None
-                )
+                submit_job(self.server.settings, self.server.producer, restarted)
         except Exception as exc:
             logger.exception("Could not restart job %s", job_id)
             self._send_json(
@@ -450,31 +492,7 @@ class JobHandler(BaseHTTPRequestHandler):
         self.server.store.put_state(JobState.queued(restarted).model_dump(mode="json"))
         self._send_json(restarted.model_dump(mode="json"), status=HTTPStatus.CREATED)
 
-    def do_POST(self) -> None:
-        if self.path == "/api/uploads":
-            self._handle_upload()
-            return
-        if self.path == "/api/agents/reload":
-            self._handle_agents_reload()
-            return
-        if self.path == "/api/agents":
-            self._handle_agent_save()
-            return
-        if self.path == "/api/sandboxes":
-            self._handle_sandbox_save()
-            return
-        if self.path == "/api/jobs/clear-finished":
-            self._handle_clear_finished()
-            return
-        if self.path.startswith("/api/jobs/") and self.path.endswith("/cancel"):
-            self._handle_job_cancel()
-            return
-        if self.path.startswith("/api/jobs/") and self.path.endswith("/restart"):
-            self._handle_job_restart()
-            return
-        if self.path != "/api/jobs":
-            self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
-            return
+    def _handle_job_submit(self) -> None:
         try:
             payload = self._read_json_request("job")
             if payload is None:
@@ -492,39 +510,8 @@ class JobHandler(BaseHTTPRequestHandler):
             # Carry the image reference in the job so the worker runs exactly
             # what the operator selected and can pull it from its registry.
             payload["sandbox_image"] = sandbox.image
-            if (
-                payload.get("unlimited")
-                and not self.server.settings.allow_unlimited_jobs
-            ):
-                raise ValueError(
-                    "Unlimited jobs are disabled. Set ALLOW_UNLIMITED_JOBS=true."
-                )
-            agent_ids = payload.pop("agent_ids", None)
-            multi_agent = bool(payload.get("multi_agent", True))
-            if multi_agent and agent_ids is not None:
-                if not isinstance(agent_ids, list):
-                    raise ValueError("agent_ids must be a list.")
-                selected: list[AgentSpec] = []
-                for raw_id in agent_ids:
-                    agent = self.server.agents.get(str(raw_id))
-                    if agent is None:
-                        raise ValueError(f"Unknown agent: {raw_id}")
-                    if agent.enabled:
-                        selected.append(agent)
-                payload["agents"] = [
-                    agent.model_dump(mode="json") for agent in selected
-                ]
-            elif not multi_agent:
-                payload["agents"] = []
-            payload["multi_agent"] = multi_agent
-            job = Job.model_validate(
-                {
-                    **payload,
-                    "trace_id": payload.get("trace_id")
-                    or current_trace_id()
-                    or new_trace_id(),
-                }
-            )
+            select_agents(payload, self.server.agents)
+            job = build_job(self.server.settings, payload)
         except (ValueError, ValidationError) as exc:
             self._send_json(
                 {"error": f"Invalid job: {exc}"},
@@ -534,15 +521,7 @@ class JobHandler(BaseHTTPRequestHandler):
 
         try:
             with self.server.producer_lock:
-                self.server.producer.send(
-                    self.server.settings.jobs_topic,
-                    job.job_id,
-                    job,
-                    headers=inject_trace_headers(),
-                )
-                StatePublisher(self.server.settings, self.server.producer).queued(
-                    job, worker_id=None
-                )
+                submit_job(self.server.settings, self.server.producer, job)
         except Exception as exc:
             logger.exception("Could not submit job")
             self._send_json(
@@ -553,17 +532,7 @@ class JobHandler(BaseHTTPRequestHandler):
         self.server.store.put_state(JobState.queued(job).model_dump(mode="json"))
         self._send_json(job.model_dump(mode="json"), status=HTTPStatus.CREATED)
 
-    def do_DELETE(self) -> None:
-        if self.path.startswith("/api/agents/"):
-            self._handle_agent_delete()
-            return
-        if self.path.startswith("/api/sandboxes/"):
-            self._handle_sandbox_delete()
-            return
-        self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
-
-    def _handle_agent_delete(self) -> None:
-        agent_id = self.path.rsplit("/", 1)[-1]
+    def _handle_agent_delete(self, agent_id: str) -> None:
         if agent_id in default_agent_ids():
             self._send_json(
                 {"error": "Built-in agents cannot be disabled."},
@@ -597,8 +566,7 @@ class JobHandler(BaseHTTPRequestHandler):
         self.server.agents.put(updated)
         self._send_json(updated.model_dump(mode="json"))
 
-    def _handle_sandbox_delete(self) -> None:
-        sandbox_id = self.path.rsplit("/", 1)[-1]
+    def _handle_sandbox_delete(self, sandbox_id: str) -> None:
         if sandbox_id == "default":
             self._send_json(
                 {"error": "The default sandbox cannot be disabled."},
@@ -840,7 +808,16 @@ class JobHandler(BaseHTTPRequestHandler):
         )
 
     def _send_file(self) -> None:
-        path = Path(__file__).parent / "static" / "index.html"
+        self._send_static("index.html", "text/html; charset=utf-8")
+
+    def _send_css(self) -> None:
+        self._send_static("app.css", "text/css; charset=utf-8")
+
+    def _send_js(self) -> None:
+        self._send_static("app.js", "text/javascript; charset=utf-8")
+
+    def _send_static(self, filename: str, content_type: str) -> None:
+        path = Path(__file__).parent / "static" / filename
         try:
             body = path.read_bytes()
         except OSError:
@@ -850,7 +827,7 @@ class JobHandler(BaseHTTPRequestHandler):
             )
             return
         self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()

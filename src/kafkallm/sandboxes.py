@@ -1,17 +1,12 @@
 from __future__ import annotations
 
-import json
 import logging
-import threading
-import time
-import uuid
-from typing import Any
-
-from confluent_kafka import Consumer, KafkaError, KafkaException
 
 from kafkallm.kafka import KafkaProducer
+from kafkallm.kafka_consumer import CompactedStore, read_compacted
 from kafkallm.models import SandboxSpec, utc_now
 from kafkallm.settings import Settings
+from kafkallm.slugs import slugify
 
 logger = logging.getLogger(__name__)
 
@@ -73,27 +68,18 @@ def builtin_sandbox(sandbox_id: str, settings: Settings) -> SandboxSpec | None:
 
 
 def resolve_sandbox(settings: Settings, sandbox_id: str) -> SandboxSpec | None:
-    """Return the registry entry, or the built-in definition for a known ID.
-
-    The GUI and CLI call this once when a job is submitted so the Job message
-    can carry a snapshot of the selected environment. The short-lived store
-    replays the compacted registry topic and is stopped immediately.
-    """
-    store = SandboxStore(settings)
-    store.start()
-    try:
-        sandbox = store.wait_for(sandbox_id)
-    finally:
-        store.stop()
-    return sandbox or builtin_sandbox(sandbox_id, settings)
+    """Return the registry entry, or the built-in definition for a known ID."""
+    found = read_compacted(
+        settings,
+        settings.sandboxes_topic,
+        SandboxSpec.model_validate_json,
+        timeout=2.0,
+    )
+    return found.get(sandbox_id) or builtin_sandbox(sandbox_id, settings)
 
 
 def new_sandbox_id(name: str) -> str:
-    slug = "".join(
-        char if char.isalnum() else "-" for char in name.strip().lower()
-    ).strip("-")
-    slug = "-".join(part for part in slug.split("-") if part)[:64]
-    return slug or f"sandbox-{uuid.uuid4().hex[:8]}"
+    return slugify(name, prefix="sandbox")
 
 
 class SandboxPublisher:
@@ -110,32 +96,14 @@ class SandboxPublisher:
 
 
 def _existing_sandbox_ids(settings: Settings, timeout: float = 2.0) -> set[str]:
-    consumer = Consumer(
-        {
-            "bootstrap.servers": settings.kafka_bootstrap_servers,
-            "group.id": f"kafkallm-sandbox-seed-{uuid.uuid4()}",
-            "auto.offset.reset": "earliest",
-            "enable.auto.commit": False,
-        }
+    return set(
+        read_compacted(
+            settings,
+            settings.sandboxes_topic,
+            SandboxSpec.model_validate_json,
+            timeout=timeout,
+        )
     )
-    consumer.subscribe([settings.sandboxes_topic])
-    found: set[str] = set()
-    deadline = time.monotonic() + timeout
-    try:
-        while time.monotonic() < deadline:
-            message = consumer.poll(timeout=0.25)
-            if message is None:
-                continue
-            if message.error():
-                if message.error().code() == KafkaError._PARTITION_EOF:
-                    continue
-                raise KafkaException(message.error())
-            key = message.key()
-            if isinstance(key, bytes) and key:
-                found.add(key.decode("utf-8"))
-    finally:
-        consumer.close()
-    return found
 
 
 def seed_default_sandboxes(
@@ -151,32 +119,21 @@ def seed_default_sandboxes(
     logger.info("Seeded %s default sandboxes", len(default_sandboxes(settings)))
 
 
-class SandboxStore:
+class SandboxStore(CompactedStore[SandboxSpec]):
     """In-memory view of the compacted sandbox registry topic."""
 
     def __init__(self, settings: Settings) -> None:
-        self.settings = settings
-        self._sandboxes: dict[str, SandboxSpec] = {}
-        self._condition = threading.Condition()
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
-
-    def start(self) -> None:
-        self._thread = threading.Thread(
-            target=self._consume,
-            name="kafkallm-gui-sandboxes",
-            daemon=True,
+        super().__init__(
+            settings,
+            settings.sandboxes_topic,
+            SandboxSpec,
+            group_prefix="kafkallm-gui-sandboxes",
+            key_attr="sandbox_id",
+            label="sandbox",
         )
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=5)
 
     def sandboxes(self) -> list[SandboxSpec]:
-        with self._condition:
-            sandboxes = list(self._sandboxes.values())
+        sandboxes = self.values()
         sandboxes.sort(
             key=lambda sandbox: (
                 _ORDER.get(sandbox.sandbox_id, 99),
@@ -184,65 +141,3 @@ class SandboxStore:
             )
         )
         return sandboxes
-
-    def get(self, sandbox_id: str) -> SandboxSpec | None:
-        with self._condition:
-            return self._sandboxes.get(sandbox_id)
-
-    def wait_for(self, sandbox_id: str, timeout: float = 3.0) -> SandboxSpec | None:
-        with self._condition:
-            self._condition.wait_for(
-                lambda: sandbox_id in self._sandboxes,
-                timeout=timeout,
-            )
-            return self._sandboxes.get(sandbox_id)
-
-    def put(self, sandbox: SandboxSpec) -> None:
-        with self._condition:
-            self._sandboxes[sandbox.sandbox_id] = sandbox
-            self._condition.notify_all()
-
-    def remove(self, sandbox_id: str) -> None:
-        with self._condition:
-            self._sandboxes.pop(sandbox_id, None)
-            self._condition.notify_all()
-
-    def _consume(self) -> None:
-        while not self._stop.is_set():
-            consumer = Consumer(
-                {
-                    "bootstrap.servers": self.settings.kafka_bootstrap_servers,
-                    "group.id": f"kafkallm-gui-sandboxes-{uuid.uuid4()}",
-                    "auto.offset.reset": "earliest",
-                    "enable.auto.commit": False,
-                    "session.timeout.ms": 15000,
-                }
-            )
-            consumer.subscribe([self.settings.sandboxes_topic])
-            try:
-                while not self._stop.is_set():
-                    message = consumer.poll(timeout=1.0)
-                    if message is None:
-                        continue
-                    if message.error():
-                        if message.error().code() == KafkaError._PARTITION_EOF:
-                            continue
-                        raise KafkaException(message.error())
-                    value = message.value()
-                    key = message.key()
-                    if value is None:
-                        if isinstance(key, bytes) and key:
-                            self.remove(key.decode("utf-8"))
-                        continue
-                    try:
-                        payload: Any = json.loads(value.decode("utf-8"))
-                        sandbox = SandboxSpec.model_validate(payload)
-                    except (UnicodeDecodeError, ValueError):
-                        logger.warning("Skipping malformed sandbox record")
-                        continue
-                    self.put(sandbox)
-            except Exception:
-                logger.exception("GUI sandbox consumer failed; reconnecting")
-                self._stop.wait(2)
-            finally:
-                consumer.close()

@@ -5,17 +5,16 @@ import json
 import logging
 import os
 import re
-import threading
-import time
-import uuid
 from pathlib import Path
 from typing import Any
 
-from confluent_kafka import Consumer, KafkaError, KafkaException
+import yaml
 
 from kafkallm.kafka import KafkaProducer
+from kafkallm.kafka_consumer import CompactedStore, read_compacted
 from kafkallm.models import ID_PATTERN, AgentSpec
 from kafkallm.settings import Settings
+from kafkallm.slugs import slugify
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +29,7 @@ _ROLE_ORDER = {
 
 def _default_agents_dir() -> Path:
     """Directory with the built-in goosetown agent profiles."""
-    return Path(os.getenv("GOOSE_JOB_DEFAULT_AGENTS_DIR", "agents"))
+    return Path(os.getenv("GOOSE_JOB_DEFAULT_AGENTS_DIR") or "agents")
 
 
 def default_agents() -> list[AgentSpec]:
@@ -59,20 +58,11 @@ def default_agent_ids() -> set[str]:
 
 
 def new_agent_id(name: str) -> str:
-    slug = "".join(
-        char if char.isalnum() else "-" for char in name.strip().lower()
-    ).strip("-")
-    slug = "-".join(part for part in slug.split("-") if part)[:64]
-    return slug or f"agent-{uuid.uuid4().hex[:8]}"
+    return slugify(name, prefix="agent")
 
 
 def _split_front_matter(text: str) -> tuple[dict[str, Any], str]:
-    """Split a small YAML front matter block from an agent profile file.
-
-    The parser intentionally supports only the flat subset used by agent
-    profiles: ``key: value``, booleans, and simple or block lists. That keeps
-    the control plane free of a YAML dependency.
-    """
+    """Split the YAML front matter block from an agent profile file."""
     if not text.startswith("---"):
         return {}, text.strip()
     lines = text.splitlines()
@@ -84,48 +74,13 @@ def _split_front_matter(text: str) -> tuple[dict[str, Any], str]:
     )
     if end is None:
         return {}, text.strip()
-    return _parse_flat_yaml(lines[1:end]), "\n".join(lines[end + 1 :]).strip()
-
-
-def _parse_flat_yaml(lines: list[str]) -> dict[str, Any]:
-    data: dict[str, Any] = {}
-    current_list: str | None = None
-    for raw in lines:
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("- ") and current_list is not None:
-            data[current_list].append(_scalar(line[2:]))
-            continue
-        current_list = None
-        key, separator, value = line.partition(":")
-        if not separator:
-            continue
-        key = key.strip()
-        value = value.strip()
-        if not value:
-            data[key] = []
-            current_list = key
-        elif value.startswith("[") and value.endswith("]"):
-            inner = value[1:-1].strip()
-            data[key] = [_scalar(item) for item in inner.split(",")] if inner else []
-        else:
-            data[key] = _scalar(value)
-    return data
-
-
-def _scalar(value: str) -> Any:
-    value = value.strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
-        if value[0] == '"':
-            try:
-                return json.loads(value)
-            except ValueError:
-                return value[1:-1]
-        return value[1:-1]
-    if value.lower() in {"true", "false"}:
-        return value.lower() == "true"
-    return value
+    try:
+        metadata = yaml.safe_load("\n".join(lines[1:end])) or {}
+    except yaml.YAMLError:
+        return {}, text.strip()
+    if not isinstance(metadata, dict):
+        return {}, text.strip()
+    return metadata, "\n".join(lines[end + 1 :]).strip()
 
 
 def agent_spec_from_file(path: Path) -> AgentSpec | None:
@@ -263,41 +218,12 @@ class AgentPublisher:
 
 def _existing_agents(settings: Settings, timeout: float = 2.0) -> dict[str, AgentSpec]:
     """Read the compacted agent registry from the beginning."""
-    consumer = Consumer(
-        {
-            "bootstrap.servers": settings.kafka_bootstrap_servers,
-            "group.id": f"kafkallm-agent-seed-{uuid.uuid4()}",
-            "auto.offset.reset": "earliest",
-            "enable.auto.commit": False,
-        }
+    return read_compacted(
+        settings,
+        settings.agents_topic,
+        AgentSpec.model_validate_json,
+        timeout=timeout,
     )
-    consumer.subscribe([settings.agents_topic])
-    found: dict[str, AgentSpec] = {}
-    deadline = time.monotonic() + timeout
-    try:
-        while time.monotonic() < deadline:
-            message = consumer.poll(timeout=0.25)
-            if message is None:
-                continue
-            if message.error():
-                if message.error().code() == KafkaError._PARTITION_EOF:
-                    continue
-                raise KafkaException(message.error())
-            key = message.key()
-            if not isinstance(key, bytes) or not key:
-                continue
-            agent_id = key.decode("utf-8")
-            value = message.value()
-            if value is None:
-                found.pop(agent_id, None)
-                continue
-            try:
-                found[agent_id] = AgentSpec.model_validate_json(value)
-            except ValueError:
-                logger.warning("Skipping malformed agent record for %s", agent_id)
-    finally:
-        consumer.close()
-    return found
 
 
 def _existing_agent_ids(settings: Settings, timeout: float = 2.0) -> set[str]:
@@ -359,83 +285,20 @@ def sync_agents(settings: Settings, producer: KafkaProducer) -> None:
     import_agents_from_dir(settings, AgentPublisher(settings, producer))
 
 
-class AgentStore:
+class AgentStore(CompactedStore[AgentSpec]):
     """In-memory view of the compacted agent registry topic."""
 
     def __init__(self, settings: Settings) -> None:
-        self.settings = settings
-        self._agents: dict[str, AgentSpec] = {}
-        self._lock = threading.Lock()
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
-
-    def start(self) -> None:
-        self._thread = threading.Thread(
-            target=self._consume,
-            name="kafkallm-gui-agents",
-            daemon=True,
+        super().__init__(
+            settings,
+            settings.agents_topic,
+            AgentSpec,
+            group_prefix="kafkallm-gui-agents",
+            key_attr="agent_id",
+            label="agent",
         )
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=5)
 
     def agents(self) -> list[AgentSpec]:
-        with self._lock:
-            agents = list(self._agents.values())
+        agents = self.values()
         agents.sort(key=lambda agent: (_ROLE_ORDER.get(agent.role, 99), agent.name))
         return agents
-
-    def get(self, agent_id: str) -> AgentSpec | None:
-        with self._lock:
-            return self._agents.get(agent_id)
-
-    def put(self, agent: AgentSpec) -> None:
-        with self._lock:
-            self._agents[agent.agent_id] = agent
-
-    def remove(self, agent_id: str) -> None:
-        with self._lock:
-            self._agents.pop(agent_id, None)
-
-    def _consume(self) -> None:
-        while not self._stop.is_set():
-            consumer = Consumer(
-                {
-                    "bootstrap.servers": self.settings.kafka_bootstrap_servers,
-                    "group.id": f"kafkallm-gui-agents-{uuid.uuid4()}",
-                    "auto.offset.reset": "earliest",
-                    "enable.auto.commit": False,
-                    "session.timeout.ms": 15000,
-                }
-            )
-            consumer.subscribe([self.settings.agents_topic])
-            try:
-                while not self._stop.is_set():
-                    message = consumer.poll(timeout=1.0)
-                    if message is None:
-                        continue
-                    if message.error():
-                        if message.error().code() == KafkaError._PARTITION_EOF:
-                            continue
-                        raise KafkaException(message.error())
-                    value = message.value()
-                    key = message.key()
-                    if value is None:
-                        if isinstance(key, bytes) and key:
-                            self.remove(key.decode("utf-8"))
-                        continue
-                    try:
-                        payload: Any = json.loads(value.decode("utf-8"))
-                        agent = AgentSpec.model_validate(payload)
-                    except (UnicodeDecodeError, ValueError):
-                        logger.warning("Skipping malformed agent record")
-                        continue
-                    self.put(agent)
-            except Exception:
-                logger.exception("GUI agent consumer failed; reconnecting")
-                self._stop.wait(2)
-            finally:
-                consumer.close()

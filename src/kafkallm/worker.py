@@ -155,7 +155,6 @@ class Worker:
                     attributes={
                         "input_files": len(job.input_files),
                         "timeout_seconds": job.timeout_seconds,
-                        "max_steps": job.max_steps,
                     },
                 )
                 logger.info("Starting job %s / run %s", job.job_id, job.run_id)

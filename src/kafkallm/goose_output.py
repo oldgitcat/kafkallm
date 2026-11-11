@@ -218,6 +218,21 @@ def parse_goose_output_file(
         stream.close()
 
 
+def parse_goose_run(
+    workdir: Path,
+    stem: str,
+) -> tuple[str, dict[str, int], int, str | None]:
+    """Parse ``<stem>.jsonl`` and fall back to legacy ``<stem>.json``."""
+    text, usage, steps, error = parse_goose_output_file(
+        workdir / ".kafkallm" / f"{stem}.jsonl"
+    )
+    if error == NO_OUTPUT_ERROR:
+        text, usage, steps, error = parse_goose_output_file(
+            workdir / ".kafkallm" / f"{stem}.json"
+        )
+    return text, usage, steps, error
+
+
 def _message_content(messages: Any) -> tuple[str, str | None]:
     if not isinstance(messages, list):
         return "", None

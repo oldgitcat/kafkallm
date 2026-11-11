@@ -393,7 +393,6 @@ def test_vm_run_starts_microvm_and_collects_result(tmp_path: Path) -> None:
         job=job,
         workspace=workspace,
         deadline=time.monotonic() + 120,
-        max_steps=5,
         audit=audit,  # type: ignore[arg-type]
     )
 
@@ -466,7 +465,6 @@ def test_vm_run_copies_outputs_and_removes_workdir(tmp_path: Path) -> None:
         job=Job(instruction="Do the job"),
         workspace=workspace,
         deadline=time.monotonic() + 120,
-        max_steps=5,
     )
 
     assert result.text == "Completed"
@@ -489,7 +487,6 @@ def test_vm_provider_error_is_propagated(tmp_path: Path) -> None:
             job=Job(instruction="Fail"),
             workspace=workspace,
             deadline=time.monotonic() + 120,
-            max_steps=5,
             audit=audit,  # type: ignore[arg-type]
         )
 
@@ -509,7 +506,6 @@ def test_vm_missing_result_uses_stderr(tmp_path: Path) -> None:
             job=Job(instruction="Fail without provider"),
             workspace=workspace,
             deadline=time.monotonic() + 120,
-            max_steps=5,
         )
 
 
@@ -524,7 +520,6 @@ def test_vm_create_failure_is_reported(tmp_path: Path) -> None:
             job=Job(instruction="Fail"),
             workspace=workspace,
             deadline=time.monotonic() + 120,
-            max_steps=5,
         )
 
 
@@ -540,7 +535,6 @@ def test_vm_passt_annotation_is_opt_in(tmp_path: Path) -> None:
         job=Job(instruction="Do the job"),
         workspace=workspace,
         deadline=time.monotonic() + 120,
-        max_steps=5,
     )
 
     annotations = client.create_body["HostConfig"]["Annotations"]
@@ -569,7 +563,6 @@ def test_reverse_sandbox_uses_re_image_and_rea_environment(tmp_path: Path) -> No
         job=Job(instruction="Analyze the binary", sandbox="reverse"),
         workspace=_workspace(tmp_path),
         deadline=time.monotonic() + 120,
-        max_steps=5,
     )
 
     body = client.create_body
@@ -594,7 +587,6 @@ def test_default_sandbox_uses_the_goose_image(tmp_path: Path) -> None:
         job=Job(instruction="Do the job"),
         workspace=_workspace(tmp_path),
         deadline=time.monotonic() + 120,
-        max_steps=5,
     )
 
     body = client.create_body
@@ -629,7 +621,6 @@ def test_registered_sandbox_supplies_image_env_extensions_and_prompt(
         job=job,
         workspace=_workspace(tmp_path),
         deadline=time.monotonic() + 120,
-        max_steps=5,
     )
 
     body = client.create_body
@@ -659,7 +650,6 @@ def test_disabled_registered_sandbox_is_rejected(tmp_path: Path) -> None:
             job=Job(instruction="Analyze", sandbox="malware"),
             workspace=_workspace(tmp_path),
             deadline=time.monotonic() + 120,
-            max_steps=5,
         )
 
 
@@ -695,7 +685,6 @@ def test_job_image_overrides_the_registry_image(tmp_path: Path) -> None:
         job=job,
         workspace=_workspace(tmp_path),
         deadline=time.monotonic() + 120,
-        max_steps=5,
     )
 
     assert client.create_body["Image"] == "localhost/custom:old"
@@ -717,7 +706,6 @@ def test_job_image_works_without_a_registry_entry(tmp_path: Path) -> None:
         job=job,
         workspace=_workspace(tmp_path),
         deadline=time.monotonic() + 120,
-        max_steps=5,
     )
 
     assert client.create_body["Image"] == "ghcr.io/example/agent:1.2.3"
@@ -738,7 +726,6 @@ def test_job_image_is_pulled_when_missing(tmp_path: Path) -> None:
         job=job,
         workspace=_workspace(tmp_path),
         deadline=time.monotonic() + 120,
-        max_steps=5,
     )
 
     assert client.pulled == ["ghcr.io/example/agent:1.2.3"]
@@ -756,7 +743,6 @@ def test_job_can_disable_the_learning_pass(tmp_path: Path) -> None:
         job=job,
         workspace=_workspace(tmp_path),
         deadline=time.monotonic() + 120,
-        max_steps=5,
         audit=audit,  # type: ignore[arg-type]
     )
 
@@ -784,7 +770,6 @@ def test_job_can_enable_the_learning_pass_when_the_worker_default_is_off(
         job=job,
         workspace=_workspace(tmp_path),
         deadline=time.monotonic() + 120,
-        max_steps=5,
     )
 
     # The job opted in even though the worker default is off.
@@ -891,7 +876,6 @@ def test_vm_does_not_pass_provider_credentials(
         job=Job(instruction="Do the job"),
         workspace=workspace,
         deadline=time.monotonic() + 120,
-        max_steps=5,
     )
 
     environment = client.create_body["Env"]
@@ -971,7 +955,6 @@ def test_unlimited_environment_disables_timeout_and_turn_caps(
         job=Job(instruction="Run forever", unlimited=True),
         workspace=_workspace(tmp_path),
         deadline=time.monotonic() + 120,
-        max_steps=5,
     )
 
     environment = dict(item.split("=", 1) for item in client.create_body["Env"])
@@ -991,7 +974,6 @@ def test_run_polls_the_heartbeat_while_waiting(tmp_path: Path) -> None:
         job=Job(instruction="Do it"),
         workspace=_workspace(tmp_path),
         deadline=time.monotonic() + 120,
-        max_steps=5,
         heartbeat=lambda: calls.append(1) or False,
     )
 
@@ -1013,7 +995,6 @@ def test_cancelled_job_stops_the_microvm(tmp_path: Path) -> None:
             job=Job(instruction="Do it"),
             workspace=_workspace(tmp_path),
             deadline=time.monotonic() + 120,
-            max_steps=5,
             heartbeat=heartbeat,
         )
 
@@ -1041,6 +1022,26 @@ def test_unlimited_result_is_stored_as_an_artifact(tmp_path: Path) -> None:
     assert result.text.startswith("x" * 10)
     assert "result-full.md" in result.text
     assert result.steps == 2
+
+
+def test_normal_jobs_use_the_configured_result_limit(tmp_path: Path) -> None:
+    client = FakeDockerClient()
+    client.results = {"main.json": _goose_result(text="x" * 100)}
+    runner = GooseJobRunner(
+        _settings_for(
+            tmp_path,
+            goose_job_reflect_enabled=False,
+            max_result_bytes=10,
+        ),
+        client=client,
+    )
+
+    with pytest.raises(GooseJobRuntimeError, match="too large"):
+        runner.run(
+            job=Job(instruction="Do it"),
+            workspace=_workspace(tmp_path),
+            deadline=time.monotonic() + 120,
+        )
 
 
 def test_prompt_and_bundle_include_selected_agents(tmp_path: Path) -> None:
@@ -1651,7 +1652,6 @@ def test_main_vm_skill_edits_stay_in_the_disposable_copy(tmp_path: Path) -> None
         job=Job(instruction="Do the job"),
         workspace=_workspace(tmp_path),
         deadline=time.monotonic() + 120,
-        max_steps=5,
         audit=audit,  # type: ignore[arg-type]
     )
 
@@ -1673,7 +1673,6 @@ def test_reflect_is_skipped_when_the_main_vm_cannot_be_removed(
         job=Job(instruction="Do the job"),
         workspace=_workspace(tmp_path),
         deadline=time.monotonic() + 120,
-        max_steps=5,
         audit=audit,  # type: ignore[arg-type]
     )
 
@@ -1709,7 +1708,6 @@ def test_reflect_vm_uses_a_fresh_workspace_and_safe_mounts(tmp_path: Path) -> No
         job=Job(instruction="Do the job"),
         workspace=_workspace(tmp_path),
         deadline=time.monotonic() + 120,
-        max_steps=5,
     )
 
     assert main_removed == [True]
@@ -1768,7 +1766,6 @@ def test_reflect_merges_a_validated_skill_into_the_store(tmp_path: Path) -> None
         job=Job(instruction="Do the job"),
         workspace=_workspace(tmp_path),
         deadline=time.monotonic() + 120,
-        max_steps=5,
         audit=audit,  # type: ignore[arg-type]
     )
 
@@ -1804,7 +1801,6 @@ def test_failed_reflect_does_not_merge_skills(tmp_path: Path) -> None:
         job=Job(instruction="Do the job"),
         workspace=_workspace(tmp_path),
         deadline=time.monotonic() + 120,
-        max_steps=5,
         audit=audit,  # type: ignore[arg-type]
     )
 
@@ -1840,7 +1836,6 @@ def test_symlinked_outputs_are_not_collected(tmp_path: Path) -> None:
         job=Job(instruction="Do the job"),
         workspace=workspace,
         deadline=time.monotonic() + 120,
-        max_steps=5,
     )
 
     assert (workspace / "outputs" / "result.txt").read_text() == "artifact"
@@ -1896,7 +1891,6 @@ def test_reflect_vm_process_failure_does_not_merge_skills(tmp_path: Path) -> Non
         job=Job(instruction="Do the job"),
         workspace=_workspace(tmp_path),
         deadline=time.monotonic() + 120,
-        max_steps=5,
         audit=audit,  # type: ignore[arg-type]
     )
 

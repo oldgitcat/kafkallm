@@ -9,6 +9,19 @@ class SettingsError(ValueError):
     """An environment variable is missing or malformed."""
 
 
+def _str_env(name: str, default: str) -> str:
+    """Return a non-empty environment value, or the default.
+
+    Compose passes known variables through even when they are unset, so an
+    empty string must behave like a missing variable. Keeping the defaults in
+    this module makes it the single source of truth for the control plane.
+    """
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    return value
+
+
 def _int_env(name: str, default: int) -> int:
     value = os.getenv(name)
     if value is None or not value.strip():
@@ -56,7 +69,6 @@ class Settings:
     worker_concurrency: int
     workspace_root: str
     max_job_timeout_seconds: int
-    max_agent_steps: int
     allow_unlimited_jobs: bool
     max_result_bytes: int
     max_output_files: int
@@ -80,6 +92,7 @@ class Settings:
     goose_job_workspace_root: str
     goose_job_skills_dir: str
     goose_job_agents_dir: str
+    goose_job_default_agents_dir: str
     goose_job_tools_dir: str
     goose_job_config_dir: str
     goose_job_reflect_enabled: bool
@@ -119,7 +132,6 @@ class Settings:
             "KAFKA_STARTUP_TIMEOUT_SECONDS": (self.kafka_startup_timeout_seconds, 0),
             "WORKER_CONCURRENCY": (self.worker_concurrency, 1),
             "MAX_JOB_TIMEOUT_SECONDS": (self.max_job_timeout_seconds, 1),
-            "MAX_AGENT_STEPS": (self.max_agent_steps, 1),
             "MAX_RESULT_BYTES": (self.max_result_bytes, 1),
             "MAX_OUTPUT_FILES": (self.max_output_files, 0),
             "UPLOAD_MAX_FILES": (self.upload_max_files, 1),
@@ -142,18 +154,18 @@ class Settings:
     @classmethod
     def from_env(cls) -> Settings:
         return cls(
-            kafka_bootstrap_servers=os.getenv(
+            kafka_bootstrap_servers=_str_env(
                 "KAFKA_BOOTSTRAP_SERVERS", "localhost:19092"
             ),
-            jobs_topic=os.getenv("JOBS_TOPIC", "jobs.in"),
-            results_topic=os.getenv("RESULTS_TOPIC", "jobs.out"),
-            state_topic=os.getenv("STATE_TOPIC", "jobs.state"),
-            events_topic=os.getenv("EVENTS_TOPIC", "agent.events"),
-            agents_topic=os.getenv("AGENTS_TOPIC", "agents.state"),
-            sandboxes_topic=os.getenv("SANDBOXES_TOPIC", "sandboxes.state"),
-            cancels_topic=os.getenv("CANCELS_TOPIC", "jobs.cancel"),
-            logs_topic=os.getenv("LOGS_TOPIC", "jobs.logs"),
-            kafka_group_id=os.getenv("KAFKA_GROUP_ID", "agent-workers"),
+            jobs_topic=_str_env("JOBS_TOPIC", "jobs.in"),
+            results_topic=_str_env("RESULTS_TOPIC", "jobs.out"),
+            state_topic=_str_env("STATE_TOPIC", "jobs.state"),
+            events_topic=_str_env("EVENTS_TOPIC", "agent.events"),
+            agents_topic=_str_env("AGENTS_TOPIC", "agents.state"),
+            sandboxes_topic=_str_env("SANDBOXES_TOPIC", "sandboxes.state"),
+            cancels_topic=_str_env("CANCELS_TOPIC", "jobs.cancel"),
+            logs_topic=_str_env("LOGS_TOPIC", "jobs.logs"),
+            kafka_group_id=_str_env("KAFKA_GROUP_ID", "agent-workers"),
             kafka_topic_partitions=_int_env("KAFKA_TOPIC_PARTITIONS", 3),
             kafka_retention_ms=_int_env(
                 "KAFKA_TOPIC_RETENTION_MS", 7 * 24 * 60 * 60 * 1000
@@ -161,11 +173,10 @@ class Settings:
             kafka_startup_timeout_seconds=_int_env(
                 "KAFKA_STARTUP_TIMEOUT_SECONDS", 300
             ),
-            worker_id=os.getenv("WORKER_ID", socket.gethostname()),
+            worker_id=_str_env("WORKER_ID", socket.gethostname()),
             worker_concurrency=max(1, _int_env("WORKER_CONCURRENCY", 1)),
-            workspace_root=os.getenv("WORKSPACE_ROOT", "/var/lib/kafkallm/staging"),
+            workspace_root=_str_env("WORKSPACE_ROOT", "/var/lib/kafkallm/staging"),
             max_job_timeout_seconds=_int_env("MAX_JOB_TIMEOUT_SECONDS", 1800),
-            max_agent_steps=_int_env("MAX_AGENT_STEPS", 8),
             allow_unlimited_jobs=_bool_env("ALLOW_UNLIMITED_JOBS", False),
             max_result_bytes=_int_env("MAX_RESULT_BYTES", 500_000),
             max_output_files=_int_env("MAX_OUTPUT_FILES", 100),
@@ -176,87 +187,90 @@ class Settings:
             unlimited_max_poll_interval_ms=_int_env(
                 "UNLIMITED_MAX_POLL_INTERVAL_MS", 86_400_000
             ),
-            goose_model=os.getenv("GOOSE_MODEL", ""),
-            goose_provider=(
-                os.getenv("GOOSE_PROVIDER") or os.getenv("LLM_UPSTREAM_PROVIDER", "")
+            goose_model=_str_env("GOOSE_MODEL", ""),
+            goose_provider=_str_env(
+                "GOOSE_PROVIDER", _str_env("LLM_UPSTREAM_PROVIDER", "")
             ),
             goose_startup_timeout_seconds=_int_env(
                 "GOOSE_STARTUP_TIMEOUT_SECONDS", 300
             ),
-            goose_image=os.getenv("GOOSE_IMAGE", "kafkallm-goose-job:latest"),
-            goose_re_image=os.getenv("GOOSE_RE_IMAGE", "kafkallm-rea-job:latest"),
-            goose_job_tmpfs_size=os.getenv("GOOSE_JOB_TMPFS_SIZE", "1g"),
+            goose_image=_str_env("GOOSE_IMAGE", "kafkallm-goose-job:latest"),
+            goose_re_image=_str_env("GOOSE_RE_IMAGE", "kafkallm-rea-job:latest"),
+            goose_job_tmpfs_size=_str_env("GOOSE_JOB_TMPFS_SIZE", "1g"),
             goose_job_max_turns=_int_env("GOOSE_JOB_MAX_TURNS", 60),
             goose_job_subagent_max_turns=_int_env("GOOSE_JOB_SUBAGENT_MAX_TURNS", 40),
-            goose_job_memory_limit=os.getenv("GOOSE_JOB_MEMORY_LIMIT", "4g"),
+            goose_job_memory_limit=_str_env("GOOSE_JOB_MEMORY_LIMIT", "4g"),
             goose_job_pids_limit=_int_env("GOOSE_JOB_PIDS_LIMIT", 512),
             goose_job_cpus=_int_env("GOOSE_JOB_CPUS", 2),
             goose_job_ram_mib=_int_env("GOOSE_JOB_RAM_MIB", 2048),
             goose_job_use_passt=_bool_env("GOOSE_JOB_USE_PASST", False),
-            goose_job_docker_host=os.getenv(
+            goose_job_docker_host=_str_env(
                 "GOOSE_JOB_DOCKER_HOST", "tcp://podman-proxy:2375"
             ),
-            goose_job_workspace_root=os.getenv(
+            goose_job_workspace_root=_str_env(
                 "GOOSE_JOB_WORKSPACE_ROOT", "/var/lib/kafkallm/jobs"
             ),
-            goose_job_skills_dir=os.getenv(
+            goose_job_skills_dir=_str_env(
                 "GOOSE_JOB_SKILLS_DIR", "/var/lib/kafkallm/skills"
             ),
-            goose_job_agents_dir=os.getenv(
+            goose_job_agents_dir=_str_env(
                 "GOOSE_JOB_AGENTS_DIR", "/var/lib/kafkallm/agents"
             ),
-            goose_job_tools_dir=os.getenv(
+            goose_job_default_agents_dir=_str_env(
+                "GOOSE_JOB_DEFAULT_AGENTS_DIR", "agents"
+            ),
+            goose_job_tools_dir=_str_env(
                 "GOOSE_JOB_TOOLS_DIR", "/var/lib/kafkallm/tools"
             ),
-            goose_job_config_dir=os.getenv(
+            goose_job_config_dir=_str_env(
                 "GOOSE_JOB_CONFIG_DIR", "/var/lib/kafkallm/config"
             ),
             goose_job_reflect_enabled=_bool_env("GOOSE_JOB_REFLECT_ENABLED", True),
             goose_job_reflect_timeout_seconds=_int_env(
                 "GOOSE_JOB_REFLECT_TIMEOUT_SECONDS", 300
             ),
-            llm_gateway_url=os.getenv(
+            llm_gateway_url=_str_env(
                 "LLM_GATEWAY_URL", "http://host.containers.internal:8091"
             ),
-            llm_gateway_virtual_key=os.getenv("LLM_GATEWAY_VIRTUAL_KEY", ""),
-            llm_gateway_ready_url=os.getenv(
+            llm_gateway_virtual_key=_str_env("LLM_GATEWAY_VIRTUAL_KEY", ""),
+            llm_gateway_ready_url=_str_env(
                 "LLM_GATEWAY_READY_URL",
                 "http://llm-gateway:15021/healthz/ready",
             ),
             llm_gateway_port=_int_env("LLM_GATEWAY_PORT", 8091),
-            goose_job_network=os.getenv("GOOSE_JOB_NETWORK", "kafkallm-jobs"),
-            goose_job_network_subnet=os.getenv(
+            goose_job_network=_str_env("GOOSE_JOB_NETWORK", "kafkallm-jobs"),
+            goose_job_network_subnet=_str_env(
                 "GOOSE_JOB_NETWORK_SUBNET", "fd00:6b61:666b:616c::/64"
             ),
-            goose_job_network_interface=os.getenv("GOOSE_JOB_NETWORK_INTERFACE", ""),
-            goose_job_network_dir=os.getenv("GOOSE_JOB_NETWORK_DIR", ""),
+            goose_job_network_interface=_str_env("GOOSE_JOB_NETWORK_INTERFACE", ""),
+            goose_job_network_dir=_str_env("GOOSE_JOB_NETWORK_DIR", ""),
             goose_job_network_autocreate=_bool_env(
                 "GOOSE_JOB_NETWORK_AUTOCREATE", False
             ),
-            goose_job_proxy_network=os.getenv("GOOSE_JOB_PROXY_NETWORK", "podman"),
-            goose_job_proxy_upstream_host=os.getenv(
+            goose_job_proxy_network=_str_env("GOOSE_JOB_PROXY_NETWORK", "podman"),
+            goose_job_proxy_upstream_host=_str_env(
                 "GOOSE_JOB_PROXY_UPSTREAM_HOST", "host.containers.internal"
             ),
             goose_job_proxy_upstream_port=_int_env(
                 "GOOSE_JOB_PROXY_UPSTREAM_PORT", 8091
             ),
-            gui_host=os.getenv("GUI_HOST", "0.0.0.0"),
+            gui_host=_str_env("GUI_HOST", "0.0.0.0"),
             gui_port=_int_env("GUI_PORT", 8090),
             upload_max_files=_int_env("UPLOAD_MAX_FILES", 16),
             upload_max_file_bytes=_int_env("UPLOAD_MAX_FILE_BYTES", 50 * 1024 * 1024),
             upload_max_total_bytes=_int_env(
                 "UPLOAD_MAX_TOTAL_BYTES", 100 * 1024 * 1024
             ),
-            s3_endpoint_url=os.getenv("S3_ENDPOINT_URL", ""),
-            s3_region=os.getenv("S3_REGION", "local"),
-            s3_bucket=os.getenv("S3_BUCKET", "jobs"),
-            s3_access_key_id=os.getenv("S3_ACCESS_KEY_ID", ""),
-            s3_secret_access_key=os.getenv("S3_SECRET_ACCESS_KEY", ""),
-            agent_name=os.getenv("AGENT_NAME", "agent-worker"),
+            s3_endpoint_url=_str_env("S3_ENDPOINT_URL", ""),
+            s3_region=_str_env("S3_REGION", "local"),
+            s3_bucket=_str_env("S3_BUCKET", "jobs"),
+            s3_access_key_id=_str_env("S3_ACCESS_KEY_ID", "rustfs"),
+            s3_secret_access_key=_str_env("S3_SECRET_ACCESS_KEY", "kafkallm-secret"),
+            agent_name=_str_env("AGENT_NAME", "agent-worker"),
             telemetry_capture_content=_bool_env("TELEMETRY_CAPTURE_CONTENT", False),
             mlflow_enabled=_bool_env("MLFLOW_ENABLED", True),
-            mlflow_tracking_uri=os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000"),
-            mlflow_experiment_id=os.getenv("MLFLOW_EXPERIMENT_ID", "0"),
+            mlflow_tracking_uri=_str_env("MLFLOW_TRACKING_URI", "http://mlflow:5000"),
+            mlflow_experiment_id=_str_env("MLFLOW_EXPERIMENT_ID", "0"),
             gui_max_request_bytes=_int_env("GUI_MAX_REQUEST_BYTES", 2 * 1024 * 1024),
         )
 

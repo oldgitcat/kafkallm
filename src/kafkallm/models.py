@@ -155,7 +155,6 @@ class Job(BaseModel):
     agents: list[AgentSpec] = Field(default_factory=list, max_length=20)
     unlimited: bool = False
     timeout_seconds: int = Field(default=300, ge=1, le=3600)
-    max_steps: int = Field(default=6, ge=1, le=50)
     # Optional per-job override for the reflect/learning pass. None uses the
     # worker default (GOOSE_JOB_REFLECT_ENABLED).
     reflect: bool | None = None
@@ -229,7 +228,6 @@ class JobState(BaseModel):
     agents: list[AgentSpec] = Field(default_factory=list, max_length=20)
     unlimited: bool = False
     timeout_seconds: int = Field(default=300, ge=1, le=3600)
-    max_steps: int = Field(default=6, ge=1, le=50)
     reflect: bool | None = None
     submitted_at: datetime = Field(default_factory=utc_now)
     started_at: datetime | None = None
@@ -259,7 +257,6 @@ class JobState(BaseModel):
             agents=job.agents if job.multi_agent else [],
             unlimited=job.unlimited,
             timeout_seconds=job.timeout_seconds,
-            max_steps=job.max_steps,
             reflect=job.reflect,
             worker_id=worker_id,
         )

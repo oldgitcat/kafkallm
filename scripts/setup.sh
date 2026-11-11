@@ -23,14 +23,13 @@ chmod 600 .env
 python3 - <<'PY'
 from pathlib import Path
 import secrets
+import sys
+
+sys.path.insert(0, "src")
+from kafkallm.agentgateway_config import PLACEHOLDER_VIRTUAL_KEYS as placeholder
 
 path = Path(".env")
 lines = path.read_text(encoding="utf-8").splitlines()
-placeholder = {
-    "",
-    "change-me-to-a-long-random-string",
-    "replace-with-openssl-rand-hex-32",
-}
 
 
 def value(key: str) -> str:

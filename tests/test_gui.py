@@ -186,7 +186,6 @@ def test_gui_submits_a_job_and_serves_state() -> None:
                 "input": {"name": "world"},
                 "sandbox": "reverse",
                 "timeout_seconds": 120,
-                "max_steps": 4,
                 "reflect": False,
             },
         )
@@ -606,7 +605,6 @@ def test_gui_restarts_a_finished_job_with_its_settings() -> None:
         sandbox_image="kafkallm-rea-job:latest",
         multi_agent=False,
         timeout_seconds=120,
-        max_steps=4,
         reflect=False,
     )
     store.put_state(
@@ -732,6 +730,33 @@ def test_gui_rejects_oversized_uploads() -> None:
         assert status == 413
         assert "size limit" in error["error"]
         assert storage.uploads == []
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_gui_serves_split_assets_and_ignores_query_strings() -> None:
+    settings = _settings()
+    server = JobServer(
+        ("127.0.0.1", 0), JobStore(settings), RecordingProducer(), settings
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        status, headers, body = _download(f"{base}/app.js")
+        assert status == 200
+        assert headers["Content-Type"].startswith("text/javascript")
+        assert b"loadJobs" in body
+
+        status, headers, body = _download(f"{base}/app.css")
+        assert status == 200
+        assert headers["Content-Type"].startswith("text/css")
+
+        status, features = _request(f"{base}/api/features?ignore=me")
+        assert status == 200
+        assert "unlimited_jobs" in features
     finally:
         server.shutdown()
         server.server_close()

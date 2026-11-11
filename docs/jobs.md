@@ -37,9 +37,8 @@ This is enough for a default job:
 
 The worker fills in the defaults: `type=llm_task`, `sandbox=default`,
 `multi_agent=true`, `agents=[]`, `input={}`, `input_files=[]`,
-`unlimited=false`, `timeout_seconds=300`, `max_steps=6`, and
-`reflect=null` (worker default). The image comes from the `default` sandbox
-registry entry.
+`unlimited=false`, `timeout_seconds=300`, and `reflect=null` (worker default).
+The image comes from the `default` sandbox registry entry.
 
 ## Full example
 
@@ -60,7 +59,6 @@ registry entry.
   "agents": [],
   "unlimited": false,
   "timeout_seconds": 900,
-  "max_steps": 8,
   "reflect": false
 }
 ```
@@ -81,8 +79,9 @@ registry entry.
   first and pulls the image if it is missing.
 - `agents` must contain complete `AgentSpec` objects. The GUI's `agent_ids`
   shortcut is not accepted on the raw Kafka path.
-- `timeout_seconds` is 1–3600; `max_steps` is 1–50 (advisory; Goose turn limits
-  and the job timeout are authoritative).
+- `timeout_seconds` is 1–3600. The worker also enforces
+  `MAX_JOB_TIMEOUT_SECONDS`; Goose turn limits are controlled by
+  `GOOSE_JOB_MAX_TURNS` / `GOOSE_JOB_SUBAGENT_MAX_TURNS`.
 - `unlimited=true` is rejected unless `ALLOW_UNLIMITED_JOBS=true` on the worker.
 - `reflect` is `null` (worker default), `true`, or `false`.
 

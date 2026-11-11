@@ -152,10 +152,11 @@ The Kafka UI runs at <http://localhost:8080>. MLflow runs at
 
 ## Configuration
 
-All runtime settings live in `.env`, created from `.env.example`. The file is
-gitignored. `make setup` generates the virtual gateway key, validates the
-selected provider, and renders the agentgateway config. For hosted providers,
-the provider key is the only required secret.
+Runtime defaults live in `src/kafkallm/settings.py`. `.env`, created from
+`.env.example`, only overrides them. The file is gitignored. `make setup`
+generates the virtual gateway key, validates the selected provider, and renders
+the agentgateway config. For hosted providers, the provider key is the only
+required secret.
 
 | Setting | Default | Purpose |
 |---|---|---|
@@ -180,7 +181,7 @@ the provider key is the only required secret.
 | `S3_ENDPOINT_URL` | `http://rustfs:9000` (storage profile) | Uploads and artifacts |
 | `MLFLOW_ENABLED` | `true` | OTLP traces to MLflow |
 
-See `.env.example` for every setting and
+See `.env.example` for the common settings and
 `agentgateway/config.template.yaml` for the gateway policy template. The active
 file is `agentgateway/config.generated.yaml` (gitignored), rendered by
 `make gateway-config` or automatically by `make up`.

@@ -156,16 +156,10 @@ class Harness:
                                 reference, inputs / f"{index:02d}-{filename}"
                             )
 
-                    max_steps = (
-                        0
-                        if job.unlimited
-                        else min(job.max_steps, self.settings.max_agent_steps)
-                    )
                     agent_result: AgentResult = self.goose.run(
                         job=job,
                         workspace=root,
                         deadline=deadline,
-                        max_steps=max_steps,
                         audit=job_audit,
                         heartbeat=heartbeat,
                         log=log,

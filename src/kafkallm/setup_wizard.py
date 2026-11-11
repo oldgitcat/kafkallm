@@ -15,16 +15,14 @@ from pathlib import Path
 
 from kafkallm.agentgateway_config import (
     DEFAULT_CORS_ORIGINS,
+    DEFAULT_CUSTOM_FORMAT,
+    DEFAULT_MODELS,
+    DEFAULT_OLLAMA_BASE_URL,
     DEFAULT_PROVIDER,
     KEY_OPTIONAL_PROVIDERS,
 )
 
-DEFAULT_FORMAT = "completions"
-DEFAULT_OLLAMA_BASE_URL = "http://host.containers.internal:11434/v1"
-DEFAULT_MODELS = {
-    "openrouter": "nvidia/nemotron-3.5-lightning:free",
-    "ollama": "llama3.2",
-}
+DEFAULT_FORMAT = DEFAULT_CUSTOM_FORMAT
 
 MENU = (
     ("1", "openrouter", "OpenRouter"),

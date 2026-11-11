@@ -21,6 +21,8 @@ from urllib.request import Request, urlopen
 
 from kafkallm.agentgateway_config import (
     DEFAULT_OLLAMA_BASE_URL,
+    PLACEHOLDER_VIRTUAL_KEYS,
+    provider_settings,
 )
 from kafkallm.agentgateway_config import (
     KEY_OPTIONAL_PROVIDERS as PROVIDER_KEY_OPTIONAL,
@@ -34,21 +36,6 @@ AGENTGATEWAY_IMAGE = os.getenv(
 
 STATUSES = ("ok", "warn", "fail")
 LABELS = {"ok": "PASS", "warn": "WARN", "fail": "FAIL"}
-PLACEHOLDER_KEYS = {
-    "",
-    "change-me-to-a-long-random-string",
-    "replace-with-openssl-rand-hex-32",
-}
-
-
-def provider_settings(values: Mapping[str, str]) -> tuple[str, str, str]:
-    """Return (provider, api_key, base_url) with legacy fallbacks applied."""
-    provider = (values.get("LLM_UPSTREAM_PROVIDER") or "openrouter").strip().lower()
-    key = values.get("LLM_UPSTREAM_API_KEY", "").strip()
-    if not key and provider == "openrouter":
-        key = values.get("OPENROUTER_API_KEY", "").strip()
-    base_url = values.get("LLM_UPSTREAM_BASE_URL", "").strip()
-    return provider, key, base_url
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +47,7 @@ class Check:
 
 
 def valid_virtual_key(value: str) -> bool:
-    return value.strip() not in PLACEHOLDER_KEYS and len(value.strip()) >= 32
+    return value.strip() not in PLACEHOLDER_VIRTUAL_KEYS and len(value.strip()) >= 32
 
 
 def _run(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str] | None:

@@ -27,6 +27,17 @@ DEFAULT_CORS_ORIGINS = (
     "http://127.0.0.1:15000",
     "http://localhost:15000",
 )
+DEFAULT_MODELS = {
+    "openrouter": "nvidia/nemotron-3.5-lightning:free",
+    "ollama": "llama3.2",
+}
+PLACEHOLDER_VIRTUAL_KEYS = frozenset(
+    {
+        "",
+        "change-me-to-a-long-random-string",
+        "replace-with-openssl-rand-hex-32",
+    }
+)
 
 BUILTIN_PROVIDERS = frozenset(
     {
@@ -109,6 +120,18 @@ def base_url_from_env(env: Mapping[str, str] | None = None) -> str:
     if not base_url and provider_from_env(values) == "ollama":
         return DEFAULT_OLLAMA_BASE_URL
     return base_url
+
+
+def provider_settings(
+    env: Mapping[str, str] | None = None,
+) -> tuple[str, str, str]:
+    """Return (provider, api_key, base_url) with legacy fallbacks applied."""
+    values = os.environ if env is None else env
+    return (
+        provider_from_env(values),
+        api_key_from_env(values),
+        base_url_from_env(values),
+    )
 
 
 def cors_origins_from_env(env: Mapping[str, str] | None = None) -> list[str]:
