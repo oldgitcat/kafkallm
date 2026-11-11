@@ -81,7 +81,7 @@ GUI ──→ jobs.in, jobs.state, agents.state, sandboxes.state, agent.events
 
 | Service | URL |
 |---|---|
-| GUI | `http://<host-ip>:8090` |
+| GUI | `http://<host-ip>:8090` (Caddy basic auth) |
 | Kafka UI | <http://localhost:8080> |
 | MLflow | <http://localhost:5000> |
 | LLM gateway (OpenAI-compatible) | <http://localhost:8091/v1> |

@@ -9,6 +9,7 @@ __pycache__/
 tests/
 docs/
 agentgateway/
+caddy/
 scripts/
 .github/
 # Stray directories from a mis-parsed podman invocation.

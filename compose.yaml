@@ -283,11 +283,11 @@ services:
     build: .
     command: ["kafkallm", "gui"]
     environment: *app-environment
+    expose:
+      - "8090"
     volumes:
       # The GUI reads and writes custom agent profiles here.
       - ${GOOSE_JOB_AGENTS_DIR:-/var/lib/kafkallm/agents}:${GOOSE_JOB_AGENTS_DIR:-/var/lib/kafkallm/agents}:z
-    ports:
-      - "${GUI_BIND:-0.0.0.0}:${GUI_PORT:-8090}:${GUI_PORT:-8090}"
     depends_on:
       kafka:
         condition: service_healthy
@@ -310,6 +310,38 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+
+  caddy:
+    image: docker.io/library/caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+    environment:
+      GUI_AUTH_USER: ${GUI_AUTH_USER:-}
+      GUI_AUTH_HASH: ${GUI_AUTH_HASH:-}
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro,z
+    ports:
+      - "${GUI_BIND:-0.0.0.0}:${GUI_PORT:-8090}:8080"
+    depends_on:
+      gui:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /data:size=16m
+      - /config:size=16m
+      - /tmp:size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
 
   rustfs:
     image: docker.io/rustfs/rustfs:1.0.0@sha256:8cc9801755448b71a786705ce76692c77e14936cccd87cf2fc31842e58f4d1ff

@@ -101,6 +101,7 @@ PYTHONPATH="$ROOT_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
 
 load_env "$ROOT_DIR"
 ./scripts/prepare-job-root.sh
+./scripts/gui-auth.sh
 
 provider="${LLM_UPSTREAM_PROVIDER:-openrouter}"
 

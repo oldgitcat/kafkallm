@@ -40,10 +40,10 @@ What the boundary does **not** cover:
   `LLM_GATEWAY_VIRTUAL_KEY` if a job is untrusted.
 - **Gateway transport.** The gateway listener is plain HTTP. Keep it on a
   trusted network or terminate TLS in front of it.
-- **GUI exposure.** The GUI has no authentication and binds to `0.0.0.0` by
-  default. Anyone who can reach `GUI_PORT` can submit jobs, read results, and
-  change agents and sandboxes. Use `GUI_BIND=127.0.0.1`, a firewall, or an
-  authenticated TLS reverse proxy.
+- **GUI exposure.** Caddy publishes the GUI on `0.0.0.0` by default and
+  enforces HTTP basic auth. The GUI itself is only reachable on the Compose
+  network. Use `GUI_BIND=127.0.0.1` for local-only access, and put TLS in front
+  of Caddy if the network is untrusted.
 - **Proxy configuration.** The proxy forwards only allowlisted HTTP requests to
   one fixed upstream. A compromise of the proxy container still gives access to
   agentgateway.

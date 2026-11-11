@@ -11,7 +11,7 @@ PYTEST := $(VENV)/bin/pytest
 RUFF := $(VENV)/bin/ruff
 VENV_STAMP := $(VENV)/.kafkallm-installed
 
-.PHONY: help setup gateway-config doctor bootstrap network images app-image rea-image up down restart logs ps test lint format venv clean prune lock reset
+.PHONY: help setup gui-auth gateway-config doctor bootstrap network images app-image rea-image up down restart logs ps test lint format venv clean prune lock reset
 
 help: ## Show this help
 	@printf "%-14s %s\n" "target" "description"
@@ -19,6 +19,9 @@ help: ## Show this help
 
 setup: ## Create .env, generate the gateway key, and check required settings
 	./scripts/setup.sh
+
+gui-auth: ## Set the GUI username/password for the Caddy basic auth
+	./scripts/gui-auth.sh
 
 gateway-config: ## Render the agentgateway provider config from .env
 	./scripts/render-agentgateway-config.sh
@@ -40,7 +43,7 @@ app-image: ## Build the worker/GUI image with the selected engine
 rea-image: ## Build the optional REA + Ghidra job image
 	./scripts/build-rea-image.sh
 
-up: gateway-config ## Build the app image and start the control plane
+up: gateway-config gui-auth ## Build the app image and start the control plane
 	./scripts/prepare-job-root.sh
 	$(CONTAINER) build -t $(APP_IMAGE) .
 	-$(COMPOSE) --profile storage down --remove-orphans

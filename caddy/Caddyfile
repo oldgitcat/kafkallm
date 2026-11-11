@@ -1,0 +1,26 @@
+{
+	admin off
+	auto_https off
+}
+
+# The GUI container is internal. Caddy is the only published entry point and
+# enforces HTTP basic auth before proxying to it.
+:8080 {
+	handle /healthz {
+		respond "ok" 200
+	}
+
+	handle {
+		basic_auth {
+			{$GUI_AUTH_USER} {$GUI_AUTH_HASH}
+		}
+		reverse_proxy gui:8090
+	}
+
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy same-origin
+		-Server
+	}
+}

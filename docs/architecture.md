@@ -265,8 +265,8 @@ stack with `podman compose`.
   libkrun microVM, selected through the `run.oci.handler=krun` annotation.
   Docker's runc has no krun handler.
 - **The control plane also runs under rootless Podman.** The worker, GUI,
-  Apache Kafka, RustFS, MLflow, the Kafka UI, and the socket proxy are ordinary
-  containers. One engine means one image store.
+  Caddy, Apache Kafka, RustFS, MLflow, the Kafka UI, and the socket proxy are
+  ordinary containers. One engine means one image store.
 - **Rootless Podman is required.** Rootful Podman can break libkrun's TSI
   networking, leaving the microVMs without an outbound path and stalling every
   job on the LLM provider. Use the rootless socket.
@@ -309,11 +309,11 @@ the GUI, so the browser does not need S3 credentials.
 The same files are available over HTTP:
 
 ```bash
-# Result text as Markdown
-curl -fL "http://localhost:8090/api/jobs/<job_id>/result" -o result.md
+# Result text as Markdown (Caddy asks for the GUI password)
+curl -fL -u '<gui-user>' "http://<host-ip>:8090/api/jobs/<job_id>/result" -o result.md
 
 # Artifact by index, in the same order as the artifacts list
-curl -fL "http://localhost:8090/api/jobs/<job_id>/artifacts/0" -o artifact.bin
+curl -fL -u '<gui-user>' "http://<host-ip>:8090/api/jobs/<job_id>/artifacts/0" -o artifact.bin
 ```
 
 

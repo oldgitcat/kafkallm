@@ -100,9 +100,8 @@ last-writer-wins semantics; existing files are never deleted.
   (`KAFKA_TOPIC_RETENTION_MS`).
 - The Compose configuration is for local development. Kafka has no SASL/TLS
   here.
-- The GUI has no authentication and is published on `GUI_BIND` (default
-  `0.0.0.0`, reachable from the network). Set `GUI_BIND=127.0.0.1` for
-  local-only access.
+- The GUI is published through Caddy on `GUI_BIND` (default `0.0.0.0`) and
+  protected by HTTP basic auth. Set `GUI_BIND=127.0.0.1` for local-only access.
 
 Stop without deleting volumes:
 
