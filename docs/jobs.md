@@ -13,7 +13,7 @@ object and no separate metadata record.
 | Key | `job_id` as UTF-8 bytes. Recommended; the worker reads the ID from the JSON value. |
 | Value | JSON object matching the `Job` schema |
 | Headers | Optional W3C `traceparent` / `tracestate` bytes. If omitted, the worker starts a new trace. |
-| Broker (host) | `localhost:19092` |
+| Broker (host) | `127.0.0.1:19092` |
 | Broker (Compose) | `kafka:9092` |
 | Consumer group | `agent-workers` (workers only; a manual producer does not join it) |
 
@@ -112,7 +112,7 @@ job = {
     "job_id": "0f3f7f3e-6f0b-4a9a-9b9a-1b2c3d4e5f60",
     "instruction": "Write /workspace/outputs/hello.md with one line: hello",
 }
-producer = Producer({"bootstrap.servers": "localhost:19092"})
+producer = Producer({"bootstrap.servers": "127.0.0.1:19092"})
 producer.produce(
     "jobs.in",
     key=job["job_id"].encode(),

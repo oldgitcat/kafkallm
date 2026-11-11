@@ -105,7 +105,7 @@ podman compose --profile storage up -d
 ### Command line
 
 The CLI runs on the host. `scripts/kafkallm-cli` creates/uses the local
-virtualenv, loads `.env`, and talks to Kafka on `localhost:19092`. No extra
+virtualenv, loads `.env`, and talks to Kafka on `127.0.0.1:19092`. No extra
 Compose container is needed.
 
 ```bash
@@ -141,14 +141,14 @@ Compose container is needed.
 ./scripts/kafkallm-cli logs --from-beginning --idle-timeout 5
 ```
 
-Kafka is also published directly on `localhost:19092`, so any Kafka client can
+Kafka is also published directly on `127.0.0.1:19092`, so any Kafka client can
 produce a `Job` JSON record to `jobs.in`:
 
 ```bash
 key=$(uuidgen)
 printf '%s\n' \
   '{"instruction":"Write /workspace/outputs/hello.md","sandbox":"default"}' \
-  | kcat -P -b localhost:19092 -t jobs.in -k "$key"
+  | kcat -P -b 127.0.0.1:19092 -t jobs.in -k "$key"
 ```
 
 Worker and GUI logs:

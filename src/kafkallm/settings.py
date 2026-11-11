@@ -155,7 +155,7 @@ class Settings:
     def from_env(cls) -> Settings:
         return cls(
             kafka_bootstrap_servers=_str_env(
-                "KAFKA_BOOTSTRAP_SERVERS", "localhost:19092"
+                "KAFKA_BOOTSTRAP_SERVERS", "127.0.0.1:19092"
             ),
             jobs_topic=_str_env("JOBS_TOPIC", "jobs.in"),
             results_topic=_str_env("RESULTS_TOPIC", "jobs.out"),

@@ -7,7 +7,13 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
 _MAX_INPUT_BYTES = 256_000
@@ -29,6 +35,14 @@ _RESERVED_ENV_NAMES = {
     "USER",
 }
 _RESERVED_ENV_PREFIXES = ("GOOSE_", "KAFKALLM_", "OPENAI_")
+
+
+def _drop_legacy_max_steps(value: object) -> object:
+    """Accept job records written before the advisory max_steps field was removed."""
+    if isinstance(value, dict) and "max_steps" in value:
+        value = dict(value)
+        value.pop("max_steps")
+    return value
 
 
 def utc_now() -> datetime:
@@ -159,6 +173,11 @@ class Job(BaseModel):
     # worker default (GOOSE_JOB_REFLECT_ENABLED).
     reflect: bool | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_fields(cls, value: object) -> object:
+        return _drop_legacy_max_steps(value)
+
     @field_validator("input")
     @classmethod
     def _validate_input_size(cls, value: dict) -> dict:
@@ -239,6 +258,11 @@ class JobState(BaseModel):
     artifact_error: str | None = None
     steps: int = 0
     usage: dict[str, int] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_fields(cls, value: object) -> object:
+        return _drop_legacy_max_steps(value)
 
     @classmethod
     def queued(cls, job: Job, worker_id: str | None = None) -> JobState:

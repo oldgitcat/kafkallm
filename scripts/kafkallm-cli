@@ -5,6 +5,9 @@ set -euo pipefail
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT_DIR"
+# shellcheck disable=SC1091
+. scripts/common.sh
+load_env "$ROOT_DIR"
 
 if [ ! -x "$ROOT_DIR/.venv/bin/kafkallm" ]; then
     echo "Creating the local virtualenv (make venv)..." >&2
@@ -14,9 +17,9 @@ fi
 # .env uses the Compose service names. From the host, Kafka, RustFS, and MLflow
 # are published on localhost.
 if [ "${S3_ENDPOINT_URL:-}" = "http://rustfs:9000" ]; then
-    export S3_ENDPOINT_URL=http://localhost:9000
+    export S3_ENDPOINT_URL="http://localhost:${RUSTFS_API_PORT:-9000}"
 fi
-if [ "${MLFLOW_TRACKING_URI:-}" = "http://mlflow:5000" ]; then
+if [ -z "${MLFLOW_TRACKING_URI:-}" ] || [ "$MLFLOW_TRACKING_URI" = "http://mlflow:5000" ]; then
     export MLFLOW_TRACKING_URI=http://localhost:5000
 fi
 

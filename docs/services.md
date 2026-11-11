@@ -89,7 +89,7 @@ network.
 ### Host CLI
 
 The CLI runs on the host and does not need a Compose container. Kafka is
-published on `localhost:19092`; `scripts/kafkallm-cli` creates the local
+published on `127.0.0.1:19092`; `scripts/kafkallm-cli` creates the local
 virtualenv on first use and loads `.env`.
 
 ```bash

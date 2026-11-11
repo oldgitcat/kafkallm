@@ -8,7 +8,6 @@ __pycache__/
 .git/
 tests/
 docs/
-goose_job/
 agentgateway/
 scripts/
 .github/

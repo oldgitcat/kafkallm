@@ -40,6 +40,23 @@ def test_job_accepts_a_registry_sandbox_id() -> None:
     assert job.sandbox == "malware-analysis"
 
 
+def test_job_and_state_ignore_the_removed_max_steps_field() -> None:
+    payload = {"instruction": "Hello", "max_steps": 8}
+
+    assert Job.model_validate(payload).instruction == "Hello"
+    assert (
+        JobState.model_validate(
+            {
+                **payload,
+                "job_id": "job-1",
+                "run_id": "run-1",
+                "status": "queued",
+            }
+        ).instruction
+        == "Hello"
+    )
+
+
 def test_job_rejects_an_unsafe_sandbox_id() -> None:
     with pytest.raises(ValidationError):
         Job.model_validate({"instruction": "Hello", "sandbox": "../escape"})
