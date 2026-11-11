@@ -12,17 +12,15 @@ worker-created runtime container does.
 | `kafka` | Apache Kafka 4.4.0 | Queue and compacted state store | `19092` on host, `kafka:9092` in Compose | `kafka-data` volume |
 | `kafka-ui` | kafbat/kafka-ui | Inspect topics and messages | <http://localhost:8080> | — |
 | `mlflow` | MLflow 3.18 | Trace/observability backend, SQLite + OTLP/HTTP | <http://localhost:5000> | `mlflow-data` volume |
-| `rustfs` | RustFS 1.0.0 | S3-compatible input and artifact store | `19000` API, `19001` console | `rustfs-data` volume |
-| `kafkallm-job-init` | BusyBox | One-shot: create `/var/lib/kafkallm/{jobs,staging,skills,agents,tools,config}` and make them writable | — | Host paths |
+| `rustfs` | RustFS 1.0.0 | S3-compatible input and artifact store | `9000` API, `9001` console (localhost) | `rustfs-data` volume |
 | `podman-proxy` | docker-socket-proxy | Filtered rootless Podman API for the worker | `127.0.0.1:2375` inside the worker namespace | Podman socket |
-| `llm-gateway` | agentgateway 1.7.0 | OpenAI-compatible LLM gateway, provider key, CORS, playground | `8091` LLM, `15000` admin/playground, `15021` readiness | Generated config |
+| `agentgateway` | agentgateway 1.7.0 | OpenAI-compatible LLM gateway, provider key, CORS, playground | `8091` LLM, `15000` admin/playground, `15021` readiness | Generated config |
 | `agent-worker` | `kafkallm-app` | Consume `jobs.in`, run microVMs, own Podman API, publish results/state/logs/events | — | `/var/lib/kafkallm`, Podman storage |
 | `gui` | `kafkallm-app` | Browser UI/API, job submission, agents, sandboxes, live state | <http://localhost:8090> | `/var/lib/kafkallm` |
-| `jobctl` | `kafkallm-app` (profile `cli`) | One-off CLI commands (`submit`, `results`, `states`, `events`, `logs`) | — | — |
 
-`rustfs` and `jobctl` are behind optional Compose profiles (`storage` and
-`cli`). `make up` enables `storage`; the GUI and worker are always present in
-the stack.
+`rustfs` is behind the optional `storage` profile; `make up` enables it. The GUI
+and worker are always present in the stack. Host directories are created by
+`scripts/prepare-job-root.sh`, which `scripts/setup.sh` and `make up` call.
 
 ### Kafka
 
@@ -61,7 +59,7 @@ rootless Podman API. The docker-socket-proxy shares the worker's network
 namespace and exposes a filtered API on the worker's loopback. It is equivalent
 to root on the host; never publish it or put it on a shared network.
 
-### agentgateway / `llm-gateway`
+### agentgateway
 
 The gateway holds the real provider key and exposes an OpenAI-compatible API to
 jobs. Jobs see only the virtual key. The admin UI also serves the LLM
@@ -88,10 +86,20 @@ Kafka topics. It submits jobs to `jobs.in`, manages the registries, and streams
 live activity. It has no authentication; keep it on localhost or a trusted
 network.
 
-### jobctl
+### Host CLI
 
-`jobctl` is the same app image in one-shot CLI mode. `podman compose run --rm
-jobctl submit ...` publishes a job and exits; it does not run a worker.
+The CLI runs on the host and does not need a Compose container. Kafka is
+published on `localhost:19092`; `scripts/kafkallm-cli` creates the local
+virtualenv on first use and loads `.env`.
+
+```bash
+./scripts/kafkallm-cli submit "Say hello"
+./scripts/kafkallm-cli results --from-beginning --idle-timeout 5
+```
+
+For uploads, the wrapper points `S3_ENDPOINT_URL` at `http://localhost:9000`
+when `.env` uses the Compose hostname `rustfs`. If you use a different endpoint,
+override `S3_ENDPOINT_URL` explicitly.
 
 ## Worker-created runtime containers
 

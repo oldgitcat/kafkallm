@@ -184,7 +184,7 @@ Logs:
 make logs
 podman compose logs -f agent-worker
 podman compose logs -f gui
-podman compose logs -f llm-gateway
+podman compose logs -f agentgateway
 ```
 
 

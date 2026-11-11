@@ -163,7 +163,7 @@ registry at run time.
 The CLI accepts the same registry IDs:
 
 ```bash
-podman compose run --rm jobctl submit "Analyze the sample" --sandbox malware-analysis
+./scripts/kafkallm-cli submit "Analyze the sample" --sandbox malware-analysis
 ```
 
 New agent profiles follow the same pattern: **Goosetown agents → + New agent**,

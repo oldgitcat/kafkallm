@@ -70,9 +70,10 @@ Trace export happens in the worker/control plane, which can reach MLflow over
 the Compose network. The goose microVM keeps its strict egress isolation: it
 does not export traces directly and reaches only the allowlisting proxy.
 
-If you run the CLI on the host instead of `podman compose run --rm jobctl`, set
-`MLFLOW_TRACKING_URI=http://localhost:5000`. The Compose name `mlflow` is not
-resolvable from the host, so the `job.submit` span would be dropped and the
-trace would stay `IN_PROGRESS` in the MLflow UI. GUI submissions are unaffected.
+The host CLI wrapper points `MLFLOW_TRACKING_URI` at `http://localhost:5000`
+when `.env` uses the Compose hostname `mlflow`, so `job.submit` spans still
+reach MLflow. If you run `kafkallm` directly, set
+`MLFLOW_TRACKING_URI=http://localhost:5000` yourself. GUI submissions are
+unaffected.
 
 

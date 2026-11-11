@@ -142,9 +142,9 @@ shipped in the image are available.
 Use it from the GUI (sandbox selector) or the CLI:
 
 ```bash
-podman compose run --rm -v "$PWD:/data:ro" jobctl submit \
+./scripts/kafkallm-cli submit \
   "Analyze the uploaded binary under /workspace/inputs with REA and explain its network behavior" \
-  --sandbox reverse --upload /data/tool.bin
+  --sandbox reverse --upload "$PWD/tool.bin"
 ```
 
 The job image is selected from the GUI-managed sandbox registry, not supplied
@@ -341,7 +341,7 @@ These credentials are for local development only.
 Submit a job with an existing S3 object:
 
 ```bash
-podman compose run --rm jobctl submit \
+./scripts/kafkallm-cli submit \
   "Read the input file and summarize it" \
   --input-file jobs/example.txt
 ```
@@ -358,10 +358,10 @@ Upload local files or binaries:
 - **CLI:**
 
   ```bash
-  podman compose run --rm -v "$PWD:/data:ro" jobctl submit \
+  ./scripts/kafkallm-cli submit \
     "Inspect the uploaded files" \
-    --upload /data/data.csv \
-    --upload /data/tool.bin
+    --upload "$PWD/data.csv" \
+    --upload "$PWD/tool.bin"
   ```
 
 Uploads require `S3_ENDPOINT_URL` and the S3 credentials. Limits are

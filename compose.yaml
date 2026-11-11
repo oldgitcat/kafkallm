@@ -167,21 +167,6 @@ services:
       - mlflow-data:/mlflow
     restart: unless-stopped
 
-  kafkallm-job-init:
-    image: busybox:1.37@sha256:6138aaead614269ad0f4a6a36f888a256a4c62c02409de656f5e468ee625ddeb
-    command:
-      - sh
-      - -c
-      - |
-        set -eu
-        mkdir -p /var/lib/kafkallm/jobs /var/lib/kafkallm/staging \
-          /var/lib/kafkallm/skills /var/lib/kafkallm/agents \
-          /var/lib/kafkallm/tools/bin /var/lib/kafkallm/config
-        chmod -R 777 /var/lib/kafkallm 2>/dev/null || true
-    volumes:
-      - ${KAFKALLM_JOB_ROOT:-/var/lib/kafkallm}:/var/lib/kafkallm:z
-    restart: "no"
-
   podman-proxy:
     image: tecnativa/docker-socket-proxy:v0.5.0@sha256:1f5038b54f06c3e18422902cf00ba21803d1c97805aae032e5e6673d532d3459
     # Share the worker's network namespace and listen on its loopback only, so
@@ -212,7 +197,7 @@ services:
         condition: service_started
     restart: unless-stopped
 
-  llm-gateway:
+  agentgateway:
     image: cr.agentgateway.dev/agentgateway:v1.7.0@sha256:460dda874be2dfa95fa5713c1f46f26079dce78df576008df704e54a59d5780d
     command: ["-f", "/config/config.yaml"]
     environment:
@@ -249,6 +234,12 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    networks:
+      default:
+        # Compatibility alias for existing .env files and scripts that still
+        # use the old "llm-gateway" hostname.
+        aliases:
+          - llm-gateway
 
   agent-worker:
     image: ${KAFKALLM_APP_IMAGE:-kafkallm-app:latest}
@@ -260,9 +251,7 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
-      kafkallm-job-init:
-        condition: service_completed_successfully
-      llm-gateway:
+      agentgateway:
         condition: service_started
       mlflow:
         condition: service_started
@@ -321,17 +310,6 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-
-  jobctl:
-    image: ${KAFKALLM_APP_IMAGE:-kafkallm-app:latest}
-    build: .
-    profiles: ["cli"]
-    entrypoint: ["kafkallm"]
-    command: ["--help"]
-    environment: *app-environment
-    depends_on:
-      kafka:
-        condition: service_healthy
 
   rustfs:
     image: rustfs/rustfs:1.0.0@sha256:8cc9801755448b71a786705ce76692c77e14936cccd87cf2fc31842e58f4d1ff

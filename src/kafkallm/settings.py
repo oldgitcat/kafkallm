@@ -235,7 +235,7 @@ class Settings:
             llm_gateway_virtual_key=_str_env("LLM_GATEWAY_VIRTUAL_KEY", ""),
             llm_gateway_ready_url=_str_env(
                 "LLM_GATEWAY_READY_URL",
-                "http://llm-gateway:15021/healthz/ready",
+                "http://agentgateway:15021/healthz/ready",
             ),
             llm_gateway_port=_int_env("LLM_GATEWAY_PORT", 8091),
             goose_job_network=_str_env("GOOSE_JOB_NETWORK", "kafkallm-jobs"),

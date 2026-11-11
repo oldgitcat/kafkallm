@@ -80,6 +80,17 @@ if not has("LLM_UPSTREAM_API_KEY"):
         append("LLM_UPSTREAM_API_KEY", legacy)
         print("Migrated OPENROUTER_API_KEY to LLM_UPSTREAM_API_KEY")
 
+# The Compose service was renamed from llm-gateway to agentgateway. Existing
+# .env files keep working through a network alias, but migrate the default.
+updated = []
+for line in lines:
+    if line.startswith("LLM_GATEWAY_READY_URL=http://llm-gateway:"):
+        updated.append(line.replace("llm-gateway", "agentgateway"))
+        print("Updated LLM_GATEWAY_READY_URL to the agentgateway hostname")
+    else:
+        updated.append(line)
+lines = updated
+
 path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 PY
 
@@ -89,6 +100,7 @@ PYTHONPATH="$ROOT_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
     python3 -m kafkallm.setup_wizard --env-file "$ROOT_DIR/.env"
 
 load_env "$ROOT_DIR"
+./scripts/prepare-job-root.sh
 
 provider="${LLM_UPSTREAM_PROVIDER:-openrouter}"
 missing=0

@@ -48,6 +48,11 @@ make network   # once per host: create the isolated IPv6-only Podman network
 make images    # build the goose job image into rootless Podman storage
 ```
 
+The host directories under `KAFKALLM_JOB_ROOT` are created by
+`scripts/prepare-job-root.sh`, which `make setup` and `make up` call
+automatically. If `/var/lib/kafkallm` is not writable by your user, create it
+once with `sudo mkdir -p /var/lib/kafkallm && sudo chown -R "$USER" /var/lib/kafkallm`.
+
 If `make doctor` reports a missing Podman socket, enable the rootless API:
 
 ```bash
@@ -85,6 +90,7 @@ The Make targets wrap the scripts in this repository:
 
 ```bash
 ./scripts/setup.sh             # creates .env, generates the gateway key
+./scripts/prepare-job-root.sh  # creates the host job directories
 ./scripts/init-job-network.sh
 ./scripts/build-goose-image.sh
 ./scripts/build-rea-image.sh   # optional
@@ -98,43 +104,51 @@ podman compose --profile storage up -d
 
 ### Command line
 
+The CLI runs on the host. `scripts/kafkallm-cli` creates/uses the local
+virtualenv, loads `.env`, and talks to Kafka on `localhost:19092`. No extra
+Compose container is needed.
+
 ```bash
 # Submit a job
-podman compose run --rm jobctl submit "Say hello"
+./scripts/kafkallm-cli submit "Say hello"
 
-# Submit a job with a local file or binary (mounted into the CLI container)
-podman compose run --rm -v "$PWD:/data:ro" jobctl submit \
-  "Inspect the uploaded binary" --upload /data/tool.bin
+# Submit a job with a local file or binary
+./scripts/kafkallm-cli submit \
+  "Inspect the uploaded binary" --upload "$PWD/tool.bin"
 
 # Submit into the reverse-engineering sandbox (REA + Ghidra)
-podman compose run --rm -v "$PWD:/data:ro" jobctl submit \
+./scripts/kafkallm-cli submit \
   "Reverse engineer this binary and summarize its behavior" \
-  --sandbox reverse --upload /data/tool.bin
+  --sandbox reverse --upload "$PWD/tool.bin"
 
 # Pull and run an image that is not in the sandbox registry
-podman compose run --rm jobctl submit "Say hello" \
+./scripts/kafkallm-cli submit "Say hello" \
   --sandbox adhoc --image ghcr.io/example/agent:1.2.3
 
 # Submit without the learning pass (skill improvement)
-podman compose run --rm jobctl submit "Say hello" --no-reflect
+./scripts/kafkallm-cli submit "Say hello" --no-reflect
 
 # Submit a complete Job JSON payload from a file or stdin
-podman compose run --rm -T jobctl submit --job-json - < job.json
+./scripts/kafkallm-cli submit --job-json - < job.json
 
 # Print the exact Job JSON schema (job, agent, or sandbox)
-podman compose run --rm jobctl schema job
+./scripts/kafkallm-cli schema job
 
-# Read results
-podman compose run --rm jobctl results --from-beginning --idle-timeout 5
+# Read results, materialized state, audit events, or live activity
+./scripts/kafkallm-cli results --from-beginning --idle-timeout 5
+./scripts/kafkallm-cli states --from-beginning --idle-timeout 5
+./scripts/kafkallm-cli events --from-beginning --idle-timeout 5
+./scripts/kafkallm-cli logs --from-beginning --idle-timeout 5
+```
 
-# Read materialized state
-podman compose run --rm jobctl states --from-beginning --idle-timeout 5
+Kafka is also published directly on `localhost:19092`, so any Kafka client can
+produce a `Job` JSON record to `jobs.in`:
 
-# Read audit events
-podman compose run --rm jobctl events --from-beginning --idle-timeout 5
-
-# Read live activity (thinking, tool calls, stderr)
-podman compose run --rm jobctl logs --from-beginning --idle-timeout 5
+```bash
+key=$(uuidgen)
+printf '%s\n' \
+  '{"instruction":"Write /workspace/outputs/hello.md","sandbox":"default"}' \
+  | kcat -P -b localhost:19092 -t jobs.in -k "$key"
 ```
 
 Worker and GUI logs:
@@ -142,7 +156,7 @@ Worker and GUI logs:
 ```bash
 podman compose logs -f agent-worker
 podman compose logs -f gui
-podman compose logs -f llm-gateway
+podman compose logs -f agentgateway
 podman compose logs -f mlflow
 ```
 

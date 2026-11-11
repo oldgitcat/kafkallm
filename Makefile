@@ -41,6 +41,7 @@ rea-image: ## Build the optional REA + Ghidra job image
 	./scripts/build-rea-image.sh
 
 up: gateway-config ## Build the app image and start the control plane
+	./scripts/prepare-job-root.sh
 	$(CONTAINER) build -t $(APP_IMAGE) .
 	-$(COMPOSE) --profile storage down --remove-orphans
 	$(COMPOSE) --profile storage up -d --remove-orphans

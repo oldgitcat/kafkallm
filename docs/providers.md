@@ -4,7 +4,7 @@
 
 ## agentgateway and provider keys
 
-The `llm-gateway` Compose service runs
+The `agentgateway` Compose service runs
 [agentgateway](https://agentgateway.dev/) `v1.7.0`. The committed
 `agentgateway/config.template.yaml` is provider-neutral; the LLM section is
 rendered from `.env` into `agentgateway/config.generated.yaml`.
@@ -104,6 +104,6 @@ curl -fsS \
 ```
 
 The worker polls agentgateway's readiness endpoint over the Compose network at
-`http://llm-gateway:15021/healthz/ready`.
+`http://agentgateway:15021/healthz/ready`.
 
 
