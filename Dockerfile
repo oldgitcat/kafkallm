@@ -1,4 +1,4 @@
-FROM python:3.12-slim-bookworm@sha256:0f086103b026048cc50cb5da25ec435c023c5241a83fc44daea593377abc61c4
+FROM docker.io/library/python:3.12-slim-bookworm@sha256:0f086103b026048cc50cb5da25ec435c023c5241a83fc44daea593377abc61c4
 
 LABEL org.opencontainers.image.title="Kafkallm" \
       org.opencontainers.image.description="Kafka-backed goose jobs in isolated microVMs" \
