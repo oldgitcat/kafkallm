@@ -14,11 +14,13 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import json
 import os
 import sys
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 DEFAULT_PROVIDER = "openrouter"
 DEFAULT_CUSTOM_FORMAT = "completions"
@@ -184,81 +186,68 @@ def render_config(
                 f"Choose one of: {', '.join(sorted(PROVIDER_FORMATS))}."
             )
 
-    lines = [
-        "gateways:",
-        "  default:",
-        f"    port: {llm_port}",
-        "llm:",
-        "  policies:",
-        "    apiKey:",
-        "      mode: strict",
-        "      keys:",
-        f"        - key: {json.dumps(virtual_key)}",
-        "          metadata:",
-        "            name: kafkallm-worker",
-    ]
+    section_data: dict[str, Any] = {
+        "gateways": {"default": {"port": llm_port}},
+        "llm": {
+            "policies": {
+                "apiKey": {
+                    "mode": "strict",
+                    "keys": [
+                        {
+                            "key": virtual_key,
+                            "metadata": {"name": "kafkallm-worker"},
+                        }
+                    ],
+                },
+            },
+            "providers": [],
+            "models": [],
+        },
+    }
+    policies = section_data["llm"]["policies"]
     if cors_origins:
-        lines.extend(
-            [
-                "    cors:",
-                "      allowOrigins:",
-                *[f"        - {json.dumps(origin)}" for origin in cors_origins],
-                "      allowMethods:",
-                "        - GET",
-                "        - POST",
-                "        - OPTIONS",
-                "      allowHeaders:",
-                "        - Authorization",
-                "        - Content-Type",
-                "        - Accept",
-                '      maxAge: "10m"',
-            ]
-        )
-    lines.extend(
-        [
-            "  providers:",
-            "    - name: upstream",
-        ]
-    )
+        policies["cors"] = {
+            "allowOrigins": cors_origins,
+            "allowMethods": ["GET", "POST", "OPTIONS"],
+            "allowHeaders": ["Authorization", "Content-Type", "Accept"],
+            "maxAge": "10m",
+        }
+
+    upstream: dict[str, object] = {"name": "upstream"}
     if provider == "custom":
-        lines.extend(
-            [
-                "      provider:",
-                "        custom:",
-                "          formats:",
-                f"            - type: {provider_format}",
-            ]
-        )
+        upstream["provider"] = {"custom": {"formats": [{"type": provider_format}]}}
     else:
-        lines.append(f"      provider: {provider}")
-
-    params: list[str] = []
+        upstream["provider"] = provider
+    params: dict[str, str] = {}
     if include_api_key:
-        params.append('        apiKey: "$LLM_UPSTREAM_API_KEY"')
+        params["apiKey"] = "$LLM_UPSTREAM_API_KEY"
     if base_url:
-        params.append(f"        baseUrl: {json.dumps(base_url)}")
+        params["baseUrl"] = base_url
     if params:
-        lines.append("      params:")
-        lines.extend(params)
+        upstream["params"] = params
+    section_data["llm"]["providers"] = [upstream]
 
-    lines.append("  models:")
+    models: list[dict[str, object]] = []
     if model.strip():
-        lines.extend(
-            [
-                f"    - name: {json.dumps(model.strip())}",
-                "      provider:",
-                "        reference: upstream",
-            ]
+        models.append(
+            {
+                "name": model.strip(),
+                "provider": {"reference": "upstream"},
+            }
         )
-    lines.extend(
-        [
-            '    - name: "*"',
-            "      provider:",
-            "        reference: upstream",
-        ]
+    models.append(
+        {
+            "name": "*",
+            "provider": {"reference": "upstream"},
+        }
     )
+    section_data["llm"]["models"] = models
 
-    section = "\n".join(lines) + "\n"
+    section = yaml.safe_dump(
+        section_data,
+        sort_keys=False,
+        default_flow_style=False,
+    )
     placeholder = "# __LLM_SECTION__"
     if placeholder not in template:
         raise ConfigError(f"Config template has no {placeholder} marker.")

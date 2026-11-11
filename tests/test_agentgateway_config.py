@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+import yaml
 
 from kafkallm.agentgateway_config import (
     ConfigError,
@@ -24,16 +25,22 @@ def test_openrouter_config_uses_an_environment_key_reference() -> None:
         include_api_key=True,
         model="openai/gpt-4.1-mini",
     )
+    config = yaml.safe_load(rendered)
+    llm = config["llm"]
 
-    assert "provider: openrouter" in rendered
-    assert "gateways:" in rendered
-    assert "    port: 8091" in rendered
-    assert "llm:\n  policies:" in rendered
-    assert 'apiKey: "$LLM_UPSTREAM_API_KEY"' in rendered
+    assert config["gateways"]["default"]["port"] == 8091
+    assert llm["policies"]["apiKey"]["mode"] == "strict"
+    assert llm["policies"]["apiKey"]["keys"][0] == {
+        "key": "$LLM_GATEWAY_VIRTUAL_KEY",
+        "metadata": {"name": "kafkallm-worker"},
+    }
+    assert llm["providers"][0]["name"] == "upstream"
+    assert llm["providers"][0]["provider"] == "openrouter"
+    assert llm["providers"][0]["params"]["apiKey"] == "$LLM_UPSTREAM_API_KEY"
+    assert llm["models"][0]["name"] == "openai/gpt-4.1-mini"
+    assert llm["models"][-1]["name"] == "*"
+    assert all(model["provider"]["reference"] == "upstream" for model in llm["models"])
     assert "real-provider-key" not in rendered
-    assert 'name: "openai/gpt-4.1-mini"' in rendered
-    assert 'name: "*"' in rendered
-    assert "reference: upstream" in rendered
 
 
 def test_ollama_defaults_to_the_host_base_url_and_needs_no_key() -> None:
@@ -43,11 +50,14 @@ def test_ollama_defaults_to_the_host_base_url_and_needs_no_key() -> None:
         include_api_key=False,
         model="llama3.2",
     )
+    llm = yaml.safe_load(rendered)["llm"]
 
-    assert "provider: ollama" in rendered
-    assert 'baseUrl: "http://host.containers.internal:11434/v1"' in rendered
-    assert 'apiKey: "$LLM_UPSTREAM_API_KEY"' not in rendered
-    assert 'name: "llama3.2"' in rendered
+    assert llm["providers"][0]["provider"] == "ollama"
+    assert llm["providers"][0]["params"]["baseUrl"] == (
+        "http://host.containers.internal:11434/v1"
+    )
+    assert "apiKey" not in llm["providers"][0]["params"]
+    assert llm["models"][0]["name"] == "llama3.2"
 
 
 def test_custom_provider_requires_a_base_url_and_renders_its_format() -> None:
@@ -61,11 +71,10 @@ def test_custom_provider_requires_a_base_url_and_renders_its_format() -> None:
         include_api_key=True,
         provider_format="messages",
     )
+    upstream = yaml.safe_load(rendered)["llm"]["providers"][0]
 
-    assert "provider:" in rendered
-    assert "custom:" in rendered
-    assert "- type: messages" in rendered
-    assert 'baseUrl: "https://llm.example.com/v1"' in rendered
+    assert upstream["provider"] == {"custom": {"formats": [{"type": "messages"}]}}
+    assert upstream["params"]["baseUrl"] == "https://llm.example.com/v1"
 
 
 def test_unknown_provider_and_format_are_rejected() -> None:
@@ -115,12 +124,15 @@ def test_cors_origins_are_rendered_for_the_playground() -> None:
         include_api_key=True,
         cors_origins=["http://127.0.0.1:15000", "http://localhost:15000"],
     )
+    cors = yaml.safe_load(rendered)["llm"]["policies"]["cors"]
 
-    assert "    cors:" in rendered
-    assert '        - "http://127.0.0.1:15000"' in rendered
-    assert '        - "http://localhost:15000"' in rendered
-    assert "        - OPTIONS" in rendered
-    assert "        - Authorization" in rendered
+    assert cors["allowOrigins"] == [
+        "http://127.0.0.1:15000",
+        "http://localhost:15000",
+    ]
+    assert cors["allowMethods"] == ["GET", "POST", "OPTIONS"]
+    assert cors["allowHeaders"] == ["Authorization", "Content-Type", "Accept"]
+    assert cors["maxAge"] == "10m"
 
 
 def test_empty_cors_origins_disable_the_policy() -> None:
@@ -131,7 +143,7 @@ def test_empty_cors_origins_disable_the_policy() -> None:
         cors_origins=[],
     )
 
-    assert "cors:" not in rendered
+    assert "cors" not in yaml.safe_load(rendered)["llm"]["policies"]
 
 
 def test_cors_origins_from_env_defaults_and_overrides() -> None:
@@ -145,8 +157,10 @@ def test_cors_origins_from_env_defaults_and_overrides() -> None:
 
 def test_llm_port_is_rendered_and_validated() -> None:
     rendered = render_config(TEMPLATE, provider="openrouter", llm_port=9000)
-    assert "    port: 9000" in rendered
-    assert "llm:\n  port:" not in rendered
+    config = yaml.safe_load(rendered)
+
+    assert config["gateways"]["default"]["port"] == 9000
+    assert "port" not in config["llm"]
 
     with pytest.raises(ConfigError, match="outside 1-65535"):
         render_config(TEMPLATE, provider="openrouter", llm_port=70000)
@@ -156,10 +170,14 @@ def test_virtual_key_can_be_inlined_for_the_playground() -> None:
     rendered = render_config(
         TEMPLATE, provider="openrouter", virtual_key="local-secret"
     )
-    assert '- key: "local-secret"' in rendered
+    keys = yaml.safe_load(rendered)["llm"]["policies"]["apiKey"]["keys"]
+
+    assert keys[0]["key"] == "local-secret"
     assert "$LLM_GATEWAY_VIRTUAL_KEY" not in rendered
 
 
 def test_virtual_key_defaults_to_the_environment_reference() -> None:
     rendered = render_config(TEMPLATE, provider="openrouter")
-    assert '- key: "$LLM_GATEWAY_VIRTUAL_KEY"' in rendered
+    keys = yaml.safe_load(rendered)["llm"]["policies"]["apiKey"]["keys"]
+
+    assert keys[0]["key"] == "$LLM_GATEWAY_VIRTUAL_KEY"

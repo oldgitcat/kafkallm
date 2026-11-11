@@ -103,57 +103,6 @@ load_env "$ROOT_DIR"
 ./scripts/prepare-job-root.sh
 
 provider="${LLM_UPSTREAM_PROVIDER:-openrouter}"
-missing=0
-if [ -z "${GOOSE_MODEL:-}" ]; then
-    echo "Missing: GOOSE_MODEL (choose a tool-calling model)" >&2
-    missing=1
-fi
-
-case "$provider" in
-    ollama)
-        # Ollama does not require an API key. Override LLM_UPSTREAM_BASE_URL
-        # if it does not run on the host at the default port.
-        if printf '%s' "${GOOSE_MODEL:-}" | grep -q '/'; then
-            echo "Warning: GOOSE_MODEL='${GOOSE_MODEL}' looks like a hosted" >&2
-            echo "         model. Set it to the Ollama model name (for example" >&2
-            echo "         llama3.2) before running a job." >&2
-        fi
-        ;;
-    custom)
-        if [ -z "${LLM_UPSTREAM_BASE_URL:-}" ]; then
-            echo "Missing: LLM_UPSTREAM_BASE_URL (required for provider=custom)" >&2
-            missing=1
-        fi
-        ;;
-    azure|bedrock|vertex|copilot)
-        # These providers use cloud or provider-specific authentication. The
-        # API key is optional here; set the extra params in the template if
-        # your deployment needs them.
-        ;;
-    *)
-        if [ -z "${LLM_UPSTREAM_API_KEY:-${OPENROUTER_API_KEY:-}}" ]; then
-            echo "Missing: LLM_UPSTREAM_API_KEY for provider '$provider'" >&2
-            case "$provider" in
-                openrouter)
-                    echo "  Get one at https://openrouter.ai/keys" >&2
-                    ;;
-                openai)
-                    echo "  Get one at https://platform.openai.com/api-keys" >&2
-                    ;;
-                *)
-                    echo "  Set the API key for your provider in .env" >&2
-                    ;;
-            esac
-            missing=1
-        fi
-        ;;
-esac
-
-if [ "$missing" -ne 0 ]; then
-    echo >&2
-    echo "Edit .env, then run 'make setup' again." >&2
-    exit 1
-fi
 
 ./scripts/render-agentgateway-config.sh
 echo "Environment is ready ($provider). Next: make doctor"
