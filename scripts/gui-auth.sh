@@ -10,6 +10,10 @@ cd "$ROOT_DIR"
 load_env "$ROOT_DIR"
 
 CADDY_IMAGE="${CADDY_IMAGE:-docker.io/library/caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d}"
+FORCE=0
+if [ "${1:-}" = "--force" ]; then
+    FORCE=1
+fi
 
 valid_hash() {
     case "${1:-}" in
@@ -18,8 +22,9 @@ valid_hash() {
     esac
 }
 
-if [ -n "${GUI_AUTH_USER:-}" ] && valid_hash "${GUI_AUTH_HASH:-}"; then
+if [ "$FORCE" -eq 0 ] && [ -n "${GUI_AUTH_USER:-}" ] && valid_hash "${GUI_AUTH_HASH:-}"; then
     echo "GUI basic auth is already configured for user '$GUI_AUTH_USER'"
+    echo "Run './scripts/gui-auth.sh --force' to change it."
     exit 0
 fi
 

@@ -84,8 +84,10 @@ setup, network creation, the default image build, and `make up` in one command.
 The GUI is published through Caddy on `GUI_BIND` (default `0.0.0.0`, so it is
 reachable from other machines in the network) and protected by HTTP basic auth.
 `make setup` asks for the GUI username and password. Set `GUI_BIND=127.0.0.1`
-for local-only access. Caddy submits to the GUI, which writes to `jobs.in` and
-reads the state and audit topics. The GUI has no local database.
+for local-only access. Change the credentials later with
+`./scripts/gui-auth.sh --force` or `make gui-auth-force`; after either, restart
+Caddy with `podman compose up -d caddy`. Caddy submits to the GUI, which writes
+to `jobs.in` and reads the state and audit topics. The GUI has no local database.
 
 <details>
 <summary>Manual setup without make</summary>

@@ -11,7 +11,7 @@ PYTEST := $(VENV)/bin/pytest
 RUFF := $(VENV)/bin/ruff
 VENV_STAMP := $(VENV)/.kafkallm-installed
 
-.PHONY: help setup gui-auth gateway-config doctor bootstrap network images app-image rea-image up down restart logs ps test lint format venv clean prune lock reset
+.PHONY: help setup gui-auth gui-auth-force gateway-config doctor bootstrap network images app-image rea-image up down restart logs ps test lint format venv clean prune lock reset
 
 help: ## Show this help
 	@printf "%-14s %s\n" "target" "description"
@@ -22,6 +22,9 @@ setup: ## Create .env, generate the gateway key, and check required settings
 
 gui-auth: ## Set the GUI username/password for the Caddy basic auth
 	./scripts/gui-auth.sh
+
+gui-auth-force: ## Change the existing GUI username/password
+	./scripts/gui-auth.sh --force
 
 gateway-config: ## Render the agentgateway provider config from .env
 	./scripts/render-agentgateway-config.sh
