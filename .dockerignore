@@ -8,8 +8,8 @@ __pycache__/
 .git/
 tests/
 docs/
-agentgateway/
-caddy/
+infra/agentgateway/
+infra/caddy/
 scripts/
 .github/
 # Stray directories from a mis-parsed podman invocation.

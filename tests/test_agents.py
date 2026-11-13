@@ -198,7 +198,9 @@ def test_seed_default_agent_profiles_copies_only_missing_files(
     assert seed_default_agent_profiles(settings) == 1
     destination = target / "worker.md"
     assert destination.is_file()
-    assert (destination.stat().st_mode & 0o777) == 0o666
+    mode = destination.stat().st_mode & 0o777
+    assert mode & 0o600 == 0o600
+    assert mode & 0o002 == 0
 
     destination.write_text("edited", encoding="utf-8")
     assert seed_default_agent_profiles(settings) == 0
@@ -215,7 +217,9 @@ def test_export_writes_missing_custom_profiles(tmp_path: Path) -> None:
     assert written == 1
     profile = tmp_path / "custom.md"
     assert profile.is_file()
-    assert (profile.stat().st_mode & 0o777) == 0o666
+    mode = profile.stat().st_mode & 0o777
+    assert mode & 0o600 == 0o600
+    assert mode & 0o002 == 0
     assert not (tmp_path / "worker.md").exists()
 
     (tmp_path / "custom.md").write_text("keep me", encoding="utf-8")

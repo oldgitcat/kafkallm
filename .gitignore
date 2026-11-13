@@ -12,10 +12,12 @@ htmlcov/
 dist/
 build/
 # Generated from .env by scripts/render-agentgateway-config.sh.
-agentgateway/config.generated.yaml
+infra/agentgateway/config.yml
 # Stray directories from a mis-parsed podman invocation.
 --time=*/
 .DS_Store
 
 # Local screenshots
 Screenshot*.png
+__init__.py
+.editorconfig

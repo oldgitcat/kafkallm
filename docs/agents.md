@@ -14,13 +14,13 @@ The job image contains a small goosetown hub:
 - role skills for workers, writers, reviewers, and a local researcher
 
 The upstream role skills and `gtwall` are vendored from goosetown under
-Apache 2.0; see `goose_job/LICENSE-goosetown`. The orchestrator and `AGENTS.md`
+Apache 2.0; see `gaense/LICENSE-goosetown`. The orchestrator and `AGENTS.md`
 are adapted so they do not depend on the internet, `bd`, `uv`, or the goosetown
 dashboard. The browser-based goosetown dashboard is not used; Gänsestall has its
 own job GUI.
 
 Skills are stored on the host at `GOOSE_JOB_SKILLS_DIR`
-(`/var/lib/kafkallm/skills` by default). The store is mounted read-only into
+(`~/.local/share/kafkallm/skills` by default). The store is copied into
 each main job at `/opt/kafkallm/skills-persistent`; the guest entrypoint copies
 it into a disposable `/workspace/.claude/skills` tree. A job can edit that copy,
 but it cannot write the shared store. Only the worker writes the store, after a
@@ -63,7 +63,7 @@ delegation.
 #### Agent profile directory
 
 The GUI also imports agent profiles from `GOOSE_JOB_AGENTS_DIR`
-(`/var/lib/kafkallm/agents` by default) at startup, next to the skills
+(`~/.local/share/kafkallm/agents` by default) at startup, next to the skills
 directory. Each `*.md` file needs YAML front matter; the filename is the
 `agent_id`:
 
@@ -87,7 +87,7 @@ used by goose agent sources: strings (optionally quoted), booleans, and lists in
 The directory is the durable store for agents:
 
 - The five built-in roles are defined as files in the repository/app image at
-  `agents/*.md`. On GUI start they are copied into `GOOSE_JOB_AGENTS_DIR` if
+  `gaense/agents/*.md`. On GUI start they are copied into `GOOSE_JOB_AGENTS_DIR` if
   missing, so every agent is file-defined. They use the same format as custom
   profiles.
 - The GUI still marks the built-in IDs as read-only and blocks disable/delete.

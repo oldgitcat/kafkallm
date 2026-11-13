@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Render agentgateway/config.generated.yaml from the provider settings in .env.
+# Render infra/agentgateway/config.yml from the provider settings in .env.
 # The provider API key is not written to the file; agentgateway reads it from
 # LLM_UPSTREAM_API_KEY in its own environment.
 set -euo pipefail

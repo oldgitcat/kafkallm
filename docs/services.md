@@ -13,10 +13,9 @@ worker-created runtime container does.
 | `kafka-ui` | kafbat/kafka-ui | Inspect topics and messages | <http://localhost:8080> | — |
 | `mlflow` | MLflow 3.18 | Trace/observability backend, SQLite + OTLP/HTTP | <http://localhost:5000> | `mlflow-data` volume |
 | `rustfs` | RustFS 1.0.0 | S3-compatible input and artifact store | `9000` API, `9001` console (localhost) | `rustfs-data` volume |
-| `podman-proxy` | docker-socket-proxy | Filtered rootless Podman API for the worker | `127.0.0.1:2375` inside the worker namespace | Podman socket |
 | `agentgateway` | agentgateway 1.7.0 | OpenAI-compatible LLM gateway, provider key, CORS, playground | `8091` LLM, `15000` admin/playground, `15021` readiness | Generated config |
-| `agent-worker` | `kafkallm-app` | Consume `jobs.in`, run microVMs, own Podman API, publish results/state/logs/events | — | `/var/lib/kafkallm`, Podman storage |
-| `gui` | `kafkallm-app` | Browser UI/API, job submission, agents, sandboxes, live state | internal `8090` | `/var/lib/kafkallm` |
+| `agent-worker` | `kafkallm-app` | Consume `jobs.in`, run microVMs, own Podman API, publish results/state/logs/events | — | `~/.local/share/kafkallm`, Podman storage |
+| `gui` | `kafkallm-gui` | Browser UI/API, job submission, agents, sandboxes, live state | internal `8090` | `~/.local/share/kafkallm` |
 | `caddy` | Caddy 2.10 | HTTP basic auth and reverse proxy in front of the GUI | `GUI_BIND:8090` (default all interfaces) | — |
 
 `rustfs` is behind the optional `storage` profile; `make up` enables it. The GUI
@@ -53,12 +52,12 @@ The worker and GUI use RustFS as the S3-compatible store for uploaded inputs and
 result artifacts. `make up` uses the `storage` profile; without it, jobs can
 still run, but uploads and artifact storage are unavailable.
 
-### podman-proxy
+### Podman socket
 
-The worker must create, start, stop, and remove microVMs through the host's
-rootless Podman API. The docker-socket-proxy shares the worker's network
-namespace and exposes a filtered API on the worker's loopback. It is equivalent
-to root on the host; never publish it or put it on a shared network.
+The worker creates, starts, stops, and removes microVMs through the host's
+rootless Podman API. Compose mounts the Unix socket directly into the worker
+(`PODMAN_SOCKET`); there is no TCP socket proxy. Access to that socket is
+equivalent to root on the host, so it is never published on a network.
 
 ### agentgateway
 
@@ -109,8 +108,8 @@ through the rootless Podman API.
 
 | Container | Purpose | Network |
 |---|---|---|
-| `kafkallm-gateway-proxy` | Long-lived global allowlisting proxy / health check | `podman` IPv4 + `kafkallm-jobs` IPv6 |
-| `kafkallm-gateway-proxy-<run>` | Per-job proxy; injects `traceparent` and `x-kafkallm-job-id` | `podman` IPv4 + `kafkallm-jobs` IPv6 |
+| `kafkallm-gateway-proxy` | Long-lived global allowlisting proxy / health check (distroless Python) | `podman` IPv4 + `kafkallm-jobs` IPv6 |
+| `kafkallm-gateway-proxy-<run>` | Per-job proxy; injects `traceparent` and `x-kafkallm-job-id` (distroless Python) | `podman` IPv4 + `kafkallm-jobs` IPv6 |
 | Main Goose microVM | Runs the job (`goose run`) and writes `/workspace/outputs` | `kafkallm-jobs` only |
 | Reflection microVM | Runs the optional learning pass in a fresh workspace | `kafkallm-jobs` only |
 
@@ -126,18 +125,18 @@ model-list requests to the gateway.
 | `kafkallm-jobs` | Proxies and job microVMs | IPv6-only, internal, no default route |
 | `podman` | Proxies | IPv4 route to the gateway on the host |
 
-The worker and `podman-proxy` share a network namespace so the Podman API is
-reachable only on the worker's loopback.
+The worker mounts the rootless Podman socket directly; no extra network
+namespace or proxy container is involved.
 
 ## Host paths and volumes
 
 | Path / volume | Contents |
 |---|---|
-| `/var/lib/kafkallm/jobs` | Per-job workspaces (temporary) |
-| `/var/lib/kafkallm/staging` | Upload/download staging |
-| `/var/lib/kafkallm/skills` | Persistent skill store |
-| `/var/lib/kafkallm/agents` | Agent profile files |
-| `/var/lib/kafkallm/tools` / `config` | Sandbox tools and Goose/MCP config |
+| `~/.local/share/kafkallm/jobs` | Per-job workspaces (temporary) |
+| `~/.local/share/kafkallm/staging` | Upload/download staging |
+| `~/.local/share/kafkallm/skills` | Persistent skill store |
+| `~/.local/share/kafkallm/agents` | Agent profile files |
+| `~/.local/share/kafkallm/tools` / `config` | Sandbox tools and Goose config |
 | `kafka-data` | Kafka log segments |
 | `mlflow-data` | MLflow SQLite and artifacts |
 | `rustfs-data` | S3 objects |

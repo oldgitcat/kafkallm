@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import socket
 from dataclasses import dataclass, field
+from pathlib import Path
 
 
 class SettingsError(ValueError):
@@ -34,6 +35,16 @@ def _int_env(name: str, default: int) -> int:
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off"}
+
+
+def default_job_root() -> str:
+    """Return the per-user data root shared by the worker and the microVMs."""
+    return str(Path.home() / ".local/share/kafkallm")
+
+
+def default_podman_socket() -> str:
+    """Return the rootless Podman API socket for the current user."""
+    return f"/run/user/{os.getuid()}/podman/podman.sock"
 
 
 def _bool_env(name: str, default: bool) -> bool:
@@ -80,7 +91,7 @@ class Settings:
     goose_startup_timeout_seconds: int
     goose_image: str
     goose_re_image: str
-    goose_job_tmpfs_size: str
+    goose_job_proxy_image: str
     goose_job_max_turns: int
     goose_job_subagent_max_turns: int
     goose_job_memory_limit: str
@@ -153,6 +164,15 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> Settings:
+        job_root = _str_env("KAFKALLM_JOB_ROOT", default_job_root())
+        podman_socket = _str_env("PODMAN_SOCKET", default_podman_socket())
+        docker_host = _str_env("GOOSE_JOB_DOCKER_HOST", "")
+        if not docker_host:
+            docker_host = (
+                podman_socket
+                if podman_socket.startswith("unix://")
+                else f"unix://{podman_socket}"
+            )
         return cls(
             kafka_bootstrap_servers=_str_env(
                 "KAFKA_BOOTSTRAP_SERVERS", "127.0.0.1:19092"
@@ -175,7 +195,7 @@ class Settings:
             ),
             worker_id=_str_env("WORKER_ID", socket.gethostname()),
             worker_concurrency=max(1, _int_env("WORKER_CONCURRENCY", 1)),
-            workspace_root=_str_env("WORKSPACE_ROOT", "/var/lib/kafkallm/staging"),
+            workspace_root=_str_env("WORKSPACE_ROOT", str(Path(job_root) / "staging")),
             max_job_timeout_seconds=_int_env("MAX_JOB_TIMEOUT_SECONDS", 1800),
             allow_unlimited_jobs=_bool_env("ALLOW_UNLIMITED_JOBS", False),
             max_result_bytes=_int_env("MAX_RESULT_BYTES", 500_000),
@@ -196,7 +216,9 @@ class Settings:
             ),
             goose_image=_str_env("GOOSE_IMAGE", "kafkallm-goose-job:latest"),
             goose_re_image=_str_env("GOOSE_RE_IMAGE", "kafkallm-rea-job:latest"),
-            goose_job_tmpfs_size=_str_env("GOOSE_JOB_TMPFS_SIZE", "1g"),
+            goose_job_proxy_image=_str_env(
+                "GOOSE_JOB_PROXY_IMAGE", "kafkallm-gateway-proxy:latest"
+            ),
             goose_job_max_turns=_int_env("GOOSE_JOB_MAX_TURNS", 60),
             goose_job_subagent_max_turns=_int_env("GOOSE_JOB_SUBAGENT_MAX_TURNS", 40),
             goose_job_memory_limit=_str_env("GOOSE_JOB_MEMORY_LIMIT", "4g"),
@@ -204,26 +226,24 @@ class Settings:
             goose_job_cpus=_int_env("GOOSE_JOB_CPUS", 2),
             goose_job_ram_mib=_int_env("GOOSE_JOB_RAM_MIB", 2048),
             goose_job_use_passt=_bool_env("GOOSE_JOB_USE_PASST", False),
-            goose_job_docker_host=_str_env(
-                "GOOSE_JOB_DOCKER_HOST", "tcp://podman-proxy:2375"
-            ),
+            goose_job_docker_host=docker_host,
             goose_job_workspace_root=_str_env(
-                "GOOSE_JOB_WORKSPACE_ROOT", "/var/lib/kafkallm/jobs"
+                "GOOSE_JOB_WORKSPACE_ROOT", str(Path(job_root) / "jobs")
             ),
             goose_job_skills_dir=_str_env(
-                "GOOSE_JOB_SKILLS_DIR", "/var/lib/kafkallm/skills"
+                "GOOSE_JOB_SKILLS_DIR", str(Path(job_root) / "skills")
             ),
             goose_job_agents_dir=_str_env(
-                "GOOSE_JOB_AGENTS_DIR", "/var/lib/kafkallm/agents"
+                "GOOSE_JOB_AGENTS_DIR", str(Path(job_root) / "agents")
             ),
             goose_job_default_agents_dir=_str_env(
-                "GOOSE_JOB_DEFAULT_AGENTS_DIR", "agents"
+                "GOOSE_JOB_DEFAULT_AGENTS_DIR", "gaense/agents"
             ),
             goose_job_tools_dir=_str_env(
-                "GOOSE_JOB_TOOLS_DIR", "/var/lib/kafkallm/tools"
+                "GOOSE_JOB_TOOLS_DIR", str(Path(job_root) / "tools")
             ),
             goose_job_config_dir=_str_env(
-                "GOOSE_JOB_CONFIG_DIR", "/var/lib/kafkallm/config"
+                "GOOSE_JOB_CONFIG_DIR", str(Path(job_root) / "config")
             ),
             goose_job_reflect_enabled=_bool_env("GOOSE_JOB_REFLECT_ENABLED", True),
             goose_job_reflect_timeout_seconds=_int_env(

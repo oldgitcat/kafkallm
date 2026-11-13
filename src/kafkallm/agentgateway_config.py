@@ -259,17 +259,17 @@ def render_config(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="render-agentgateway-config",
-        description="Render agentgateway/config.generated.yaml from .env.",
+        description="Render infra/agentgateway/config.yml from .env.",
     )
     parser.add_argument(
         "--template",
-        default="agentgateway/config.template.yaml",
-        help="Config template path (default: agentgateway/config.template.yaml)",
+        default="infra/agentgateway/config.template.yml",
+        help="Config template path (default: infra/agentgateway/config.template.yml)",
     )
     parser.add_argument(
         "--output",
-        default="agentgateway/config.generated.yaml",
-        help="Output path (default: agentgateway/config.generated.yaml)",
+        default="infra/agentgateway/config.yml",
+        help="Output path (default: infra/agentgateway/config.yml)",
     )
     parser.add_argument("--provider", help="Override LLM_UPSTREAM_PROVIDER")
     parser.add_argument("--base-url", help="Override LLM_UPSTREAM_BASE_URL")

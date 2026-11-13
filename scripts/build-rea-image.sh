@@ -24,7 +24,7 @@ fi
 
 GOOSE_IMAGE="$IMAGE" \
 GOOSE_JOB_BASE_IMAGE="$BASE_IMAGE" \
-GOOSE_JOB_DOCKERFILE=goose_job/Dockerfile.rea \
+GOOSE_JOB_DOCKERFILE=stall/reversing/Dockerfile \
   ./scripts/build-goose-image.sh
 
 echo "Built $IMAGE"

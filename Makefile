@@ -3,15 +3,17 @@ SHELL := /usr/bin/env bash
 
 VENV ?= .venv
 PYTHON ?= python3
-ENGINE ?= podman
-COMPOSE ?= $(ENGINE) compose
-CONTAINER ?= $(ENGINE)
+COMPOSE ?= podman compose -f compose.yaml
+CONTAINER ?= podman
 APP_IMAGE ?= kafkallm-app:latest
+GUI_IMAGE ?= kafkallm-gui:latest
+export KAFKALLM_APP_IMAGE := $(APP_IMAGE)
+export KAFKALLM_GUI_IMAGE := $(GUI_IMAGE)
 PYTEST := $(VENV)/bin/pytest
 RUFF := $(VENV)/bin/ruff
 VENV_STAMP := $(VENV)/.kafkallm-installed
 
-.PHONY: help setup gui-auth gui-auth-force gateway-config doctor bootstrap network images app-image rea-image up down restart logs ps test lint format venv clean prune lock reset
+.PHONY: help setup gui-auth gui-auth-force gateway-config doctor bootstrap network images proxy-image app-image gui-image rea-image up down restart logs ps test lint format venv clean prune lock reset
 
 help: ## Show this help
 	@printf "%-14s %s\n" "target" "description"
@@ -37,16 +39,22 @@ bootstrap: setup network images up ## One-command first start (after .env is val
 network: ## Create the isolated IPv6 Podman network (run once per host)
 	./scripts/init-job-network.sh
 
-images: ## Build the default goose job image into rootless Podman
+images: proxy-image ## Build the default sandbox and proxy images
 	./scripts/build-goose-image.sh
 
-app-image: ## Build the worker/GUI image with the selected engine
+proxy-image: ## Build the distroless allowlisting proxy image
+	./scripts/build-proxy-image.sh
+
+app-image: ## Build the worker image
 	$(CONTAINER) build -t $(APP_IMAGE) .
+
+gui-image: ## Build the standalone distroless GUI image
+	$(CONTAINER) build -f tools/gui/Dockerfile -t $(GUI_IMAGE) .
 
 rea-image: ## Build the optional REA + Ghidra job image
 	./scripts/build-rea-image.sh
 
-up: gateway-config gui-auth ## Build the app image and start the control plane
+up: gateway-config gui-auth proxy-image gui-image ## Build the app image and start the control plane
 	./scripts/prepare-job-root.sh
 	$(CONTAINER) build -t $(APP_IMAGE) .
 	-$(COMPOSE) --profile storage down --remove-orphans

@@ -1,0 +1,26 @@
+# Goose configuration copied into the job microVM. This is the general
+# Goose config.yaml: the extensions section configures MCP servers, while
+# other keys can set general Goose options.
+#
+# Copy this file to the host directory configured by
+# GOOSE_JOB_CONFIG_DIR, usually:
+#
+#   ~/.local/share/kafkallm/config/config.yaml
+#
+# The worker copies that directory into the goose microVM at
+# /opt/kafkallm/config, and the entrypoint copies it to
+# $GOOSE_PATH_ROOT/config before every run. Goose requires the file name
+# config.yaml.
+#
+# MCP servers must already be present in the image or in the tools directory
+# (GOOSE_JOB_TOOLS_DIR -> /opt/kafkallm/tools). Jobs have no web access, so
+# stdio MCP servers are the useful kind here.
+extensions:
+  # example-local-mcp:
+  #   enabled: true
+  #   type: stdio
+  #   name: example-local-mcp
+  #   cmd: /opt/kafkallm/tools/bin/example-mcp-server
+  #   args: []
+  #   envs:
+  #     EXAMPLE_SETTING: value

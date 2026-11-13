@@ -9,7 +9,9 @@ from typing import Any
 
 import pytest
 
-_PROXY_PATH = Path(__file__).resolve().parents[1] / "goose_job" / "gateway_proxy.py"
+_PROXY_PATH = (
+    Path(__file__).resolve().parents[1] / "infra" / "proxy" / "gateway_proxy.py"
+)
 _SPEC = importlib.util.spec_from_file_location("kafkallm_gateway_proxy", _PROXY_PATH)
 assert _SPEC is not None and _SPEC.loader is not None
 gateway_proxy = importlib.util.module_from_spec(_SPEC)

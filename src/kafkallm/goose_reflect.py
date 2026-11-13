@@ -15,6 +15,7 @@ from kafkallm.goose_errors import JobCancelledError, WorkerShutdown
 from kafkallm.goose_output import NO_OUTPUT_ERROR, parse_goose_run
 from kafkallm.goose_scripts import _REFLECT_PROMPT, _REFLECT_RUN_SCRIPT
 from kafkallm.models import Job
+from kafkallm.sandbox_archive import copy_from_container
 from kafkallm.skills import copy_skills, merge_skills
 
 logger = logging.getLogger(__name__)
@@ -46,10 +47,9 @@ def run_reflect(
     container: Any | None = None
     try:
         # Keep the reflect workspace next to, not inside, the main job
-        # directory. The guest root may take ownership of the main
-        # workspace root, which would leave the worker unable to create a
-        # subdirectory there. The shared job root stays writable for the
-        # worker, the name is random, and the main microVM never sees it.
+        # directory so the main microVM never sees the learning pass. The
+        # worker and the reflect guest run as the same host user, so the
+        # shared job root stays writable for both.
         reflect_workdir = Path(
             tempfile.mkdtemp(
                 prefix=".reflect-",
@@ -65,13 +65,6 @@ def run_reflect(
         (bundle / "run-reflect.sh").write_text(_REFLECT_RUN_SCRIPT, encoding="utf-8")
         (bundle / "reflect-prompt.txt").write_text(_REFLECT_PROMPT, encoding="utf-8")
         os.chmod(bundle / "run-reflect.sh", 0o755)
-        for directory in (
-            reflect_workdir,
-            reflect_workdir / ".claude",
-            control_dir,
-        ):
-            os.chmod(directory, 0o777)
-        os.chmod(skills_dir, 0o777)
         os.chmod(bundle, 0o755)
         copied = copy_skills(Path(runner.settings.goose_job_skills_dir), skills_dir)
         if audit and (copied.rejected or copied.copied):
@@ -103,9 +96,21 @@ def run_reflect(
         )
         runner._set_active(container)
         container.start()
+        mirror = runner._sandbox_mirror(
+            container,
+            reflect_workdir / ".kafkallm",
+            ("reflect.jsonl", "reflect.err", "reflect.exit"),
+        )
         reflect_deadline = min(deadline, time.monotonic() + reflect_seconds)
         reflect_exit, timed_out = runner._wait(
-            container, reflect_deadline, heartbeat=heartbeat
+            container, reflect_deadline, heartbeat=heartbeat, mirror=mirror
+        )
+        mirror.sync()
+        copy_from_container(
+            container,
+            "/workspace",
+            reflect_workdir,
+            include={".kafkallm", ".claude"},
         )
         if timed_out:
             if audit:

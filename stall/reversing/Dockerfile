@@ -1,11 +1,11 @@
-# Reverse-engineering job sandbox. It extends the normal goose/goosetown image
-# with REA (https://github.com/morluto/rea), Ghidra, Kuna, JADX, Frida, JDK 21,
-# and common RE tools. Build it into the rootless Podman storage:
+# Reverse-engineering job sandbox. It extends the standard job image with REA
+# (https://github.com/morluto/rea), Ghidra, Kuna, JADX, Frida, JDK 21, and
+# common RE tools. Build it into the rootless Podman storage:
 #
 #   ./scripts/build-goose-image.sh
 #   ./scripts/build-rea-image.sh
 #
-# Then submit a job with sandbox=reverse. The normal image is unchanged and
+# Then submit a job with sandbox=reverse. The standard image is unchanged and
 # remains the default.
 ARG BASE_IMAGE=kafkallm-goose-job:latest
 
@@ -88,7 +88,6 @@ COPY --from=downloads \
 COPY --from=downloads \
     /tmp/jadx-headless-mcp.jar \
     /opt/kafkallm/jadx-headless-mcp-all.jar
-COPY LICENSE /usr/share/licenses/jadx-headless-mcp/LICENSE
 
 RUN tar -xzf /tmp/node.tar.gz -C /usr/local --strip-components=1 \
     && mkdir -p /opt/java/openjdk \
@@ -123,15 +122,15 @@ RUN mkdir -p /opt/kuna \
 # Keep the standalone Frida CLI available alongside REA's bundled Frida
 # bindings. REA uses its own Node integration; this is for manual analysis.
 # The REA image is optional; the pinned Python deps live in
-# goose_job/requirements-rea.txt.
-COPY goose_job/requirements-rea.txt /tmp/requirements-rea.txt
+# stall/reversing/requirements.txt.
+COPY stall/reversing/requirements.txt /tmp/requirements.txt
 RUN python3 -m venv /opt/frida \
     && /opt/frida/bin/pip install --no-cache-dir --disable-pip-version-check \
-        --timeout 120 --retries 10 -r /tmp/requirements-rea.txt \
+        --timeout 120 --retries 10 -r /tmp/requirements.txt \
     && for tool in /opt/frida/bin/frida*; do \
         ln -sf "$tool" /usr/local/bin/; \
     done \
-    && rm -f /tmp/requirements-rea.txt
+    && rm -f /tmp/requirements.txt
 
 # Goose starts this as a local stdio MCP server with
 # --with-extension rea:/opt/kafkallm/rea-mcp.

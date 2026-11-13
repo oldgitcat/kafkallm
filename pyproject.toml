@@ -7,7 +7,6 @@ name = "kafkallm"
 version = "0.1.0"
 description = "Gänsestall: Kafka-based goose/goosetown job processing in isolated microVMs"
 readme = "README.md"
-license = "Apache-2.0"
 requires-python = ">=3.12"
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -41,13 +40,15 @@ Issues = "https://github.com/oldgitcat/kafkallm/issues"
 kafkallm = "kafkallm.cli:main"
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["src", "."]
+include = ["kafkallm*", "tools*"]
 
 [tool.setuptools.package-data]
-kafkallm = ["static/*.html", "static/*.css", "static/*.js"]
+"tools.gui" = ["static/*.html", "static/*.css", "static/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = "-q"
 markers = [
     "integration: requires a running Kafka broker",

@@ -112,8 +112,8 @@ def test_gateway_config_check_validates_with_agentgateway(
     tmp_path, monkeypatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    config = tmp_path / "agentgateway" / "config.generated.yaml"
-    config.parent.mkdir()
+    config = tmp_path / "infra" / "agentgateway" / "config.yml"
+    config.parent.mkdir(parents=True)
     config.write_text("llm: {}\n", encoding="utf-8")
     monkeypatch.setattr(doctor.shutil, "which", lambda _: "/usr/bin/podman")
     calls: list[list[str]] = []
@@ -145,8 +145,8 @@ def test_gateway_config_check_validates_with_agentgateway(
 
 def test_gateway_config_check_reports_an_invalid_config(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
-    config = tmp_path / "agentgateway" / "config.generated.yaml"
-    config.parent.mkdir()
+    config = tmp_path / "infra" / "agentgateway" / "config.yml"
+    config.parent.mkdir(parents=True)
     config.write_text("llm: {}\n", encoding="utf-8")
     monkeypatch.setattr(doctor.shutil, "which", lambda _: "/usr/bin/podman")
 

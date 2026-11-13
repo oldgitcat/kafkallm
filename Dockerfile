@@ -2,8 +2,7 @@ FROM docker.io/library/python:3.12-slim-bookworm@sha256:0f086103b026048cc50cb5da
 
 LABEL org.opencontainers.image.title="Kafkallm" \
       org.opencontainers.image.description="Kafka-backed goose jobs in isolated microVMs" \
-      org.opencontainers.image.source="https://github.com/oldgitcat/kafkallm" \
-      org.opencontainers.image.licenses="Apache-2.0"
+      org.opencontainers.image.source="https://github.com/oldgitcat/kafkallm"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
@@ -12,7 +11,8 @@ WORKDIR /app
 
 COPY pyproject.toml README.md constraints.txt ./
 COPY src ./src
-COPY agents ./agents
+COPY tools ./tools
+COPY gaense/agents ./gaense/agents
 
 RUN pip install --no-cache-dir -c constraints.txt . \
     && useradd --create-home --uid 10001 appuser

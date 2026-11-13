@@ -28,7 +28,7 @@ from kafkallm.agentgateway_config import (
     KEY_OPTIONAL_PROVIDERS as PROVIDER_KEY_OPTIONAL,
 )
 from kafkallm.dotenv import load_dotenv
-from kafkallm.settings import Settings
+from kafkallm.settings import Settings, default_job_root
 
 AGENTGATEWAY_IMAGE = os.getenv(
     "AGENTGATEWAY_IMAGE", "cr.agentgateway.dev/agentgateway:v1.7.0"
@@ -175,7 +175,7 @@ def _command_check(name: str, command: str, version_args: list[str]) -> Check:
 
 def gateway_config_check(values: Mapping[str, str]) -> Check:
     """Validate the rendered agentgateway config with the real binary."""
-    config_path = Path("agentgateway/config.generated.yaml")
+    config_path = Path("infra/agentgateway/config.yml")
     if not config_path.is_file():
         return Check(
             "Gateway config",
@@ -228,11 +228,11 @@ def gateway_config_check(values: Mapping[str, str]) -> Check:
             "--rm",
             *env_args,
             "-v",
-            f"{config_path.resolve()}:/config/config.yaml:ro,z",
+            f"{config_path.resolve()}:/config/config.yml:ro,z",
             AGENTGATEWAY_IMAGE,
             "--validate-only",
             "-f",
-            "/config/config.yaml",
+            "/config/config.yml",
         ],
         timeout=30,
     )
@@ -322,16 +322,6 @@ def host_checks(
 
     checks.append(gateway_config_check(values))
 
-    docker = shutil.which("docker")
-    checks.append(
-        Check(
-            "Docker (optional)",
-            "ok" if docker is not None else "warn",
-            "available" if docker is not None else "not installed",
-            "Only needed for 'make ENGINE=docker ...'.",
-        )
-    )
-
     kvm = Path("/dev/kvm")
     kvm_ok = kvm.exists() and os.access(kvm, os.R_OK | os.W_OK)
     checks.append(
@@ -377,8 +367,24 @@ def host_checks(
                 "Run 'make images'.",
             )
         )
+        proxy_image = _run(
+            ["podman", "image", "exists", settings.goose_job_proxy_image],
+            timeout=10,
+        )
+        checks.append(
+            Check(
+                "Proxy image",
+                (
+                    "ok"
+                    if proxy_image is not None and proxy_image.returncode == 0
+                    else "warn"
+                ),
+                settings.goose_job_proxy_image,
+                "Run 'make proxy-image'.",
+            )
+        )
 
-    job_root = Path(values.get("KAFKALLM_JOB_ROOT", "/var/lib/kafkallm"))
+    job_root = Path(values.get("KAFKALLM_JOB_ROOT") or default_job_root())
     root_ok = job_root.is_dir() and os.access(job_root, os.W_OK)
     checks.append(
         Check(

@@ -122,7 +122,7 @@ and its data volume differ:
 - The new volume is `kafka-data`, mounted at `/var/lib/kafka/data`.
 - Kafka does not read the old `redpanda-data` volume. Start the new stack and
   verify it, then remove the old volume when you no longer need its topics, for
-  example `docker volume rm kafkallm_redpanda-data` (adjust the Compose project
+  example `podman volume rm kafkallm_redpanda-data` (adjust the Compose project
   prefix if needed).
 - The compacted `agents.state` and `sandboxes.state` topics start empty, so the
   default flock and the two built-in sandboxes are seeded again on the first
@@ -210,14 +210,14 @@ the wrapper and builtins. Possible future work, not required now:
 ## Repository layout
 
 ```text
-src/kafkallm/       worker, GUI, job store, doctor, Kafka, state, agents,
+src/kafkallm/       worker, job store, doctor, Kafka, state, agents,
                     sandboxes, goose runtime, output parsing, models
-goose_job/          job image, goosetown template, skills, config and tool examples
-agents/             built-in agent profile defaults
-agentgateway/       LLM gateway template and generated provider config
+tools/gui/          browser UI and static assets
+gaense/             built-in agents, skills, template, Goose config
+stall/              sandbox images and REA requirements
+infra/              Kafka, MLflow, S3, agentgateway, Caddy, and proxy
 scripts/            setup, doctor, config render, image builds, network init, sandbox helpers
 tests/              unit tests
-.github/workflows/  CI (lint, tests, Compose validation)
 Makefile            one-command setup, diagnostics, build, and run targets
 ```
 

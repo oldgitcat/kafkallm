@@ -1,6 +1,6 @@
 """Validated handling of the persistent goosetown skill store.
 
-The persistent store is never mounted writable into a job. Every job gets a
+The persistent store is never copied writable into a job. Every job gets a
 disposable copy, and a separate learning-pass microVM may propose changes. The
 worker validates and merges those changes; this module owns both operations.
 
@@ -182,8 +182,9 @@ def _chmod_tree(directory: Path, file_bits: int, directory_bits: int) -> None:
 def copy_skills(source: Path, target: Path) -> CopyResult:
     """Copy validated skills from ``source`` into the disposable ``target``.
 
-    Existing entries in ``target`` are left alone. The copy is made writable so
-    the job microVM can edit it; only the worker can write the persistent store.
+    Existing entries in ``target`` are left alone. The copy is made writable by
+    its owner so the job microVM, which runs as the same host user, can edit
+    it; only the worker can write the persistent store.
     """
     source = Path(source)
     target = Path(target)
@@ -194,7 +195,7 @@ def copy_skills(source: Path, target: Path) -> CopyResult:
         target.mkdir(parents=True, exist_ok=True)
     except OSError:
         return result
-    os.chmod(target, 0o777)
+    os.chmod(target, os.stat(target).st_mode & 0o777 | 0o700)
     for index, entry in enumerate(
         sorted(os.scandir(source), key=lambda item: item.name)
     ):
@@ -231,10 +232,10 @@ def copy_skills(source: Path, target: Path) -> CopyResult:
                 data = _read_regular_file(file_path)
                 destination_file.write_bytes(data)
                 source_mode = file_path.stat(follow_symlinks=False).st_mode & 0o777
-                os.chmod(destination_file, source_mode | 0o666)
+                os.chmod(destination_file, source_mode | 0o600)
                 result.files += 1
             if destination.is_dir():
-                _chmod_tree(destination, 0o666, 0o777)
+                _chmod_tree(destination, 0o600, 0o700)
         except (OSError, SkillValidationError) as exc:
             result.rejected.append((name, f"copy failed: {exc}"))
             continue

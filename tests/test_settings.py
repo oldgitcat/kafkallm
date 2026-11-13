@@ -53,3 +53,40 @@ def test_gui_port_must_be_a_valid_tcp_port(monkeypatch: pytest.MonkeyPatch) -> N
 
     with pytest.raises(SettingsError, match="GUI_PORT"):
         Settings.from_env()
+
+
+def test_job_directories_derive_from_the_job_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.setenv("KAFKALLM_JOB_ROOT", str(tmp_path))
+    for name in (
+        "WORKSPACE_ROOT",
+        "GOOSE_JOB_WORKSPACE_ROOT",
+        "GOOSE_JOB_SKILLS_DIR",
+        "GOOSE_JOB_AGENTS_DIR",
+        "GOOSE_JOB_TOOLS_DIR",
+        "GOOSE_JOB_CONFIG_DIR",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    settings = Settings.from_env()
+
+    assert settings.workspace_root == str(tmp_path / "staging")
+    assert settings.goose_job_workspace_root == str(tmp_path / "jobs")
+    assert settings.goose_job_skills_dir == str(tmp_path / "skills")
+    assert settings.goose_job_agents_dir == str(tmp_path / "agents")
+    assert settings.goose_job_tools_dir == str(tmp_path / "tools")
+    assert settings.goose_job_config_dir == str(tmp_path / "config")
+
+
+def test_podman_socket_becomes_a_unix_docker_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PODMAN_SOCKET", "/run/user/1234/podman/podman.sock")
+    monkeypatch.delenv("GOOSE_JOB_DOCKER_HOST", raising=False)
+
+    settings = Settings.from_env()
+
+    assert settings.goose_job_docker_host == (
+        "unix:///run/user/1234/podman/podman.sock"
+    )

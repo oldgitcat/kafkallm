@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import io
 import json
 import os
+import tarfile
+import tempfile
 import time
 from collections.abc import Callable
 from dataclasses import replace
@@ -112,6 +115,50 @@ class FakeContainer:
             "Image": client.image_id,
             "NetworkSettings": {"Networks": {}},
         }
+        self.rootfs = client.rootfs / container_id
+        self.rootfs.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def workspace(self) -> Path:
+        return self.rootfs / "workspace"
+
+    def _path(self, path: str) -> Path:
+        return self.rootfs / Path(path).relative_to("/")
+
+    def put_archive(self, path: str, data: Any) -> bool:
+        destination = self._path(path)
+        destination.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(fileobj=data, mode="r:*") as archive:
+            for member in archive:
+                relative = Path(member.name)
+                if relative.is_absolute() or ".." in relative.parts:
+                    continue
+                target = destination / relative
+                if member.isdir():
+                    target.mkdir(parents=True, exist_ok=True)
+                elif member.isfile():
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    source = archive.extractfile(member)
+                    if source is not None:
+                        target.write_bytes(source.read())
+        return True
+
+    def get_archive(self, path: str) -> tuple[Any, dict[str, Any]]:
+        source = self._path(path)
+        if not source.exists():
+            raise NotFound(path)
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w") as archive:
+            root_name = Path(path).name
+            if source.is_dir():
+                archive.add(source, arcname=root_name, recursive=True)
+            else:
+                archive.add(source, arcname=root_name)
+        buffer.seek(0)
+        return iter([buffer.read()]), {
+            "name": Path(path).name,
+            "isDir": source.is_dir(),
+        }
 
     def start(self) -> None:
         if not self.is_job:
@@ -183,10 +230,13 @@ class FakeApi:
             role = str((body.get("Labels") or {}).get("kafkallm.role", "main"))
             if role == "reflect":
                 self.client.reflect_body = body
+                self.client.reflect_container = container
             else:
                 self.client.create_body = body
                 self.client.job_body = body
                 self.client.main_body = body
+                self.client.create_container = container
+                self.client.main_container = container
         else:
             self.client.proxy_body = body
         return FakeResponse(201, {"Id": container_id})
@@ -221,14 +271,22 @@ class FakeImages:
         self.client = client
 
     def get(self, name: str) -> Any:
-        if not self.client.image_available:
+        available = (
+            self.client.proxy_image_available
+            if name == self.client.proxy_image
+            else self.client.image_available
+        )
+        if not available:
             raise RuntimeError("no such image")
         return SimpleNamespace(id=self.client.image_id, tags=[name])
 
     def pull(self, name: str, **kwargs: Any) -> Any:
         del kwargs
         self.client.pulled.append(name)
-        self.client.image_available = True
+        if name == self.client.proxy_image:
+            self.client.proxy_image_available = True
+        else:
+            self.client.image_available = True
         return SimpleNamespace(id=self.client.image_id, tags=[name])
 
 
@@ -238,14 +296,20 @@ class FakeDockerClient:
         self.images = FakeImages(self)
         self.networks = FakeNetworks()
         self.api = FakeApi(self)
+        self.rootfs = Path(tempfile.mkdtemp(prefix="kafkallm-fake-rootfs-"))
         self.create_body: dict[str, Any] = {}
         self.main_body: dict[str, Any] = {}
         self.job_body: dict[str, Any] = {}
         self.reflect_body: dict[str, Any] = {}
         self.proxy_body: dict[str, Any] = {}
+        self.create_container: FakeContainer | None = None
+        self.main_container: FakeContainer | None = None
+        self.reflect_container: FakeContainer | None = None
         self.create_error: str | None = None
         self.image_available = True
+        self.proxy_image_available = True
         self.image_id = "image-id"
+        self.proxy_image = "proxy:test"
         self.exit_status = "exited"
         self.exit_code = 0
         self.reflect_exit_code = 0
@@ -263,12 +327,6 @@ class FakeDockerClient:
     def close(self) -> None:
         self.closed = True
 
-    @property
-    def workdir(self) -> Path:
-        body = self.main_body or self.create_body
-        binds = body.get("HostConfig", {}).get("Binds", [])
-        return Path(binds[0].split(":")[0])
-
     def write_results(self, container: FakeContainer) -> None:
         result_dir = self._result_dir(container)
         result_dir.mkdir(parents=True, exist_ok=True)
@@ -279,13 +337,7 @@ class FakeDockerClient:
 
     @staticmethod
     def _result_dir(container: FakeContainer) -> Path:
-        binds = container.body.get("HostConfig", {}).get("Binds", [])
-        for bind in binds:
-            source, _, destination = bind.partition(":")
-            if destination.startswith("/workspace/.kafkallm:"):
-                return Path(source)
-        source = binds[0].split(":")[0]
-        return Path(source) / ".kafkallm"
+        return container.workspace / ".kafkallm"
 
 
 class FakeAudit:
@@ -299,15 +351,15 @@ class FakeAudit:
 
 def _settings(**overrides: Any) -> Settings:
     values: dict[str, Any] = {
-        "goose_job_docker_host": "tcp://podman-proxy:2375",
+        "goose_job_docker_host": "unix:///run/user/1000/podman/podman.sock",
         "goose_image": "goose:test",
         "goose_re_image": "rea:test",
+        "goose_job_proxy_image": "proxy:test",
         "goose_job_ram_mib": 2048,
         "goose_job_cpus": 2,
         "goose_job_use_passt": False,
-        "goose_job_workspace_root": "/var/lib/kafkallm/jobs",
-        "goose_job_skills_dir": "/var/lib/kafkallm/skills",
-        "goose_job_tmpfs_size": "256m",
+        "goose_job_workspace_root": "/home/test/.local/share/kafkallm/jobs",
+        "goose_job_skills_dir": "/home/test/.local/share/kafkallm/skills",
         "goose_job_max_turns": 20,
         "goose_job_subagent_max_turns": 10,
         "goose_job_memory_limit": "4g",
@@ -405,13 +457,17 @@ def test_vm_run_starts_microvm_and_collects_result(tmp_path: Path) -> None:
     assert annotations["run.oci.handler"] == "krun"
     assert annotations["krun.ram_mib"] == "2048"
     assert annotations["krun.cpus"] == "2"
-    binds = body["HostConfig"]["Binds"]
-    assert any(bind.endswith(":/workspace:rw,z") for bind in binds)
-    assert any(bind.endswith(":/jobboot:ro,z") for bind in binds)
-    assert any("/opt/kafkallm/skills-persistent:ro,z" in bind for bind in binds)
-    assert not any("/workspace/.claude/skills" in bind for bind in binds)
-    assert any("/opt/kafkallm/tools:ro,z" in bind for bind in binds)
-    assert any("/opt/kafkallm/config:ro,z" in bind for bind in binds)
+    binds = body["HostConfig"].get("Binds", [])
+    assert binds == []
+    assert "Tmpfs" not in body["HostConfig"]
+    assert client.main_container is not None
+    root = client.main_container.rootfs
+    assert (root / "workspace" / "inputs").is_dir()
+    assert (root / "workspace" / ".claude" / "agents").is_dir()
+    assert (root / "jobboot" / "run-job.sh").is_file()
+    assert (root / "opt" / "kafkallm" / "skills-persistent").is_dir()
+    assert (root / "opt" / "kafkallm" / "tools").is_dir()
+    assert (root / "opt" / "kafkallm" / "config").is_dir()
     assert body["Image"] == "goose:test"
     assert body["HostConfig"]["Memory"] == 4 * 1024**3
     assert body["HostConfig"]["PidsLimit"] == 512
@@ -433,6 +489,8 @@ def test_vm_run_starts_microvm_and_collects_result(tmp_path: Path) -> None:
     ]
     assert "LISTEN_PORT=8091" in client.proxy_body["Env"]
     assert "UPSTREAM_HOST=host.containers.internal" in client.proxy_body["Env"]
+    assert client.proxy_body["Image"] == "proxy:test"
+    assert client.proxy_body["Entrypoint"] == ["/usr/bin/python3"]
 
     assert [event["type"] for event in audit.events] == [
         "goose.started",
@@ -448,18 +506,14 @@ def test_vm_run_copies_outputs_and_removes_workdir(tmp_path: Path) -> None:
     runner = GooseJobRunner(_settings_for(tmp_path), client=client)
     workspace = _workspace(tmp_path)
 
-    original_create = client.api._post
-
-    def _post(url: str, **kwargs: Any) -> FakeResponse:
-        response = original_create(url, **kwargs)
-        if (kwargs.get("params") or {}).get("name"):
-            return response
-        outputs = client.workdir / "outputs"
+    def write_output(container: FakeContainer) -> None:
+        if container.role != "main":
+            return
+        outputs = container.workspace / "outputs"
         outputs.mkdir(parents=True, exist_ok=True)
         (outputs / "result.txt").write_text("artifact", encoding="utf-8")
-        return response
 
-    client.api._post = _post  # type: ignore[method-assign]
+    client.on_start = write_output
 
     result = runner.run(
         job=Job(instruction="Do the job"),
@@ -469,7 +523,7 @@ def test_vm_run_copies_outputs_and_removes_workdir(tmp_path: Path) -> None:
 
     assert result.text == "Completed"
     assert (workspace / "outputs" / "result.txt").read_text() == "artifact"
-    assert not client.workdir.exists()
+    assert not list((tmp_path / "jobs").glob("goose-vm-*"))
 
 
 def test_vm_provider_error_is_propagated(tmp_path: Path) -> None:
@@ -800,13 +854,12 @@ def test_run_script_enables_registered_sandbox_extensions() -> None:
     assert '--with-extension "$extension"' in _VM_RUN_SCRIPT
     assert "extension_path=${extension#*:}" in _VM_RUN_SCRIPT
     assert "TMPDIR=/workspace/.scratch/tmp" in _VM_RUN_SCRIPT
-    assert "chmod -R a+rwX /workspace/.scratch" in _VM_RUN_SCRIPT
-    # The guest root can take ownership of the workspace root, so both scripts
-    # must make the whole tree writable on every exit path for worker cleanup.
-    assert "trap cleanup_permissions EXIT INT TERM" in _VM_RUN_SCRIPT
-    assert "chmod -R a+rwX /workspace 2>/dev/null" in _VM_RUN_SCRIPT
-    assert "trap cleanup_permissions EXIT INT TERM" in _REFLECT_RUN_SCRIPT
-    assert "chmod -R a+rwX /workspace 2>/dev/null" in _REFLECT_RUN_SCRIPT
+    # The worker and the guest root run as the same host user, so neither
+    # script needs world-writable modes.
+    assert "chmod -R a+rwX" not in _VM_RUN_SCRIPT
+    assert "chmod 0777" not in _VM_RUN_SCRIPT
+    assert "chmod -R a+rwX" not in _REFLECT_RUN_SCRIPT
+    assert "chmod 0777" not in _REFLECT_RUN_SCRIPT
     assert "seed_skills /opt/kafkallm/sandbox-skills" in _VM_RUN_SCRIPT
     assert "--output-format stream-json" in _VM_RUN_SCRIPT
     assert "stdbuf -oL -eL ./goose" in _VM_RUN_SCRIPT
@@ -1603,14 +1656,6 @@ def test_log_collector_emits_delegation_events(tmp_path: Path) -> None:
     assert "agent.returned" in kinds
 
 
-def _bind_source(body: dict[str, Any], destination: str) -> Path:
-    for bind in body["HostConfig"]["Binds"]:
-        source, _, target = bind.partition(":")
-        if target.startswith(destination):
-            return Path(source)
-    raise AssertionError(f"no bind for {destination}: {body['HostConfig']['Binds']}")
-
-
 def test_main_bundle_has_no_learning_pass_assets(tmp_path: Path) -> None:
     runner = GooseJobRunner(_settings_for(tmp_path))
     workdir = tmp_path / "workdir"
@@ -1637,7 +1682,7 @@ def test_main_vm_skill_edits_stay_in_the_disposable_copy(tmp_path: Path) -> None
     def edit_copy(container: FakeContainer) -> None:
         if container.role != "main":
             return
-        workdir = _bind_source(container.body, "/workspace")
+        workdir = container.workspace
         skill = workdir / ".claude" / "skills" / "guard" / "SKILL.md"
         skill.parent.mkdir(parents=True, exist_ok=True)
         skill.write_text("# Guard\npoisoned by the job\n", encoding="utf-8")
@@ -1712,26 +1757,15 @@ def test_reflect_vm_uses_a_fresh_workspace_and_safe_mounts(tmp_path: Path) -> No
 
     assert main_removed == [True]
 
-    main_workdir = Path(client.create_body["HostConfig"]["Binds"][0].split(":")[0])
     body = client.reflect_body
     assert body["Labels"]["kafkallm.role"] == "reflect"
-    reflect_workdir = _bind_source(body, "/workspace")
-    jobs_root = Path(runner.settings.goose_job_workspace_root)
-    assert reflect_workdir.parent == jobs_root
-    assert reflect_workdir != main_workdir
-    assert not reflect_workdir.is_relative_to(main_workdir)
-    assert reflect_workdir.name.startswith(".reflect-")
-    assert not reflect_workdir.exists()
-
-    binds = body["HostConfig"]["Binds"]
-    destinations = [bind.partition(":")[2] for bind in binds]
-    assert destinations[0].startswith("/workspace:rw")
-    assert any(dest.startswith("/workspace/outputs:ro") for dest in destinations)
-    assert any(dest.startswith("/jobboot:ro") for dest in destinations)
-    assert not any("skills" in dest for dest in destinations)
-    assert not any("/workspace/inputs" in dest for dest in destinations)
-    assert not any("/workspace/.kafkallm" in dest for dest in destinations)
-    assert not any(bind.partition(":")[0] == str(main_workdir) for bind in binds)
+    assert body["HostConfig"].get("Binds", []) == []
+    assert client.reflect_container is not None
+    reflect_root = client.reflect_container.rootfs
+    assert (reflect_root / "jobboot" / "run-reflect.sh").is_file()
+    assert (reflect_root / "workspace" / "outputs").is_dir()
+    assert not (reflect_root / "workspace" / "inputs").exists()
+    assert not (reflect_root / "opt" / "kafkallm" / "skills-persistent").exists()
 
     environment = body["Env"]
     assert not any(item.startswith("KAFKALLM_SANDBOX=") for item in environment)
@@ -1753,7 +1787,7 @@ def test_reflect_merges_a_validated_skill_into_the_store(tmp_path: Path) -> None
     def write_skill(container: FakeContainer) -> None:
         if container.role != "reflect":
             return
-        root = _bind_source(container.body, "/workspace")
+        root = container.workspace
         learned = root / ".claude" / "skills" / "learned"
         learned.mkdir(parents=True)
         (learned / "SKILL.md").write_text("# Learned\nprocedure\n", encoding="utf-8")
@@ -1788,7 +1822,7 @@ def test_failed_reflect_does_not_merge_skills(tmp_path: Path) -> None:
     def write_skill(container: FakeContainer) -> None:
         if container.role != "reflect":
             return
-        root = _bind_source(container.body, "/workspace")
+        root = container.workspace
         learned = root / ".claude" / "skills" / "learned"
         learned.mkdir(parents=True)
         (learned / "SKILL.md").write_text("# Learned\nprocedure\n", encoding="utf-8")
@@ -1819,7 +1853,7 @@ def test_symlinked_outputs_are_not_collected(tmp_path: Path) -> None:
     def write_outputs(container: FakeContainer) -> None:
         if container.role != "main":
             return
-        workdir = _bind_source(container.body, "/workspace")
+        workdir = container.workspace
         outputs = workdir / "outputs"
         outputs.mkdir(parents=True, exist_ok=True)
         (outputs / "result.txt").write_text("artifact", encoding="utf-8")
@@ -1878,7 +1912,7 @@ def test_reflect_vm_process_failure_does_not_merge_skills(tmp_path: Path) -> Non
     def write_skill(container: FakeContainer) -> None:
         if container.role != "reflect":
             return
-        root = _bind_source(container.body, "/workspace")
+        root = container.workspace
         learned = root / ".claude" / "skills" / "learned"
         learned.mkdir(parents=True)
         (learned / "SKILL.md").write_text("# Learned\nprocedure\n", encoding="utf-8")

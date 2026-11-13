@@ -1,4 +1,5 @@
-# goose job microVM image. Build it into the rootless Podman storage:
+# Standard job sandbox. Includes Debian, the pinned goose CLI, common tools,
+# and the goosetown template, skills, and license. Build it with:
 #   ./scripts/build-goose-image.sh
 #
 # The image intentionally contains no curl, wget, or other network clients in
@@ -48,10 +49,9 @@ RUN apt-get update \
     && mkdir -p /workspace /opt/data /opt/goosetown /opt/kafkallm
 
 COPY --from=goose-download /usr/local/goose/bin/goose /usr/local/goose/bin/goose
-COPY goose_job/template /opt/goosetown/template
-COPY goose_job/skills /opt/goosetown/skills
-COPY goose_job/LICENSE-goosetown /opt/goosetown/LICENSE
-COPY goose_job/gateway_proxy.py /opt/kafkallm/gateway_proxy.py
+COPY gaense/template /opt/goosetown/template
+COPY gaense/skills /opt/goosetown/skills
+COPY gaense/LICENSE-goosetown /opt/goosetown/LICENSE
 
 ENV GOOSE_BIN=/usr/local/goose/bin/goose \
     PATH=/usr/local/goose/bin:$PATH \

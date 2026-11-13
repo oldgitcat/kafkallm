@@ -49,6 +49,11 @@ from kafkallm.podman_api import (
 )
 from kafkallm.retry import RetryTimeout, retry_until
 from kafkallm.safe_fs import iter_regular_files, read_text_no_follow
+from kafkallm.sandbox_archive import (
+    copy_from_container,
+    copy_into_container,
+    read_container_file,
+)
 from kafkallm.sandboxes import SandboxStore, builtin_sandbox
 from kafkallm.settings import Settings
 from kafkallm.telemetry import get_tracer, set_content, set_error
@@ -65,20 +70,68 @@ _WORKDIR_LABEL = "kafkallm.workdir"
 _PROXY_NAME = "kafkallm-gateway-proxy"
 _PROXY_LABEL = "kafkallm.gateway_proxy"
 _JOB_PROXY_LABEL = "kafkallm.job_proxy"
-_PROXY_SCRIPT = "/opt/kafkallm/gateway_proxy.py"
+_PROXY_SCRIPT = "/app/gateway_proxy.py"
 
 _REFLECT_MIN_REMAINING_SECONDS = 60
 _SCHEDULE_RESERVE_SECONDS = 25
 _CONTAINER_POLL_SECONDS = 1.0
+_MIRROR_MAX_BYTES = 16 * 1024 * 1024
 
-# The job bundle is bind mounted read-only. The goosetown template and the
-# persistent skills live outside it. Every artifact is written to /workspace,
-# which is the host job directory.
+# Everything the job needs is copied into the container's writable layer before
+# it starts. Nothing from the host is bind mounted into the microVM.
 #
-# The persistent skill store is mounted read-only at /opt/kafkallm/skills-persistent.
+# The persistent skill store is copied to /opt/kafkallm/skills-persistent.
 # The job gets a disposable copy at /workspace/.claude/skills; the main microVM
 # can never write the shared store. The learning pass runs in a separate
 # microVM that starts after this one has exited.
+
+
+class _SandboxMirror:
+    """Append container control files to the worker's local job directory.
+
+    krun containers do not support ``exec``, so live activity is mirrored with
+    the archive API. Only the small control files are fetched; the final state
+    is copied out once the container exits.
+    """
+
+    def __init__(
+        self,
+        container: Any,
+        directory: Path,
+        names: tuple[str, ...],
+    ) -> None:
+        self.container = container
+        self.directory = directory
+        self.names = names
+        self.offsets = {name: 0 for name in names}
+        directory.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            (directory / name).touch()
+
+    def sync(self) -> None:
+        for name in self.names:
+            try:
+                data = read_container_file(
+                    self.container,
+                    f"/workspace/.kafkallm/{name}",
+                    max_bytes=_MIRROR_MAX_BYTES,
+                )
+            except Exception as exc:
+                logger.debug("Could not mirror sandbox file %s: %s", name, exc)
+                continue
+            if not data:
+                continue
+            offset = self.offsets[name]
+            if len(data) <= offset:
+                continue
+            try:
+                with (self.directory / name).open("ab") as handle:
+                    handle.write(data[offset:])
+            except OSError as exc:
+                logger.debug("Could not write mirrored sandbox file %s: %s", name, exc)
+                continue
+            self.offsets[name] = len(data)
+
 
 # Re-exported for callers and tests that used the old single-module layout.
 
@@ -88,8 +141,9 @@ class GooseJobRunner:
 
     The microVM runs the goosetown wrapper around the goose binary. Podman
     exposes a Docker compatible API, so the lifecycle uses ordinary container
-    calls; the runtime is selected through OCI annotations and the job bundle
-    is a bind mount because the guest filesystem lives inside the microVM.
+    calls; the runtime is selected through OCI annotations. Job data is copied
+    into the container root filesystem because the guest filesystem lives
+    inside the microVM.
     """
 
     def __init__(
@@ -147,6 +201,7 @@ class GooseJobRunner:
     def _prepare_runtime(self) -> bool:
         self.client.ping()
         self._ensure_image()
+        self._ensure_image(self.settings.goose_job_proxy_image)
         self._ensure_extension_dirs()
         self._ensure_job_network()
         self._ensure_proxy()
@@ -258,6 +313,7 @@ class GooseJobRunner:
         main_container: Any | None = None
         job_proxy: Any | None = None
         collector: _LogCollector | None = None
+        mirror: _SandboxMirror | None = None
         run_started = time.perf_counter()
 
         with get_tracer().start_as_current_span(
@@ -286,6 +342,11 @@ class GooseJobRunner:
                 )
                 self._set_active(main_container)
                 main_container.start()
+                mirror = _SandboxMirror(
+                    main_container,
+                    workdir / ".kafkallm",
+                    ("main.jsonl", "main.err"),
+                )
                 span.set_attribute("goose.container_id", main_container.id)
                 if log is not None:
                     log(
@@ -327,7 +388,18 @@ class GooseJobRunner:
                     )
 
                 exit_code, timed_out = self._wait(
-                    main_container, deadline, heartbeat=heartbeat
+                    main_container, deadline, heartbeat=heartbeat, mirror=mirror
+                )
+                if mirror is not None:
+                    mirror.sync()
+                if collector is not None:
+                    collector.stop()
+                    collector = None
+                copy_from_container(
+                    main_container,
+                    "/workspace",
+                    workdir,
+                    include={".kafkallm", "outputs"},
                 )
                 main_error = self._read_text(workdir, "main.err")
                 output, usage, steps, event_error = parse_goose_run(workdir, "main")
@@ -369,10 +441,10 @@ class GooseJobRunner:
                 self._collect_outputs(workdir, workspace)
                 if reflect_reserve and not timed_out:
                     # Remove the main microVM before creating the reflect
-                    # workspace below its mount. A lingering guest process must
-                    # not be able to observe or write the tree that the worker
-                    # later merges into the skill store. If removal fails, skip
-                    # the pass instead of trusting a VM that might still run.
+                    # workspace. A lingering guest process must not be able to
+                    # observe or write the tree that the worker later merges
+                    # into the skill store. If removal fails, skip the pass
+                    # instead of trusting a VM that might still run.
                     if not self._remove_container(main_container):
                         if audit:
                             audit.emit(
@@ -458,6 +530,14 @@ class GooseJobRunner:
         with self._active_lock:
             self._active_container = container
 
+    def _sandbox_mirror(
+        self,
+        container: Any,
+        directory: Path,
+        names: tuple[str, ...],
+    ) -> _SandboxMirror:
+        return _SandboxMirror(container, directory, names)
+
     def _sandbox_for(self, job: Job) -> SandboxSpec:
         """Resolve the environment (env, extensions, instructions) for a job.
 
@@ -503,7 +583,7 @@ class GooseJobRunner:
             self.client.images.pull(image)
         except Exception as exc:
             raise GooseJobRuntimeError(
-                f"goose image {image} is not available in the Podman storage "
+                f"image {image} is not available in the Podman storage "
                 f"and could not be pulled: {exc}. Run the matching build "
                 "script on the host if this is a local sandbox image."
             ) from exc
@@ -511,7 +591,7 @@ class GooseJobRunner:
             self.client.images.get(image)
         except Exception as exc:
             raise GooseJobRuntimeError(
-                f"goose image {image} is not available in the Podman storage."
+                f"image {image} is not available in the Podman storage."
             ) from exc
 
     def _ensure_extension_dirs(self) -> None:
@@ -574,7 +654,7 @@ class GooseJobRunner:
             if container is not None and not self._proxy_image_current(container):
                 logger.info(
                     "Recreating job gateway proxy: image %s changed",
-                    self.settings.goose_image,
+                    self.settings.goose_job_proxy_image,
                 )
                 self._remove_container(container)
                 container = None
@@ -597,14 +677,13 @@ class GooseJobRunner:
             return ipv6
 
     def _proxy_image_current(self, container: Any) -> bool:
-        """Return True when the proxy runs the current job image.
+        """Return True when the proxy runs the current proxy image.
 
-        The proxy script is baked into the job image. Reusing a container that
-        was created from an older image would keep an outdated allowlist (or
-        other proxy fixes) alive across worker restarts.
+        Reusing a container created from an older image would keep an outdated
+        allowlist (or other proxy fixes) alive across worker restarts.
         """
         try:
-            expected = self.client.images.get(self.settings.goose_image)
+            expected = self.client.images.get(self.settings.goose_job_proxy_image)
         except Exception:
             return False
         attrs = getattr(container, "attrs", None) or {}
@@ -628,8 +707,9 @@ class GooseJobRunner:
         if extra_env:
             environment.extend(f"{key}={value}" for key, value in extra_env.items())
         body = {
-            "Image": self.settings.goose_image,
-            "Cmd": ["/usr/bin/python3", _PROXY_SCRIPT],
+            "Image": self.settings.goose_job_proxy_image,
+            "Entrypoint": ["/usr/bin/python3"],
+            "Cmd": [_PROXY_SCRIPT],
             "Env": environment,
             "Labels": {_PROXY_LABEL: "1", **(labels or {})},
             "WorkingDir": "/",
@@ -830,22 +910,6 @@ class GooseJobRunner:
             persistent_skills.mkdir(parents=True, exist_ok=True)
         except OSError:
             logger.warning("Could not create skills directory %s", persistent_skills)
-        # Rootless Podman maps the job uid into a subuid range, so the worker's
-        # files are not owned by the job. Make the per-job directories writable
-        # so the microVM can write its results and its disposable skill copy.
-        for directory in (
-            workdir,
-            workdir / ".kafkallm",
-            workdir / ".claude",
-            skills_dir,
-            agents_dir,
-            workdir / "inputs",
-            workdir / "outputs",
-            bundle,
-        ):
-            os.chmod(directory, 0o777)
-        for agent_file in agents_dir.glob("*.md"):
-            os.chmod(agent_file, 0o644)
 
     def _create_container(
         self,
@@ -855,23 +919,48 @@ class GooseJobRunner:
         workdir: Path,
         proxy_ipv6: str,
     ) -> Any:
-        return self._create_microvm(
+        container = self._create_microvm(
             image=image,
             environment=environment,
             labels={**labels, _ROLE_LABEL: "main"},
-            binds=[
-                f"{workdir}:/workspace:rw,z",
-                f"{workdir}/bundle:/jobboot:ro,z",
-                (
-                    f"{self.settings.goose_job_skills_dir}:"
-                    "/opt/kafkallm/skills-persistent:ro,z"
-                ),
-                f"{self.settings.goose_job_tools_dir}:/opt/kafkallm/tools:ro,z",
-                f"{self.settings.goose_job_config_dir}:/opt/kafkallm/config:ro,z",
-            ],
             cmd=["/bin/sh", "/jobboot/run-job.sh"],
             proxy_ipv6=proxy_ipv6,
         )
+        try:
+            copy_into_container(
+                container,
+                "/workspace",
+                workdir,
+                exclude={"bundle"},
+            )
+            copy_into_container(
+                container,
+                "/",
+                workdir / "bundle",
+                prefix="jobboot",
+            )
+            copy_into_container(
+                container,
+                "/opt/kafkallm",
+                self.settings.goose_job_skills_dir,
+                prefix="skills-persistent",
+            )
+            copy_into_container(
+                container,
+                "/opt/kafkallm",
+                self.settings.goose_job_tools_dir,
+                prefix="tools",
+            )
+            copy_into_container(
+                container,
+                "/opt/kafkallm",
+                self.settings.goose_job_config_dir,
+                prefix="config",
+            )
+        except Exception:
+            self._remove_container(container)
+            raise
+        return container
 
     def _create_reflect_container(
         self,
@@ -886,18 +975,36 @@ class GooseJobRunner:
             raise GooseJobRuntimeError(
                 "Collected outputs are not a safe directory for the learning pass."
             )
-        return self._create_microvm(
+        container = self._create_microvm(
             image=image,
             environment=environment,
             labels={**labels, _ROLE_LABEL: "reflect"},
-            binds=[
-                f"{reflect_workdir}:/workspace:rw,z",
-                f"{outputs}:/workspace/outputs:ro,z",
-                f"{reflect_workdir}/bundle:/jobboot:ro,z",
-            ],
             cmd=["/bin/sh", "/jobboot/run-reflect.sh"],
             proxy_ipv6=proxy_ipv6,
         )
+        try:
+            copy_into_container(
+                container,
+                "/workspace",
+                reflect_workdir,
+                exclude={"bundle"},
+            )
+            copy_into_container(
+                container,
+                "/workspace",
+                outputs,
+                prefix="outputs",
+            )
+            copy_into_container(
+                container,
+                "/",
+                reflect_workdir / "bundle",
+                prefix="jobboot",
+            )
+        except Exception:
+            self._remove_container(container)
+            raise
+        return container
 
     def _create_microvm(
         self,
@@ -905,7 +1012,6 @@ class GooseJobRunner:
         image: str,
         environment: dict[str, str],
         labels: dict[str, str],
-        binds: list[str],
         cmd: list[str],
         proxy_ipv6: str,
     ) -> Any:
@@ -923,13 +1029,6 @@ class GooseJobRunner:
             "Labels": labels,
             "WorkingDir": "/workspace",
             "HostConfig": {
-                "Binds": binds,
-                "Tmpfs": {
-                    "/opt/data": (
-                        f"size={self.settings.goose_job_tmpfs_size},mode=0700"
-                    ),
-                    "/tmp": "size=256m,mode=1777",
-                },
                 "Annotations": annotations,
                 "NetworkMode": self.settings.goose_job_network,
                 "ExtraHosts": [f"host.containers.internal:{proxy_ipv6}"],
@@ -950,8 +1049,11 @@ class GooseJobRunner:
         container: Any,
         deadline: float,
         heartbeat: Callable[[], bool] | None = None,
+        mirror: _SandboxMirror | None = None,
     ) -> tuple[int | None, bool]:
         while time.monotonic() < deadline:
+            if mirror is not None:
+                mirror.sync()
             if heartbeat is not None and heartbeat():
                 logger.warning(
                     "Job cancellation requested; stopping microVM container %s",

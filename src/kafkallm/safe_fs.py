@@ -1,9 +1,9 @@
 """Filesystem helpers that never follow untrusted symlinks.
 
-Job workspaces are bind mounted into the microVM, so a job can create symlinks
-whose targets resolve on the *host* when the worker reads or copies files back.
-These helpers use ``O_NOFOLLOW`` and ``follow_symlinks=False`` so untrusted
-entries can never make the worker read or copy a host file.
+Job output trees come back from an isolated microVM, where a job can create
+symlinks whose targets would resolve on the *host* when the worker reads or
+copies files back. These helpers use ``O_NOFOLLOW`` and ``follow_symlinks=False``
+so untrusted entries can never make the worker read or copy a host file.
 """
 
 from __future__ import annotations

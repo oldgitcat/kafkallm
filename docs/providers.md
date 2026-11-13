@@ -6,8 +6,8 @@
 
 The `agentgateway` Compose service runs
 [agentgateway](https://agentgateway.dev/) `v1.7.0`. The committed
-`agentgateway/config.template.yaml` is provider-neutral; the LLM section is
-rendered from `.env` into `agentgateway/config.generated.yaml`.
+`infra/agentgateway/config.template.yml` is provider-neutral; the LLM section is
+rendered from `.env` into `infra/agentgateway/config.yml`.
 
 - The real provider key is configured only on agentgateway
   (`LLM_UPSTREAM_API_KEY`). It is not passed to the worker, the job, or the GUI.
@@ -86,7 +86,7 @@ works. The file is gitignored and local-only. Set
 `AGENTGATEWAY_INLINE_VIRTUAL_KEY=false` to keep only the
 `$LLM_GATEWAY_VIRTUAL_KEY` reference; the playground then needs the key under
 **Raw value**. `make gateway-config` re-renders the file from `.env` and
-`agentgateway/config.template.yaml`, so put durable settings there; UI-only
+`infra/agentgateway/config.template.yml`, so put durable settings there; UI-only
 changes survive until the next render.
 
 The OpenAI-compatible API is published on

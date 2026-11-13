@@ -2,6 +2,9 @@ name: kafkallm
 
 x-app-environment: &app-environment
   KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  # Host-side data root. The worker and GUI run with a keep-id user namespace,
+  # so they see the same files as the microVMs without world-writable modes.
+  KAFKALLM_JOB_ROOT: ${KAFKALLM_JOB_ROOT:-${HOME}/.local/share/kafkallm}
   # Empty values intentionally fall back to the defaults in
   # src/kafkallm/settings.py. That module is the single source of truth.
   JOBS_TOPIC: ${JOBS_TOPIC:-}
@@ -25,14 +28,12 @@ x-app-environment: &app-environment
   GOOSE_IMAGE: ${GOOSE_IMAGE:-}
   # Optional reverse-engineering sandbox (REA + Ghidra).
   GOOSE_RE_IMAGE: ${GOOSE_RE_IMAGE:-}
-  # The proxy shares the worker's network namespace, so the worker reaches it
-  # on loopback. This is the one service-specific default.
-  GOOSE_JOB_DOCKER_HOST: ${GOOSE_JOB_DOCKER_HOST:-tcp://127.0.0.1:2375}
+  # Distroless proxy image started next to each job microVM.
+  GOOSE_JOB_PROXY_IMAGE: ${GOOSE_JOB_PROXY_IMAGE:-}
   GOOSE_JOB_RAM_MIB: ${GOOSE_JOB_RAM_MIB:-}
   GOOSE_JOB_CPUS: ${GOOSE_JOB_CPUS:-}
   GOOSE_JOB_MEMORY_LIMIT: ${GOOSE_JOB_MEMORY_LIMIT:-}
   GOOSE_JOB_PIDS_LIMIT: ${GOOSE_JOB_PIDS_LIMIT:-}
-  GOOSE_JOB_TMPFS_SIZE: ${GOOSE_JOB_TMPFS_SIZE:-}
   GOOSE_JOB_MAX_TURNS: ${GOOSE_JOB_MAX_TURNS:-}
   GOOSE_JOB_SUBAGENT_MAX_TURNS: ${GOOSE_JOB_SUBAGENT_MAX_TURNS:-}
   GOOSE_JOB_REFLECT_ENABLED: ${GOOSE_JOB_REFLECT_ENABLED:-}
@@ -92,6 +93,10 @@ x-worker-environment: &worker-environment
   # network. agentgateway has no shell, so Compose cannot healthcheck it.
   LLM_GATEWAY_READY_URL: ${LLM_GATEWAY_READY_URL:-}
   LLM_GATEWAY_PORT: ${LLM_GATEWAY_PORT:-}
+  # The worker talks to the rootless Podman API through the mounted Unix socket.
+  # No TCP socket proxy is involved.
+  PODMAN_SOCKET: ${PODMAN_SOCKET:-/run/user/1000/podman/podman.sock}
+  GOOSE_JOB_DOCKER_HOST: ${GOOSE_JOB_DOCKER_HOST:-}
 
 services:
   # Apache Kafka in KRaft mode: no ZooKeeper, no separate license terms.
@@ -167,39 +172,9 @@ services:
       - mlflow-data:/mlflow
     restart: unless-stopped
 
-  podman-proxy:
-    image: docker.io/tecnativa/docker-socket-proxy:v0.5.0@sha256:1f5038b54f06c3e18422902cf00ba21803d1c97805aae032e5e6673d532d3459
-    # Share the worker's network namespace and listen on its loopback only, so
-    # the root-equivalent Podman API is reachable by the worker and by nothing
-    # else (the job microVMs run in a different namespace).
-    network_mode: "service:agent-worker"
-    environment:
-      SOCKET_PATH: ${PODMAN_SOCKET:-/run/user/1000/podman/podman.sock}
-      BIND_CONFIG: "127.0.0.1:2375"
-      CONTAINERS: "1"
-      EXEC: "1"
-      IMAGES: "1"
-      NETWORKS: "1"
-      VOLUMES: "1"
-      VERSION: "1"
-      PING: "1"
-      POST: "1"
-      ALLOW_START: "1"
-      ALLOW_STOP: "1"
-    volumes:
-      # Rootless Podman API (systemctl --user enable --now podman.socket).
-      # Adjust PODMAN_SOCKET if your UID is not 1000.
-      - ${PODMAN_SOCKET:-/run/user/1000/podman/podman.sock}:${PODMAN_SOCKET:-/run/user/1000/podman/podman.sock}
-    security_opt:
-      - label=disable
-    depends_on:
-      agent-worker:
-        condition: service_started
-    restart: unless-stopped
-
   agentgateway:
     image: cr.agentgateway.dev/agentgateway:v1.7.0@sha256:460dda874be2dfa95fa5713c1f46f26079dce78df576008df704e54a59d5780d
-    command: ["-f", "/config/config.yaml"]
+    command: ["-f", "/config/config.yml"]
     environment:
       # The provider key lives only in this service. The worker and the job
       # microVM receive the virtual key, which the gateway validates and
@@ -216,7 +191,7 @@ services:
     volumes:
       # The admin UI saves CORS/model changes to this file. It contains no
       # secrets; the provider key stays in the process environment.
-      - ./agentgateway/config.generated.yaml:/config/config.yaml:rw,z
+      - ./infra/agentgateway/config.yml:/config/config.yml:rw,z
     ports:
       # Rootless Podman cannot reach a host service bound only to loopback:
       # host.containers.internal is mapped to the host-side pasta address.
@@ -246,8 +221,14 @@ services:
     build: .
     environment: *worker-environment
     init: true
+    # Map the image's UID/GID 10001 to the host user. The worker, the job
+    # directories, and the microVM guest root then act as the same user, so no
+    # world-writable modes or sudo are needed.
+    userns_mode: "keep-id:uid=10001,gid=10001"
     volumes:
-      - ${KAFKALLM_JOB_ROOT:-/var/lib/kafkallm}:/var/lib/kafkallm:z
+      - ${KAFKALLM_JOB_ROOT:-${HOME}/.local/share/kafkallm}:${KAFKALLM_JOB_ROOT:-${HOME}/.local/share/kafkallm}:z
+      # Rootless Podman API. Adjust PODMAN_SOCKET if your UID is not 1000.
+      - ${PODMAN_SOCKET:-/run/user/1000/podman/podman.sock}:${PODMAN_SOCKET:-/run/user/1000/podman/podman.sock}
     depends_on:
       kafka:
         condition: service_healthy
@@ -279,22 +260,25 @@ services:
     stop_grace_period: 30s
 
   gui:
-    image: ${KAFKALLM_APP_IMAGE:-kafkallm-app:latest}
-    build: .
-    command: ["kafkallm", "gui"]
+    image: ${KAFKALLM_GUI_IMAGE:-kafkallm-gui:latest}
+    build:
+      context: .
+      dockerfile: tools/gui/Dockerfile
     environment: *app-environment
     expose:
       - "8090"
+    # Same UID/GID mapping as the worker so the GUI can write agent profiles
+    # into the per-user data root.
+    userns_mode: "keep-id:uid=10001,gid=10001"
     volumes:
-      # The GUI reads and writes custom agent profiles here.
-      - ${GOOSE_JOB_AGENTS_DIR:-/var/lib/kafkallm/agents}:${GOOSE_JOB_AGENTS_DIR:-/var/lib/kafkallm/agents}:z
+      - ${KAFKALLM_JOB_ROOT:-${HOME}/.local/share/kafkallm}:${KAFKALLM_JOB_ROOT:-${HOME}/.local/share/kafkallm}:z
     depends_on:
       kafka:
         condition: service_healthy
     healthcheck:
       test:
         - CMD
-        - python
+        - /usr/bin/python3
         - -c
         - "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.getenv('GUI_PORT', '8090') + '/healthz', timeout=2)"
       interval: 15s
@@ -318,7 +302,7 @@ services:
       GUI_AUTH_USER: ${GUI_AUTH_USER:-}
       GUI_AUTH_HASH: ${GUI_AUTH_HASH:-}
     volumes:
-      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro,z
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro,z
     ports:
       - "${GUI_BIND:-0.0.0.0}:${GUI_PORT:-8090}:8080"
     depends_on:

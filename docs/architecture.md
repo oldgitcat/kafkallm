@@ -18,12 +18,13 @@ and worker-created containers.
    `kafkallm-jobs` network, carrying the job's W3C `traceparent`, then starts a
    goose microVM through the rootless Podman API. The job is attached only to
    that internal network, and `host.containers.internal` is overridden to the
-   per-job proxy's IPv6 address. The job directory is bind mounted at
-   `/workspace`, the prompt at `/jobboot`, and the persistent skill store
-   read-only at `/opt/kafkallm/skills-persistent`. Inside the guest, the
-   entrypoint copies the store into a disposable `/workspace/.claude/skills`
-   tree. The microVM receives `OPENAI_HOST` and the gateway virtual key, never
-   the provider key.
+   per-job proxy's IPv6 address. Everything the job needs is copied into the
+   container's writable root filesystem before it starts: the job directory to
+   `/workspace`, the prompt and scripts to `/jobboot`, and the persistent skill
+   store to `/opt/kafkallm/skills-persistent`. No host path is bind mounted
+   into the microVM. Inside the guest, the entrypoint copies the store into a
+   disposable `/workspace/.claude/skills` tree. The microVM receives
+   `OPENAI_HOST` and the gateway virtual key, never the provider key.
 5. Inside the microVM, the entrypoint seeds the workspace with goosetown
    (`AGENTS.md`, the `goose` wrapper, `gtwall`, and the role skills) and runs:
 
@@ -86,15 +87,23 @@ Kafka message envelope, and manual producer examples.
 
 ## MicroVM job image
 
-The job image is built with `goose_job/Dockerfile`:
+The job image is built with `stall/standard/Dockerfile`:
 
 - Debian bookworm slim, with bash, git, jq, Python 3, ripgrep, binutils, file,
   less, unzip/zip, and xxd
 - Pinned goose `1.59.0` release, verified with SHA-256 at build time
 - No `curl`, `wget`, or other network clients in the final image
 - goosetown template and skills under `/opt/goosetown`
-- Read-only tools and goose config mounts for sandbox extensions
+- Tools and goose config are copied in by the worker at job start; the image
+  does not mount them
 - Optional extra Debian packages through `GOOSE_JOB_EXTRA_PACKAGES`
+
+The sandbox images form a chain: `stall/standard/Dockerfile` builds
+`kafkallm-goose-job:latest` from Debian, goose, common tools, and the
+goosetown template and skills; `stall/reversing/Dockerfile` adds the
+reverse-engineering tooling. The proxy is a separate distroless Python image
+built from `infra/proxy/Dockerfile` and started as a normal container next to
+each job.
 
 Build it with `./scripts/build-goose-image.sh`. The worker expects it in the
 rootless Podman storage and verifies it at startup (it can pull a registry
@@ -103,7 +112,7 @@ image if `GOOSE_IMAGE` points to one).
 ### Reverse-engineering sandbox
 
 `sandbox=reverse` selects a second image, built from
-`goose_job/Dockerfile.rea`, instead of the default image. It adds:
+`stall/reversing/Dockerfile`, instead of the default image. It adds:
 
 - **REA** `6.8.0` as a local stdio MCP server (`rea mcp`), wired into goose as
   the `rea` extension. The `rea` CLI is also on `PATH`. The MCP input schema
@@ -149,9 +158,10 @@ Use it from the GUI (sandbox selector) or the CLI:
 
 The job image is selected from the GUI-managed sandbox registry, not supplied
 in the job payload. Job submissions carry only a sandbox ID, and the worker
-resolves that ID to the image stored in the registry. The worker still mounts
-only `/workspace`, `/jobboot`, the tools/config directories, and the persistent
-skills. The microVM still has no internet access; REA and Ghidra run fully
+resolves that ID to the image stored in the registry. The worker copies only
+`/workspace`, `/jobboot`, the tools/config directories, and the persistent
+skills into the container; nothing from the host is mounted. The microVM still
+has no internet access; REA and Ghidra run fully
 offline against uploaded files. Ghidra is JVM-heavy, so set
 `GOOSE_JOB_RAM_MIB=4096` (or more) and raise `GOOSE_JOB_MEMORY_LIMIT` to leave
 room for the hypervisor overhead (for example `6g`) when using reverse jobs.
@@ -166,23 +176,27 @@ devices is not bundled.
 
 Per-job layout. The main job VM:
 
-| Mount | Type | Purpose |
+| Path | Source | Purpose |
 |---|---|---|
-| `/workspace` | bind mount `goose-vm-<run_id>` | `inputs/`, `outputs/`, `.scratch/`, the goosetown workspace, and a disposable skill copy; removed after collection |
-| `/jobboot` | read-only bind mount | main run script and prompt |
-| `/opt/kafkallm/skills-persistent` | read-only bind mount `GOOSE_JOB_SKILLS_DIR` | shared goosetown skills; never writable by the job |
-| `/opt/kafkallm/tools`, `/opt/kafkallm/config` | read-only bind mounts | tools and goose/MCP config |
-| `/opt/data` | tmpfs | goose config, sessions, and wall state; discarded with the microVM |
+| `/workspace` | copy of `goose-vm-<run_id>` | `inputs/`, `outputs/`, `.scratch/`, the goosetown workspace, and a disposable skill copy; copied back after the run and removed |
+| `/jobboot` | copy of the job bundle | main run script and prompt |
+| `/opt/kafkallm/skills-persistent` | copy of `GOOSE_JOB_SKILLS_DIR` | shared goosetown skills; changes stay inside the disposable VM |
+| `/opt/kafkallm/tools`, `/opt/kafkallm/config` | copies of the host directories | tools and Goose config |
+| `/opt/data` | container root filesystem | goose config, sessions, and wall state; discarded with the microVM |
 
 The learning pass runs after the main VM exits, in its own microVM with a fresh
 random workspace:
 
-| Mount | Type | Purpose |
+| Path | Source | Purpose |
 |---|---|---|
-| `/workspace` | bind mount `<job-workdir>/.reflect-<random>` | disposable skill copy and reflect control files |
-| `/workspace/outputs` | read-only bind mount of collected outputs | review material |
-| `/jobboot` | read-only bind mount | reflect run script and prompt |
-| `/opt/data` | tmpfs | goose config and sessions; discarded with the microVM |
+| `/workspace` | copy of `<job-workdir>/.reflect-<random>` | disposable skill copy and reflect control files |
+| `/workspace/outputs` | copy of the collected outputs | review material |
+| `/jobboot` | copy of the reflect bundle | reflect run script and prompt |
+| `/opt/data` | container root filesystem | goose config and sessions; discarded with the microVM |
+
+The worker reads the result and skill changes back through the Podman archive
+API. The microVM never has a writable path to the host filesystem, and its
+container root filesystem is deleted with the microVM.
 
 The microVM costs more than a container: each job reserves `GOOSE_JOB_RAM_MIB`
 of memory and boots a guest kernel. With the learning pass enabled, the two
@@ -195,32 +209,32 @@ The job image is intentionally small, but you have four extension points. None
 of them weakens the network isolation: the job still reaches only the
 allowlisting proxy.
 
-### 1. Host-mounted tools
+### 1. Host-provided tools
 
 Put static binaries or extracted tools under `GOOSE_JOB_TOOLS_DIR`
-(`/var/lib/kafkallm/tools` by default). The worker mounts this directory
-read-only at `/opt/kafkallm/tools` and prepends `/opt/kafkallm/tools/bin` to
-`PATH`.
+(`~/.local/share/kafkallm/tools` by default). The worker copies this directory
+into the microVM at `/opt/kafkallm/tools` and prepends
+`/opt/kafkallm/tools/bin` to `PATH`.
 
 ```bash
-mkdir -p /var/lib/kafkallm/tools/bin
-cp my-analyzer /var/lib/kafkallm/tools/bin/
+mkdir -p ~/.local/share/kafkallm/tools/bin
+cp my-analyzer ~/.local/share/kafkallm/tools/bin/
 ```
 
 ### 2. Goose config and MCP servers
 
 Put a `config.yaml` in `GOOSE_JOB_CONFIG_DIR`
-(`/var/lib/kafkallm/config/config.yaml` by default). The worker mounts it
-read-only at `/opt/kafkallm/config` and copies it into goose's tmpfs config
-directory before each run. See `goose_job/config/config.example.yaml` for a
-stdio MCP example.
+(`~/.local/share/kafkallm/config/config.yaml` by default). The worker
+copies the directory into the microVM at `/opt/kafkallm/config`, and the
+entrypoint copies it into Goose's config directory before each run. See
+`gaense/config/config.yaml.example` for an example.
 
 MCP servers must already exist in the image or in the tools directory. Jobs
 have no web access, so remote MCP servers and `npx` downloads do not work.
 
 ### 3. Skills
 
-Skills live in `GOOSE_JOB_SKILLS_DIR` (`/var/lib/kafkallm/skills`). Add a
+Skills live in `GOOSE_JOB_SKILLS_DIR` (`~/.local/share/kafkallm/skills`). Add a
 directory with a regular `SKILL.md`; later jobs receive a copy. A job's edits to
 its disposable `.claude/skills` tree do not persist automatically. The isolated
 learning pass may propose changes, and the worker merges only validated,
@@ -235,18 +249,19 @@ GOOSE_JOB_EXTRA_PACKAGES="openjdk-17-jre-headless" \
   ./scripts/build-goose-image.sh
 ```
 
-For larger changes, use a custom Dockerfile that extends either job image:
+For larger changes, create a Dockerfile that extends either job image and pass
+it explicitly:
 
 ```bash
 GOOSE_JOB_BASE_IMAGE=kafkallm-rea-job:latest \
 GOOSE_IMAGE=kafkallm-custom-job:latest \
-GOOSE_JOB_DOCKERFILE=goose_job/Dockerfile.example \
+GOOSE_JOB_DOCKERFILE=/path/to/your/Dockerfile \
   ./scripts/build-goose-image.sh
 ```
 
-`goose_job/Dockerfile.example` shows the pattern. If you extend the reverse
-image, it already contains REA, Ghidra, and JDK 21; add only the extra tools
-you need. The standard reverse sandbox itself is `goose_job/Dockerfile.rea`.
+If you extend the reverse image, it already contains REA, Ghidra, and JDK 21;
+add only the extra tools you need. The standard reverse sandbox itself is
+`stall/reversing/Dockerfile`.
 
 To inspect the exact sandbox interactively, without a job and without network:
 
@@ -258,15 +273,15 @@ To inspect the exact sandbox interactively, without a job and without network:
 ## Why Podman
 
 Both the control plane and the job microVMs run under **rootless Podman** by
-default. `make up` builds the worker/GUI image with `podman build` and runs the
-stack with `podman compose`.
+default. `make up` builds the worker and GUI images with `podman build` and runs
+the stack with `podman compose`.
 
 - **Podman runs the microVMs.** Only Podman's `crun` krun runtime can start a
   libkrun microVM, selected through the `run.oci.handler=krun` annotation.
   Docker's runc has no krun handler.
 - **The control plane also runs under rootless Podman.** The worker, GUI,
-  Caddy, Apache Kafka, RustFS, MLflow, the Kafka UI, and the socket proxy are
-  ordinary containers. One engine means one image store.
+  Caddy, Apache Kafka, RustFS, MLflow, and the Kafka UI are ordinary containers.
+  One engine means one image store.
 - **Rootless Podman is required.** Rootful Podman can break libkrun's TSI
   networking, leaving the microVMs without an outbound path and stalling every
   job on the LLM provider. Use the rootless socket.
@@ -278,23 +293,25 @@ IPv6-only internal job network directly into rootless Podman's network store
 instead of asking netavark to derive one. Other container bridges are
 unaffected.
 
-Docker remains supported for the control plane: run
-`make ENGINE=docker up`. The job microVMs still use rootless Podman, so both
-engines must be installed for that combination.
+Docker is not supported for the control plane. The worker and GUI rely on
+Podman's `keep-id` user namespace, and the job microVMs always use rootless
+Podman.
 
-The worker reaches the rootless Podman API through the internal `podman-proxy`,
-which shares the worker's network namespace and listens on loopback only. The
-job directory and skills live on the host under `/var/lib/kafkallm`, which both
-the worker and the microVMs see.
+The worker reaches the rootless Podman API through the Unix socket that Compose
+mounts into it; no TCP socket proxy is involved. The worker runs with a
+`keep-id` user namespace, so its UID/GID `10001` maps to the host user. Job
+directories and skills live under `~/.local/share/kafkallm`, and the microVM
+guest root maps to the same host user, so neither `sudo` nor world-writable
+modes are needed.
 
 
 ## Workspace and artifacts
 
-The worker runs as UID/GID `10001`. It stages each job under its staging
-directory and copies inputs into the job directory under
-`GOOSE_JOB_WORKSPACE_ROOT`, which is shared between the worker container and the
-microVMs. After the job, the worker copies `outputs/` back for upload and
-deletes the job directory.
+The worker runs as UID/GID `10001`, mapped to the host user. It stages each job
+under its staging directory and copies inputs into the job directory under
+`GOOSE_JOB_WORKSPACE_ROOT`. That directory is copied into the microVM at
+`/workspace`; after the job, the worker reads `outputs/` back through the
+archive API and deletes the job directory.
 
 Artifacts are uploaded only from `outputs/`. A missing or unreachable artifact
 store does not turn a successful run into a failed job; the job remains

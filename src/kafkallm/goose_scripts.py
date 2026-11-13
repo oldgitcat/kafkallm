@@ -5,15 +5,6 @@ from __future__ import annotations
 _VM_RUN_SCRIPT = r"""#!/bin/sh
 set -u
 
-# The microVM's guest root maps to the host user that runs Podman, so the
-# workspace root can end up owned by that UID while the worker that collects
-# and removes the tree runs as a different UID. Make the whole tree writable
-# on every exit path so the worker can clean it up.
-cleanup_permissions() {
-  chmod -R a+rwX /workspace 2>/dev/null || true
-}
-trap cleanup_permissions EXIT INT TERM
-
 RESULT_DIR=/workspace/.kafkallm
 if ! mkdir -p "$RESULT_DIR" 2>/dev/null; then
   echo "Cannot create $RESULT_DIR in the shared workspace." >&2
@@ -47,13 +38,11 @@ seed_skills /opt/goosetown/skills /workspace/.claude/skills
 seed_skills /opt/kafkallm/sandbox-skills /workspace/.claude/skills
 # REA's own doctor looks for its skill under HOME as well.
 seed_skills /opt/kafkallm/sandbox-skills /opt/data/.claude/skills
-# Rootless Podman maps the job uid into a subuid range, so worker-created files
-# are not owned by the job. The disposable skills copy must stay writable.
-chmod -R a+rwX /workspace/.claude 2>/dev/null || true
 chmod +x /workspace/goose /workspace/gtwall 2>/dev/null || true
 
-# Seed goose's user config from the host-mounted sandbox config. This is how
-# operators add MCP servers and other goose extensions without rebuilding.
+# Seed goose's user config from the sandbox config copied into the image. This
+# is how operators add MCP servers and other goose extensions without
+# rebuilding.
 if [ -d /opt/kafkallm/config ]; then
   mkdir -p "$GOOSE_PATH_ROOT/config"
   cp -an /opt/kafkallm/config/. "$GOOSE_PATH_ROOT/config/" 2>/dev/null || true
@@ -77,13 +66,8 @@ if [ "${KAFKALLM_MULTI_AGENT:-0}" = "1" ]; then
 fi
 
 # The sandbox image may ship local stdio MCP servers as extensions. Ghidra and
-# other tools also need a large scratch area on the host-backed workspace, not
-# the small /tmp tmpfs.
+# other tools also need a large scratch area on the writable root filesystem.
 mkdir -p /workspace/.scratch/tmp
-# krun maps guest writes to the host user that runs Podman, while the worker
-# collects the workspace as a different UID. Keep the scratch tree writable
-# so the worker can remove it after the job.
-chmod 0777 /workspace/.scratch /workspace/.scratch/tmp 2>/dev/null || true
 export TMPDIR=/workspace/.scratch/tmp
 
 set --
@@ -115,23 +99,11 @@ if [ "$(cat "$RESULT_DIR/main.exit")" = "124" ] \
 {"type":"error","message":"goose exceeded the main time budget."}
 JSON
 fi
-
-# Ghidra and other tools may create read-only files in the scratch tree. Make
-# everything removable by the worker UID before the microVM exits.
-chmod -R a+rwX /workspace/.scratch 2>/dev/null || true
 """
 
 _REFLECT_RUN_SCRIPT = r"""#!/bin/sh
 set -u
 umask 022
-
-# The reflect workspace is created by the worker but the guest root may take
-# ownership of its root. Make the tree writable on every exit path so the
-# worker can read it for validation and remove it afterwards.
-cleanup_permissions() {
-  chmod -R a+rwX /workspace 2>/dev/null || true
-}
-trap cleanup_permissions EXIT INT TERM
 
 RESULT_DIR=/workspace/.kafkallm
 if ! mkdir -p "$RESULT_DIR" 2>/dev/null; then
@@ -145,7 +117,6 @@ export GOOSE_GTWALL_FILE="/tmp/goose-wall.log"
 : > "$GOOSE_MOIM_MESSAGE_FILE"
 : > "$GOOSE_GTWALL_FILE"
 mkdir -p /workspace/.scratch
-chmod 0777 /workspace/.scratch 2>/dev/null || true
 export TMPDIR=/workspace/.scratch
 
 timeout --signal=TERM "$KAFKALLM_JOB_REFLECT_TIMEOUT" \
@@ -155,10 +126,6 @@ timeout --signal=TERM "$KAFKALLM_JOB_REFLECT_TIMEOUT" \
     -i /jobboot/reflect-prompt.txt \
   > "$RESULT_DIR/reflect.jsonl" 2> "$RESULT_DIR/reflect.err"
 echo "$?" > "$RESULT_DIR/reflect.exit"
-
-# The worker validates and merges this tree. Make it readable after the guest
-# root has written it through the mapped subuid.
-chmod -R a+rX /workspace/.claude/skills 2>/dev/null || true
 """
 
 _REFLECT_PROMPT = """You are the isolated learning pass for one completed Gänsestall job.

@@ -10,10 +10,10 @@ from pathlib import Path
 from typing import Any
 
 from kafkallm.agents import AgentStore, default_agents
-from kafkallm.gui import JobServer, JobStore
 from kafkallm.models import FileRef, Job, JobState
 from kafkallm.sandboxes import SandboxStore, default_sandboxes
 from kafkallm.settings import Settings
+from tools.gui.gui import JobServer, JobStore
 
 
 class FakeStorage:

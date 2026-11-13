@@ -1,7 +1,5 @@
 # Gänsestall
 
-[![CI](https://github.com/oldgitcat/kafkallm/actions/workflows/ci.yml/badge.svg)](https://github.com/oldgitcat/kafkallm/actions/workflows/ci.yml)
-[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](pyproject.toml)
 [![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)](#project-status)
 
@@ -17,8 +15,8 @@ log. There is no PostgreSQL and no separate scheduler service.
 > updates from the isolated learning pass are validated only structurally.
 > The GUI is reachable from the network by default (`GUI_BIND=0.0.0.0`), so run
 > the stack only on a trusted network or put an authenticated TLS proxy in
-> front of it. See [SECURITY.md](SECURITY.md)
-> and the [isolation model](docs/security.md#isolation-model) before exposing it.
+> front of it. See the
+> [isolation model](docs/security.md#isolation-model) before exposing it.
 
 ## Project status
 
@@ -36,7 +34,6 @@ usable, but configuration and APIs may change between minor releases.
 - [Observability with MLflow](docs/observability.md)
 - [Operations, testing, and troubleshooting](docs/operations.md)
 - [Security and isolation model](docs/security.md)
-- [Contributing](CONTRIBUTING.md)
 
 ## Architecture at a glance
 
@@ -48,7 +45,7 @@ Browser / CLI ──→ jobs.in ──→ worker ──→ rootless Podman (krun
                                   │      ├─ goosetown orchestrator
                                   │      ├─ parallel goose subagents
                                   │      ├─ gtwall coordination
-                                  │      └─ /workspace bind mount
+                                  │      └─ /workspace (copy)
                                   │            │
                                   │            ▼
                                   │      allowlisting proxy ──→ agentgateway ──→ LLM provider
@@ -77,7 +74,6 @@ GUI ──→ jobs.in, jobs.state, agents.state, sandboxes.state, agent.events
 | Follow logs | `make logs` |
 | Run tests / lint | `make test` / `make lint` |
 | Delete all Kafka, trace, and storage data | `make reset` |
-| Use Docker for the control plane | `make ENGINE=docker up` |
 
 | Service | URL |
 |---|---|
@@ -89,10 +85,10 @@ GUI ──→ jobs.in, jobs.state, agents.state, sandboxes.state, agent.events
 
 | Host path | Contents |
 |---|---|
-| `/var/lib/kafkallm/jobs` | Per-job workspaces |
-| `/var/lib/kafkallm/skills` | Persistent goosetown skills |
-| `/var/lib/kafkallm/agents` | Agent profiles (`*.md`) |
-| `/var/lib/kafkallm/tools`, `config` | Sandbox tools and goose/MCP config |
+| `~/.local/share/kafkallm/jobs` | Per-job workspaces |
+| `~/.local/share/kafkallm/skills` | Persistent goosetown skills |
+| `~/.local/share/kafkallm/agents` | Agent profiles (`*.md`) |
+| `~/.local/share/kafkallm/tools`, `config` | Sandbox tools and Goose config |
 
 Kafka is the database: `jobs.state`, `agents.state`, and `sandboxes.state` are
 compacted; the other topics expire after `KAFKA_TOPIC_RETENTION_MS`.
@@ -118,12 +114,12 @@ compacted; the other topics expire after `KAFKA_TOPIC_RETENTION_MS`.
   oversized results are preserved as downloadable S3 artifacts
 - Stop buttons for queued/running jobs, restart for finished jobs, and
   configurable parallel worker slots
-- A drop-in agent profile directory (`/var/lib/kafkallm/agents`) next to the
+- A drop-in agent profile directory (`~/.local/share/kafkallm/agents`) next to the
   persistent skills directory
 - A live activity panel with goose thinking, tool calls, tool results, stderr,
   and token usage streamed from the microVM through Kafka
 - **MLflow** observability with OTLP traces, token usage, durations, and errors
-- An editable sandbox: host-mounted tools, goose/MCP config, operator-managed
+- An editable sandbox: host-provided tools, Goose config (including MCP extensions), operator-managed
   persistent skills, extra build packages, plus an optional **REA + Ghidra**
   reverse-engineering environment with Kuna, JADX, Frida, apktool, and apksigner
 - Job messages that name the sandbox entry and carry its OCI image reference
@@ -165,20 +161,12 @@ See [docs/architecture.md](docs/architecture.md) for the job lifecycle,
 ## Security
 
 This is a local development stack, not a hardened multi-tenant service.
-Read [SECURITY.md](SECURITY.md) and
-[docs/security.md](docs/security.md) before exposing it.
+Read [docs/security.md](docs/security.md) before exposing it.
 
-## Contributing
+## Third-party components
 
-Issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md)
-for the development setup and review checklist. Security issues should be
-reported privately as described in [SECURITY.md](SECURITY.md).
-
-## License
-
-Gänsestall is licensed under the [Apache License 2.0](LICENSE). The vendored
-goosetown files under `goose_job/` are also Apache 2.0; see
-[goose_job/LICENSE-goosetown](goose_job/LICENSE-goosetown). REA, Ghidra, Kuna,
+The vendored goosetown files under `gaense/` are Apache 2.0; see
+[gaense/LICENSE-goosetown](gaense/LICENSE-goosetown). REA, Ghidra, Kuna,
 `jadx-headless-mcp`, apktool, and apksigner are installed as separate upstream
 components under their own licenses. Frida is installed as a separate
 LGPL-2.1 component.

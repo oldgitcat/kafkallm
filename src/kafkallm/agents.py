@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 import os
@@ -29,15 +28,15 @@ _ROLE_ORDER = {
 
 def _default_agents_dir() -> Path:
     """Directory with the built-in goosetown agent profiles."""
-    return Path(os.getenv("GOOSE_JOB_DEFAULT_AGENTS_DIR") or "agents")
+    return Path(os.getenv("GOOSE_JOB_DEFAULT_AGENTS_DIR") or "gaense/agents")
 
 
 def default_agents() -> list[AgentSpec]:
     """Load the built-in flock from the agent profile files.
 
-    The repository (and the app image) ship ``agents/*.md``. They use the same
-    format and parser as custom agents, so the definition lives in data rather
-    than in Python.
+    The repository ships ``gaense/agents/*.md``; the app image copies them to
+    ``agents/*.md``. They use the same format and parser as custom agents, so
+    the definition lives in data rather than in Python.
     """
     directory = _default_agents_dir()
     if not directory.is_dir():
@@ -168,9 +167,6 @@ def write_agent_profile(settings: Settings, agent: AgentSpec) -> Path:
     temporary = path.with_name(f".{path.name}.tmp")
     temporary.write_text(agent_profile_text(agent), encoding="utf-8")
     temporary.replace(path)
-    # The GUI runs under rootless Podman, where its UID maps to a host subuid.
-    # A world-writable profile lets the host user edit the file directly.
-    os.chmod(path, 0o666)
     return path
 
 
@@ -268,8 +264,6 @@ def seed_default_agent_profiles(settings: Settings) -> int:
         if destination.exists():
             continue
         destination.write_bytes(path.read_bytes())
-        with contextlib.suppress(OSError):
-            os.chmod(destination, 0o666)
         written += 1
     if written:
         logger.info("Seeded %s built-in agent profile(s) into %s", written, target)

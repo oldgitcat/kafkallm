@@ -4,7 +4,7 @@
 #   - generate a random LLM gateway virtual key
 #   - migrate the old OpenRouter-only key to the generic provider setting
 #   - verify that the selected provider is usable
-#   - render agentgateway/config.generated.yaml
+#   - render infra/agentgateway/config.yml
 #
 # The provider key is never printed. Edit .env yourself; it is gitignored.
 set -euo pipefail
