@@ -29,8 +29,9 @@ authentication.
 
 ## How it works
 
-The committed `infra/agentgateway/config.template.yml` is endpoint-neutral. Its
-LLM section is rendered from `.env` into `infra/agentgateway/config.yml`.
+The gateway config is generated from `.env` into
+`infra/agentgateway/config.yml` by the renderer. A complete standalone example
+is available in `infra/agentgateway/config.yml.example`.
 
 - agentgateway talks to the configured OpenAI-compatible endpoint.
 - The real provider key exists only in the agentgateway container
@@ -47,8 +48,8 @@ LLM section is rendered from `.env` into `infra/agentgateway/config.yml`.
 Render the config after changing `.env`:
 
 ```bash
-make gateway-config
-make restart
+make gateway-config   # render only
+make restart          # render and restart the stack
 ```
 
 The admin UI and LLM playground are published on
@@ -56,3 +57,21 @@ The admin UI and LLM playground are published on
 listener from the browser, so `AGENTGATEWAY_CORS_ORIGINS` includes the admin UI
 origins by default. Add your reverse-proxy origin there if you publish the UI
 elsewhere.
+
+## Self-signed upstream certificates
+
+For a private endpoint with a self-signed certificate, set:
+
+```dotenv
+LLM_UPSTREAM_INSECURE_SKIP_TLS_VERIFY=true
+```
+
+Then rerender the config:
+
+```bash
+make gateway-config
+make restart
+```
+
+This disables upstream certificate verification inside agentgateway. Do not
+enable it for public providers.

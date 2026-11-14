@@ -39,6 +39,18 @@ class ConfigError(ValueError):
     """A provider setting cannot be rendered into a valid config."""
 
 
+class _ConfigDumper(yaml.SafeDumper):
+    """Quote ``$VAR`` references so agentgateway resolves them as strings."""
+
+
+def _represent_string(dumper: yaml.SafeDumper, value: str) -> yaml.ScalarNode:
+    style = '"' if value.startswith("$") else None
+    return dumper.represent_scalar("tag:yaml.org,2002:str", value, style=style)
+
+
+_ConfigDumper.add_representer(str, _represent_string)
+
+
 def api_key_from_env(env: Mapping[str, str] | None = None) -> str:
     values = os.environ if env is None else env
     return values.get("LLM_UPSTREAM_API_KEY", "").strip()
@@ -67,7 +79,6 @@ def cors_origins_from_env(env: Mapping[str, str] | None = None) -> list[str]:
 
 
 def render_config(
-    template: str,
     *,
     base_url: str,
     include_api_key: bool = True,
@@ -75,8 +86,9 @@ def render_config(
     cors_origins: list[str] | None = None,
     llm_port: int = 8091,
     virtual_key: str = "$LLM_GATEWAY_VIRTUAL_KEY",
+    insecure_skip_tls_verify: bool = False,
 ) -> str:
-    """Return the template with the generated ``llm:`` section filled in."""
+    """Return a complete agentgateway configuration."""
     base_url = (base_url or "").strip()
     if not base_url:
         raise ConfigError("LLM_UPSTREAM_BASE_URL is required.")
@@ -84,6 +96,27 @@ def render_config(
         raise ConfigError(f"LLM port {llm_port} is outside 1-65535.")
 
     section_data: dict[str, Any] = {
+        "config": {"adminAddr": "0.0.0.0:15000"},
+        "frontendPolicies": {
+            "tracing": {
+                "host": "$MLFLOW_OTLP_HOST:$MLFLOW_OTLP_PORT",
+                "path": "/v1/traces",
+                "protocol": "http",
+                "randomSampling": True,
+                "policies": {
+                    "backendAuth": {
+                        "credentials": [
+                            {
+                                "key": "$MLFLOW_EXPERIMENT_ID",
+                                "location": {
+                                    "header": {"name": "x-mlflow-experiment-id"}
+                                },
+                            }
+                        ]
+                    }
+                },
+            }
+        },
         "gateways": {"default": {"port": llm_port}},
         "llm": {
             "policies": {
@@ -112,13 +145,14 @@ def render_config(
     params: dict[str, str] = {"baseUrl": base_url}
     if include_api_key:
         params["apiKey"] = "$LLM_UPSTREAM_API_KEY"
-    section_data["llm"]["providers"] = [
-        {
-            "name": "upstream",
-            "provider": {"custom": {"formats": [{"type": "completions"}]}},
-            "params": params,
-        }
-    ]
+    provider: dict[str, Any] = {
+        "name": "upstream",
+        "provider": {"custom": {"formats": [{"type": "completions"}]}},
+        "params": params,
+    }
+    if insecure_skip_tls_verify:
+        provider["defaults"] = {"tls": {"insecure": True}}
+    section_data["llm"]["providers"] = [provider]
 
     models: list[dict[str, object]] = []
     if model.strip():
@@ -136,16 +170,11 @@ def render_config(
     )
     section_data["llm"]["models"] = models
 
-    section = yaml.safe_dump(
+    return yaml.dump(
         section_data,
+        Dumper=_ConfigDumper,
         sort_keys=False,
         default_flow_style=False,
-    )
-    placeholder = "# __LLM_SECTION__"
-    if placeholder not in template:
-        raise ConfigError(f"Config template has no {placeholder} marker.")
-    return template.replace(placeholder + "\n", section).replace(
-        placeholder, section.rstrip("\n")
     )
 
 
@@ -153,11 +182,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="render-agentgateway-config",
         description="Render infra/agentgateway/config.yml from .env.",
-    )
-    parser.add_argument(
-        "--template",
-        default="infra/agentgateway/config.template.yml",
-        help="Config template path (default: infra/agentgateway/config.template.yml)",
     )
     parser.add_argument(
         "--output",
@@ -195,6 +219,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not emit an apiKey reference (for unauthenticated endpoints)",
     )
+    parser.add_argument(
+        "--insecure-skip-tls-verify",
+        action="store_true",
+        help=(
+            "Skip upstream TLS certificate verification. Also configurable with "
+            "LLM_UPSTREAM_INSECURE_SKIP_TLS_VERIFY=true."
+        ),
+    )
     return parser
 
 
@@ -228,20 +260,18 @@ def main(argv: list[str] | None = None) -> int:
     else:
         virtual_key = actual_virtual_key
 
-    template_path = Path(args.template)
-    try:
-        template = template_path.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise ConfigError(f"Could not read config template: {exc}") from exc
-
+    insecure = args.insecure_skip_tls_verify or (
+        env.get("LLM_UPSTREAM_INSECURE_SKIP_TLS_VERIFY", "").strip().lower()
+        in {"1", "true", "yes", "on"}
+    )
     rendered = render_config(
-        template,
         base_url=base_url,
         include_api_key=not args.no_api_key and bool(api_key),
         model=model,
         cors_origins=cors_origins,
         llm_port=llm_port,
         virtual_key=virtual_key,
+        insecure_skip_tls_verify=insecure,
     )
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)

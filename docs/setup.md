@@ -203,10 +203,10 @@ required secret.
 | `S3_ENDPOINT_URL` | `http://rustfs:9000` (storage profile) | Uploads and artifacts |
 | `MLFLOW_ENABLED` | `true` | OTLP traces to MLflow |
 
-See `.env.example` for the common settings and
-`infra/agentgateway/config.template.yml` for the gateway policy template. The active
-file is `infra/agentgateway/config.yml` (gitignored), rendered by
-`make gateway-config` or automatically by `make up`.
+See `.env.example` for the common settings. The active gateway config is
+`infra/agentgateway/config.yml` (gitignored), rendered by
+`make gateway-config` or automatically by `make up`. A complete standalone
+example is `infra/agentgateway/config.yml.example`.
 
 ## Reproducible builds
 

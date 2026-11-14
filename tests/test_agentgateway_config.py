@@ -10,16 +10,9 @@ from kafkallm.gateway.config import (
     render_config,
 )
 
-TEMPLATE = """config:
-  adminAddr: "0.0.0.0:15000"
-
-# __LLM_SECTION__
-"""
-
 
 def test_openai_compatible_config_uses_an_environment_key_reference() -> None:
     rendered = render_config(
-        TEMPLATE,
         base_url="https://openrouter.ai/api/v1",
         include_api_key=True,
         model="openai/gpt-4.1-mini",
@@ -48,12 +41,7 @@ def test_openai_compatible_config_uses_an_environment_key_reference() -> None:
 
 def test_base_url_is_required() -> None:
     with pytest.raises(ConfigError, match="LLM_UPSTREAM_BASE_URL"):
-        render_config(TEMPLATE, base_url="")
-
-
-def test_template_requires_the_llm_marker() -> None:
-    with pytest.raises(ConfigError, match="__LLM_SECTION__"):
-        render_config("config: {}\n", base_url="https://example.com/v1")
+        render_config(base_url="")
 
 
 def test_base_url_is_read_from_the_environment() -> None:
@@ -64,7 +52,6 @@ def test_base_url_is_read_from_the_environment() -> None:
 
 def test_cors_origins_are_rendered_for_the_playground() -> None:
     rendered = render_config(
-        TEMPLATE,
         base_url="https://example.com/v1",
         include_api_key=True,
         cors_origins=["http://127.0.0.1:15000", "http://localhost:15000"],
@@ -82,7 +69,6 @@ def test_cors_origins_are_rendered_for_the_playground() -> None:
 
 def test_empty_cors_origins_disable_the_policy() -> None:
     rendered = render_config(
-        TEMPLATE,
         base_url="https://example.com/v1",
         include_api_key=True,
         cors_origins=[],
@@ -101,19 +87,18 @@ def test_cors_origins_from_env_defaults_and_overrides() -> None:
 
 
 def test_llm_port_is_rendered_and_validated() -> None:
-    rendered = render_config(TEMPLATE, base_url="https://example.com/v1", llm_port=9000)
+    rendered = render_config(base_url="https://example.com/v1", llm_port=9000)
     config = yaml.safe_load(rendered)
 
     assert config["gateways"]["default"]["port"] == 9000
     assert "port" not in config["llm"]
 
     with pytest.raises(ConfigError, match="outside 1-65535"):
-        render_config(TEMPLATE, base_url="https://example.com/v1", llm_port=70000)
+        render_config(base_url="https://example.com/v1", llm_port=70000)
 
 
 def test_virtual_key_can_be_inlined_for_the_playground() -> None:
     rendered = render_config(
-        TEMPLATE,
         base_url="https://example.com/v1",
         virtual_key="local-secret",
     )
@@ -124,7 +109,17 @@ def test_virtual_key_can_be_inlined_for_the_playground() -> None:
 
 
 def test_virtual_key_defaults_to_the_environment_reference() -> None:
-    rendered = render_config(TEMPLATE, base_url="https://example.com/v1")
+    rendered = render_config(base_url="https://example.com/v1")
     keys = yaml.safe_load(rendered)["llm"]["policies"]["apiKey"]["keys"]
 
     assert keys[0]["key"] == "$LLM_GATEWAY_VIRTUAL_KEY"
+
+
+def test_insecure_skip_tls_verify_adds_provider_tls_defaults() -> None:
+    rendered = render_config(
+        base_url="https://self-signed.example/v1",
+        insecure_skip_tls_verify=True,
+    )
+    provider = yaml.safe_load(rendered)["llm"]["providers"][0]
+
+    assert provider["defaults"] == {"tls": {"insecure": True}}

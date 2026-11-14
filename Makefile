@@ -28,7 +28,7 @@ gui-auth: ## Set the GUI username/password for the Caddy basic auth
 gui-auth-force: ## Change the existing GUI username/password
 	./scripts/gui-auth.sh --force
 
-gateway-config: ## Render the agentgateway provider config from .env
+gateway-config: ## Render the agentgateway config from .env
 	./scripts/render-agentgateway-config.sh
 
 doctor: ## Check host prerequisites, configuration, and services
