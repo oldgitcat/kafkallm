@@ -12,7 +12,6 @@ from pydantic import (
     ConfigDict,
     Field,
     field_validator,
-    model_validator,
 )
 
 ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
@@ -35,14 +34,6 @@ _RESERVED_ENV_NAMES = {
     "USER",
 }
 _RESERVED_ENV_PREFIXES = ("GOOSE_", "KAFKALLM_", "OPENAI_")
-
-
-def _drop_legacy_max_steps(value: object) -> object:
-    """Accept job records written before the advisory max_steps field was removed."""
-    if isinstance(value, dict) and "max_steps" in value:
-        value = dict(value)
-        value.pop("max_steps")
-    return value
 
 
 def utc_now() -> datetime:
@@ -153,20 +144,11 @@ class JobLog(BaseModel):
     text: str = Field(max_length=20_000)
 
 
-class Job(BaseModel):
-    """One unit of work published to the jobs topic.
-
-    The message names the sandbox entry and carries the OCI image reference the
-    worker must run. The worker pulls that reference if it is not yet in local
-    Podman storage. Input files stay S3 references because Kafka is not a file
-    store.
-    """
+class JobSpec(BaseModel):
+    """Fields shared by a submitted job and its materialized state."""
 
     model_config = ConfigDict(extra="forbid")
 
-    job_id: str = Field(default_factory=lambda: str(uuid.uuid4()), pattern=ID_PATTERN)
-    run_id: str = Field(default_factory=lambda: str(uuid.uuid4()), pattern=ID_PATTERN)
-    type: Literal["llm_task"] = "llm_task"
     trace_id: str | None = Field(default=None, min_length=1, max_length=128)
     instruction: str = Field(min_length=1, max_length=100_000)
     input: dict = Field(default_factory=dict)
@@ -183,10 +165,19 @@ class Job(BaseModel):
     # worker default (GOOSE_JOB_REFLECT_ENABLED).
     reflect: bool | None = None
 
-    @model_validator(mode="before")
-    @classmethod
-    def _legacy_fields(cls, value: object) -> object:
-        return _drop_legacy_max_steps(value)
+
+class Job(JobSpec):
+    """One unit of work published to the jobs topic.
+
+    The message names the sandbox entry and carries the OCI image reference the
+    worker must run. The worker pulls that reference if it is not yet in local
+    Podman storage. Input files stay S3 references because Kafka is not a file
+    store.
+    """
+
+    job_id: str = Field(default_factory=lambda: str(uuid.uuid4()), pattern=ID_PATTERN)
+    run_id: str = Field(default_factory=lambda: str(uuid.uuid4()), pattern=ID_PATTERN)
+    type: Literal["llm_task"] = "llm_task"
 
     @field_validator("input")
     @classmethod
@@ -232,32 +223,18 @@ class JobResult(BaseModel):
         )
 
 
-class JobState(BaseModel):
+class JobState(JobSpec):
     """Materialized job state published to the compacted state topic.
 
     Kafka is the only store. The GUI rebuilds its view by replaying this topic
     from the beginning, so the payload carries everything the UI needs.
     """
 
-    model_config = ConfigDict(extra="forbid")
-
     job_id: str = Field(pattern=ID_PATTERN)
     run_id: str = Field(pattern=ID_PATTERN)
-    instruction: str
     status: Literal["queued", "running", "succeeded", "failed", "invalid"]
-    trace_id: str | None = Field(default=None, min_length=1, max_length=128)
     cancelled: bool = False
-    # Everything needed to restart the job from its stored state.
-    input: dict = Field(default_factory=dict)
-    input_files: list[FileRef] = Field(default_factory=list, max_length=32)
-    sandbox: str = Field(default="default", pattern=ID_PATTERN)
-    sandbox_image: str | None = Field(default=None, max_length=255, pattern=r"^\S+$")
-    multi_agent: bool = True
     agent_names: list[str] = Field(default_factory=list, max_length=20)
-    agents: list[AgentSpec] = Field(default_factory=list, max_length=20)
-    unlimited: bool = False
-    timeout_seconds: int = Field(default=300, ge=1, le=3600)
-    reflect: bool | None = None
     submitted_at: datetime = Field(default_factory=utc_now)
     started_at: datetime | None = None
     finished_at: datetime | None = None
@@ -269,29 +246,18 @@ class JobState(BaseModel):
     steps: int = 0
     usage: dict[str, int] = Field(default_factory=dict)
 
-    @model_validator(mode="before")
-    @classmethod
-    def _legacy_fields(cls, value: object) -> object:
-        return _drop_legacy_max_steps(value)
-
     @classmethod
     def queued(cls, job: Job, worker_id: str | None = None) -> JobState:
+        values = job.model_dump(include=set(JobSpec.model_fields))
+        values["agents"] = job.agents if job.multi_agent else []
+        values["agent_names"] = (
+            [agent.name for agent in job.agents] if job.multi_agent else []
+        )
         return cls(
+            **values,
             job_id=job.job_id,
             run_id=job.run_id,
-            instruction=job.instruction,
             status="queued",
-            trace_id=job.trace_id,
-            input=job.input,
-            input_files=job.input_files,
-            sandbox=job.sandbox,
-            sandbox_image=job.sandbox_image,
-            multi_agent=job.multi_agent,
-            agent_names=[agent.name for agent in job.agents] if job.multi_agent else [],
-            agents=job.agents if job.multi_agent else [],
-            unlimited=job.unlimited,
-            timeout_seconds=job.timeout_seconds,
-            reflect=job.reflect,
             worker_id=worker_id,
         )
 

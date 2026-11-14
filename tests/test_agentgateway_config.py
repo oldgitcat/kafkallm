@@ -5,7 +5,6 @@ import yaml
 
 from kafkallm.gateway.config import (
     ConfigError,
-    api_key_from_env,
     base_url_from_env,
     cors_origins_from_env,
     render_config,
@@ -93,13 +92,6 @@ def test_unknown_provider_and_format_are_rejected() -> None:
 def test_template_requires_the_llm_marker() -> None:
     with pytest.raises(ConfigError, match="__LLM_SECTION__"):
         render_config("config: {}\n", provider="openrouter")
-
-
-def test_provider_settings_fall_back_to_the_legacy_openrouter_key() -> None:
-    legacy = {"OPENROUTER_API_KEY": "legacy-key"}
-    assert api_key_from_env(legacy) == "legacy-key"
-    assert api_key_from_env({"LLM_UPSTREAM_API_KEY": "new-key", **legacy}) == "new-key"
-    assert api_key_from_env({"LLM_UPSTREAM_PROVIDER": "openai", **legacy}) == ""
 
 
 def test_ollama_base_url_defaults_for_environment_reads() -> None:

@@ -36,7 +36,7 @@ def test_default_sandboxes_describe_both_images() -> None:
     assert "REA" in sandboxes[1].instructions
 
 
-def test_builtin_sandbox_allows_legacy_jobs_before_seeding() -> None:
+def test_builtin_sandbox_allows_jobs_before_registry_seeding() -> None:
     settings = _settings()
 
     assert builtin_sandbox("default", settings).image == "goose:test"  # type: ignore[union-attr]

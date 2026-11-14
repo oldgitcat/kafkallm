@@ -129,7 +129,7 @@ def run(env_path: Path, *, interactive: bool | None = None) -> int:
     current_provider = (
         (env.get("LLM_UPSTREAM_PROVIDER") or DEFAULT_PROVIDER).strip().lower()
     )
-    current_key = env.get("LLM_UPSTREAM_API_KEY") or env.get("OPENROUTER_API_KEY", "")
+    current_key = env.get("LLM_UPSTREAM_API_KEY", "")
     current_base = env.get("LLM_UPSTREAM_BASE_URL", "")
     current_model = env.get("GOOSE_MODEL", "")
 

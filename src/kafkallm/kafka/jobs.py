@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from kafkallm.core.models import AgentSpec, Job, JobState
+from kafkallm.core.models import AgentSpec, Job, JobSpec, JobState
 from kafkallm.core.settings import Settings
 from kafkallm.core.telemetry import (
     current_trace_id,
@@ -78,19 +78,8 @@ def job_from_state(
         raise ValueError("This job has no instruction to retry.")
     if state.unlimited and not settings.allow_unlimited_jobs:
         raise ValueError("Unlimited jobs are disabled. Set ALLOW_UNLIMITED_JOBS=true.")
-    values: dict[str, Any] = {
-        "instruction": state.instruction,
-        "input": state.input,
-        "input_files": state.input_files,
-        "sandbox": state.sandbox,
-        "sandbox_image": state.sandbox_image,
-        "multi_agent": state.multi_agent,
-        "agents": state.agents,
-        "unlimited": state.unlimited,
-        "timeout_seconds": state.timeout_seconds,
-        "reflect": state.reflect,
-        "trace_id": current_trace_id() or new_trace_id(),
-    }
+    values = state.model_dump(include=set(JobSpec.model_fields))
+    values["trace_id"] = current_trace_id() or new_trace_id()
     if job_id is not None:
         values["job_id"] = job_id
     if run_id is not None:

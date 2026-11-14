@@ -14,12 +14,7 @@ from typing import Any
 from kafkallm.core.models import AgentResult, Job, SandboxSpec
 from kafkallm.core.settings import Settings
 from kafkallm.core.telemetry import get_tracer, set_content, set_error
-from kafkallm.sandbox.activity import (
-    _DelegationTracker,  # noqa: F401 - re-exported for the old module layout
-    _LogCollector,
-    _SpanActivity,
-    _stream_event_log_records,  # noqa: F401 - re-exported for tests
-)
+from kafkallm.sandbox.activity import _LogCollector, _SpanActivity
 from kafkallm.sandbox.archive import (
     copy_from_container,
     copy_into_container,
@@ -130,9 +125,6 @@ class _SandboxMirror:
                 logger.debug("Could not write mirrored sandbox file %s: %s", name, exc)
                 continue
             self.offsets[name] = len(data)
-
-
-# Re-exported for callers and tests that used the old single-module layout.
 
 
 class GooseJobRunner:

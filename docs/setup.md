@@ -183,7 +183,7 @@ required secret.
 |---|---|---|
 | `GOOSE_MODEL` | `nvidia/nemotron-3.5-lightning:free` | Model used inside the job; must exist at the selected provider |
 | `LLM_UPSTREAM_PROVIDER` | `openrouter` | Upstream provider (`openrouter`, `openai`, `ollama`, `custom`, provider presets) |
-| `LLM_UPSTREAM_API_KEY` | — | Provider credential; only agentgateway sees it. `OPENROUTER_API_KEY` is accepted as a legacy alias for OpenRouter |
+| `LLM_UPSTREAM_API_KEY` | — | Provider credential; only agentgateway sees it |
 | `LLM_UPSTREAM_BASE_URL` | provider default | Endpoint override; required for `custom`, defaults to host Ollama for `ollama` |
 | `LLM_UPSTREAM_FORMAT` | `completions` | Wire format for `custom` (see the module's `PROVIDER_FORMATS`) |
 | `LLM_GATEWAY_VIRTUAL_KEY` | generated | Rotatable key used by jobs |

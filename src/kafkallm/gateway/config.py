@@ -109,11 +109,7 @@ def provider_from_env(env: Mapping[str, str] | None = None) -> str:
 
 def api_key_from_env(env: Mapping[str, str] | None = None) -> str:
     values = os.environ if env is None else env
-    key = values.get("LLM_UPSTREAM_API_KEY", "").strip()
-    if not key and provider_from_env(values) == "openrouter":
-        # Backwards compatibility with the original OpenRouter-only setup.
-        key = values.get("OPENROUTER_API_KEY", "").strip()
-    return key
+    return values.get("LLM_UPSTREAM_API_KEY", "").strip()
 
 
 def base_url_from_env(env: Mapping[str, str] | None = None) -> str:
@@ -127,7 +123,7 @@ def base_url_from_env(env: Mapping[str, str] | None = None) -> str:
 def provider_settings(
     env: Mapping[str, str] | None = None,
 ) -> tuple[str, str, str]:
-    """Return (provider, api_key, base_url) with legacy fallbacks applied."""
+    """Return the resolved provider, API key, and base URL."""
     values = os.environ if env is None else env
     return (
         provider_from_env(values),
@@ -339,10 +335,7 @@ def main(argv: list[str] | None = None) -> int:
         virtual_key = actual_virtual_key
 
     if not args.no_api_key and not api_key and provider not in KEY_OPTIONAL_PROVIDERS:
-        raise ConfigError(
-            f"Provider {provider!r} needs LLM_UPSTREAM_API_KEY "
-            "(the legacy OPENROUTER_API_KEY is accepted for OpenRouter)."
-        )
+        raise ConfigError(f"Provider {provider!r} needs LLM_UPSTREAM_API_KEY.")
 
     template_path = Path(args.template)
     try:

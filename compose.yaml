@@ -180,7 +180,7 @@ services:
       # microVM receive the virtual key, which the gateway validates and
       # replaces with the provider key before forwarding upstream.
       # Provider selection is rendered into the config before startup.
-      LLM_UPSTREAM_API_KEY: ${LLM_UPSTREAM_API_KEY:-${OPENROUTER_API_KEY:-}}
+      LLM_UPSTREAM_API_KEY: ${LLM_UPSTREAM_API_KEY:-}
       LLM_GATEWAY_VIRTUAL_KEY: ${LLM_GATEWAY_VIRTUAL_KEY:-}
       MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://mlflow:5000}
       MLFLOW_OTLP_HOST: ${MLFLOW_OTLP_HOST:-mlflow}
@@ -211,10 +211,6 @@ services:
       - ALL
     networks:
       default:
-        # Compatibility alias for existing .env files and scripts that still
-        # use the old "llm-gateway" hostname.
-        aliases:
-          - llm-gateway
 
   agent-worker:
     image: ${KAFKALLM_APP_IMAGE:-kafkallm-app:latest}

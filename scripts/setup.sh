@@ -74,22 +74,6 @@ if not has("LLM_UPSTREAM_BASE_URL"):
     append("LLM_UPSTREAM_BASE_URL", "")
 if not has("LLM_UPSTREAM_FORMAT"):
     append("LLM_UPSTREAM_FORMAT", "completions")
-if not has("LLM_UPSTREAM_API_KEY"):
-    legacy = value("OPENROUTER_API_KEY")
-    if legacy:
-        append("LLM_UPSTREAM_API_KEY", legacy)
-        print("Migrated OPENROUTER_API_KEY to LLM_UPSTREAM_API_KEY")
-
-# The Compose service was renamed from llm-gateway to agentgateway. Existing
-# .env files keep working through a network alias, but migrate the default.
-updated = []
-for line in lines:
-    if line.startswith("LLM_GATEWAY_READY_URL=http://llm-gateway:"):
-        updated.append(line.replace("llm-gateway", "agentgateway"))
-        print("Updated LLM_GATEWAY_READY_URL to the agentgateway hostname")
-    else:
-        updated.append(line)
-lines = updated
 
 path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 PY

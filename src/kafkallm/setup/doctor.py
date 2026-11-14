@@ -113,8 +113,7 @@ def configuration_checks(
             "Provider API key",
             key_status,
             key_detail,
-            "Set LLM_UPSTREAM_API_KEY; OpenRouter also accepts the legacy "
-            "OPENROUTER_API_KEY. Get an OpenRouter key at "
+            "Set LLM_UPSTREAM_API_KEY. Get an OpenRouter key at "
             "https://openrouter.ai/keys.",
         )
     )

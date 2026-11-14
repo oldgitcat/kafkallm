@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from kafkallm.sandbox.safe_fs import open_text_no_follow, read_text_no_follow
+from kafkallm.sandbox.safe_fs import open_text_no_follow
 
 # A stream-json event repeats large metadata (for example the advertised tool
 # list) on every line. A long job can therefore produce a main.jsonl that is
@@ -19,50 +19,13 @@ NO_OUTPUT_ERROR = "goose produced no output."
 
 
 def parse_goose_output(raw: str) -> tuple[str, dict[str, int], int, str | None]:
-    """Parse goose output from either the legacy JSON or stream-json format.
-
-    The runtime now requests line-delimited `stream-json` events, but old job
-    bundles and fixtures still contain one JSON document. Both are accepted.
-    """
+    """Parse line-delimited goose ``stream-json`` output."""
     if not raw.strip():
         return "", {}, 0, NO_OUTPUT_ERROR
-    try:
-        document = json.loads(raw)
-    except ValueError:
-        stream = _parse_stream_events(raw)
-        if stream is not None:
-            return stream
-        start = raw.find("{")
-        if start < 0:
-            return "", {}, 0, "goose output is not JSON."
-        try:
-            document = json.loads(raw[start:])
-        except ValueError as exc:
-            return "", {}, 0, f"goose output is not valid JSON: {exc}"
-    if not isinstance(document, dict):
-        return "", {}, 0, "goose output is not a JSON object."
-    if document.get("type") in {"message", "complete", "error"}:
-        stream = _parse_stream_events(raw)
-        if stream is not None:
-            return stream
-    return _parse_legacy_document(document)
-
-
-def _parse_legacy_document(
-    document: dict[str, Any],
-) -> tuple[str, dict[str, int], int, str | None]:
-    metadata = document.get("metadata") or {}
-    usage = _usage(metadata)
-    messages = document.get("messages") or []
-    steps = sum(
-        1
-        for message in messages
-        if isinstance(message, dict) and message.get("role") == "assistant"
-    )
-    text, error = _message_content(messages)
-    if metadata.get("status") == "error" and not error:
-        error = text.strip() or "goose reported an error."
-    return text, usage, steps, error
+    stream = _parse_stream_events(raw)
+    if stream is None:
+        return "", {}, 0, "goose output is not valid stream-json."
+    return stream
 
 
 def _parse_stream_events(
@@ -208,11 +171,10 @@ def parse_goose_output_file(
                 f"goose output contains {oversized} line(s) larger than "
                 f"{_MAX_STREAM_LINE_BYTES} bytes.",
             )
-        if accumulator.events == 0:
-            if accumulator.usage or accumulator.error is not None:
-                return accumulator.result()
-            # Legacy bundles contain one JSON document instead of stream-json.
-            return parse_goose_output(read_text_no_follow(path))
+        if accumulator.events == 0 and not (
+            accumulator.usage or accumulator.error is not None
+        ):
+            return "", {}, 0, NO_OUTPUT_ERROR
         return accumulator.result()
     finally:
         stream.close()
@@ -222,15 +184,8 @@ def parse_goose_run(
     workdir: Path,
     stem: str,
 ) -> tuple[str, dict[str, int], int, str | None]:
-    """Parse ``<stem>.jsonl`` and fall back to legacy ``<stem>.json``."""
-    text, usage, steps, error = parse_goose_output_file(
-        workdir / ".kafkallm" / f"{stem}.jsonl"
-    )
-    if error == NO_OUTPUT_ERROR:
-        text, usage, steps, error = parse_goose_output_file(
-            workdir / ".kafkallm" / f"{stem}.json"
-        )
-    return text, usage, steps, error
+    """Parse ``<stem>.jsonl`` from the job's control directory."""
+    return parse_goose_output_file(workdir / ".kafkallm" / f"{stem}.jsonl")
 
 
 def _message_content(messages: Any) -> tuple[str, str | None]:

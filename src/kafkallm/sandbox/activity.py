@@ -12,9 +12,6 @@ from typing import Any
 from kafkallm.sandbox.output import stream_event_log_records
 from kafkallm.sandbox.safe_fs import open_text_no_follow
 
-# Kept as a module alias so existing tests and callers can import it here.
-_stream_event_log_records = stream_event_log_records
-
 
 class _SpanActivity:
     """Record goose stream activity as span events for the trace timeline.
@@ -253,7 +250,7 @@ class _LogCollector:
                                 event
                             ):
                                 emit(extra_kind, extra_text)
-                        for record_kind, text in _stream_event_log_records(
+                        for record_kind, text in stream_event_log_records(
                             event, prefix
                         ):
                             emit(record_kind, text)

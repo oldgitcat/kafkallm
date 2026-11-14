@@ -41,12 +41,6 @@ def test_configuration_checks_accept_a_complete_environment() -> None:
     assert [check.status for check in checks] == ["ok"] * 5
 
 
-def test_configuration_checks_accept_the_legacy_openrouter_key() -> None:
-    checks = configuration_checks(_settings(), {"OPENROUTER_API_KEY": "sk-or-v1-test"})
-
-    assert all(check.status == "ok" for check in checks)
-
-
 def test_configuration_checks_accept_ollama_without_a_key() -> None:
     checks = configuration_checks(_settings(), {"LLM_UPSTREAM_PROVIDER": "ollama"})
     by_name = {check.name: check for check in checks}

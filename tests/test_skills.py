@@ -97,7 +97,7 @@ def test_copy_skills_refuses_a_symlinked_target(tmp_path: Path) -> None:
 def test_merge_skills_adds_and_updates_without_deleting(tmp_path: Path) -> None:
     target = tmp_path / "store"
     existing = _skill(target, "guard", "# Guard\nold\n")
-    (existing / "legacy.md").write_text("keep me", encoding="utf-8")
+    (existing / "keep.md").write_text("keep me", encoding="utf-8")
     (existing / "rules.md").write_text("old rules", encoding="utf-8")
 
     source = tmp_path / "proposal"
@@ -111,7 +111,7 @@ def test_merge_skills_adds_and_updates_without_deleting(tmp_path: Path) -> None:
     assert result.files == 3
     assert (target / "guard" / "SKILL.md").read_text() == "# Guard\nnew\n"
     assert (target / "guard" / "rules.md").read_text() == "new rules"
-    assert (target / "guard" / "legacy.md").read_text() == "keep me"
+    assert (target / "guard" / "keep.md").read_text() == "keep me"
     assert (target / "learned" / "SKILL.md").read_text() == "# Learned\n"
     assert stat.S_IMODE((target / "learned" / "SKILL.md").stat().st_mode) == 0o644
 

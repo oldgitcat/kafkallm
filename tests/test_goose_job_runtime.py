@@ -21,6 +21,14 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
 
 from kafkallm.core.models import AgentResult, AgentSpec, Job, SandboxSpec
 from kafkallm.core.settings import Settings
+from kafkallm.sandbox.activity import (
+    _DelegationTracker,
+    _LogCollector,
+    _SpanActivity,
+)
+from kafkallm.sandbox.activity import (
+    stream_event_log_records as _stream_event_log_records,
+)
 from kafkallm.sandbox.output import (
     NO_OUTPUT_ERROR,
     parse_goose_output,
@@ -32,10 +40,6 @@ from kafkallm.sandbox.runtime import (
     GooseJobRunner,
     GooseJobRuntimeError,
     JobCancelledError,
-    _DelegationTracker,
-    _LogCollector,
-    _SpanActivity,
-    _stream_event_log_records,
 )
 from kafkallm.sandbox.sandboxes import SandboxStore
 from kafkallm.worker.harness import Harness
@@ -394,18 +398,21 @@ def _goose_result(
         content = [{"type": "error", "message": error}]
     else:
         content = [{"type": "text", "text": text}]
-    return json.dumps(
+    events = [
         {
-            "messages": [{"role": "assistant", "content": content}],
-            "metadata": {
-                "status": status,
-                "input_tokens": 10,
-                "output_tokens": 5,
-                "total_tokens": 15,
-                "cache_read_input_tokens": 2,
-            },
-        }
-    )
+            "type": "message",
+            "message": {"id": "m1", "role": "assistant", "content": content},
+        },
+        {
+            "type": "complete",
+            "status": status,
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "total_tokens": 15,
+            "cache_read_input_tokens": 2,
+        },
+    ]
+    return "\n".join(json.dumps(event) for event in events)
 
 
 def _settings_for(tmp_path: Path, **overrides: Any) -> Settings:
@@ -431,8 +438,8 @@ def _workspace(tmp_path: Path) -> Path:
 def test_vm_run_starts_microvm_and_collects_result(tmp_path: Path) -> None:
     client = FakeDockerClient()
     client.results = {
-        "main.json": _goose_result(text="Completed"),
-        "reflect.json": _goose_result(text="Skill updated"),
+        "main.jsonl": _goose_result(text="Completed"),
+        "reflect.jsonl": _goose_result(text="Skill updated"),
         "reflect.exit": "0",
     }
     audit = FakeAudit()
@@ -501,7 +508,7 @@ def test_vm_run_starts_microvm_and_collects_result(tmp_path: Path) -> None:
 
 def test_vm_run_copies_outputs_and_removes_workdir(tmp_path: Path) -> None:
     client = FakeDockerClient()
-    client.results = {"main.json": _goose_result(text="Completed")}
+    client.results = {"main.jsonl": _goose_result(text="Completed")}
     runner = GooseJobRunner(_settings_for(tmp_path), client=client)
     workspace = _workspace(tmp_path)
 
@@ -529,7 +536,7 @@ def test_vm_provider_error_is_propagated(tmp_path: Path) -> None:
     client = FakeDockerClient()
     client.exit_code = 1
     client.results = {
-        "main.json": _goose_result(error="Provider failed", status="error")
+        "main.jsonl": _goose_result(error="Provider failed", status="error")
     }
     audit = FakeAudit()
     runner = GooseJobRunner(_settings_for(tmp_path), client=client)
@@ -578,7 +585,7 @@ def test_vm_create_failure_is_reported(tmp_path: Path) -> None:
 
 def test_vm_passt_annotation_is_opt_in(tmp_path: Path) -> None:
     client = FakeDockerClient()
-    client.results = {"main.json": _goose_result()}
+    client.results = {"main.jsonl": _goose_result()}
     runner = GooseJobRunner(
         _settings_for(tmp_path, goose_job_use_passt=True), client=client
     )
@@ -607,7 +614,7 @@ def test_vm_wait_ready_pulls_a_missing_image(tmp_path: Path) -> None:
 
 def test_reverse_sandbox_uses_re_image_and_rea_environment(tmp_path: Path) -> None:
     client = FakeDockerClient()
-    client.results = {"main.json": _goose_result(text="Analyzed")}
+    client.results = {"main.jsonl": _goose_result(text="Analyzed")}
     runner = GooseJobRunner(
         _settings_for(tmp_path, goose_re_image="rea:test"), client=client
     )
@@ -631,7 +638,7 @@ def test_reverse_sandbox_uses_re_image_and_rea_environment(tmp_path: Path) -> No
 
 def test_default_sandbox_uses_the_goose_image(tmp_path: Path) -> None:
     client = FakeDockerClient()
-    client.results = {"main.json": _goose_result()}
+    client.results = {"main.jsonl": _goose_result()}
     runner = GooseJobRunner(
         _settings_for(tmp_path, goose_re_image="rea:test"), client=client
     )
@@ -654,7 +661,7 @@ def test_registered_sandbox_supplies_image_env_extensions_and_prompt(
     tmp_path: Path,
 ) -> None:
     client = FakeDockerClient()
-    client.results = {"main.json": _goose_result(text="Analyzed")}
+    client.results = {"main.jsonl": _goose_result(text="Analyzed")}
     settings = _settings_for(tmp_path)
     sandboxes = SandboxStore(settings)
     sandboxes.put(
@@ -716,7 +723,7 @@ def test_unknown_sandbox_is_rejected(tmp_path: Path) -> None:
 def test_job_image_overrides_the_registry_image(tmp_path: Path) -> None:
     """The image reference from the Job message is the one that runs."""
     client = FakeDockerClient()
-    client.results = {"main.json": _goose_result(text="Completed")}
+    client.results = {"main.jsonl": _goose_result(text="Completed")}
     settings = _settings_for(tmp_path)
     sandboxes = SandboxStore(settings)
     sandboxes.put(
@@ -747,7 +754,7 @@ def test_job_image_overrides_the_registry_image(tmp_path: Path) -> None:
 
 def test_job_image_works_without_a_registry_entry(tmp_path: Path) -> None:
     client = FakeDockerClient()
-    client.results = {"main.json": _goose_result(text="Completed")}
+    client.results = {"main.jsonl": _goose_result(text="Completed")}
     runner = GooseJobRunner(_settings_for(tmp_path), client=client)
     job = Job(
         instruction="Run an ad-hoc image",
@@ -767,7 +774,7 @@ def test_job_image_works_without_a_registry_entry(tmp_path: Path) -> None:
 def test_job_image_is_pulled_when_missing(tmp_path: Path) -> None:
     client = FakeDockerClient()
     client.image_available = False
-    client.results = {"main.json": _goose_result(text="Completed")}
+    client.results = {"main.jsonl": _goose_result(text="Completed")}
     runner = GooseJobRunner(_settings_for(tmp_path), client=client)
     job = Job(
         instruction="Pull the image",
@@ -787,7 +794,7 @@ def test_job_image_is_pulled_when_missing(tmp_path: Path) -> None:
 
 def test_job_can_disable_the_learning_pass(tmp_path: Path) -> None:
     client = FakeDockerClient()
-    client.results = {"main.json": _goose_result(text="Completed")}
+    client.results = {"main.jsonl": _goose_result(text="Completed")}
     audit = FakeAudit()
     runner = GooseJobRunner(_settings_for(tmp_path), client=client)
     job = Job(instruction="Do the job", reflect=False)
@@ -812,8 +819,8 @@ def test_job_can_enable_the_learning_pass_when_the_worker_default_is_off(
     settings = _settings_for(tmp_path, goose_job_reflect_enabled=False)
     client = FakeDockerClient()
     client.results = {
-        "main.json": _goose_result(text="Completed"),
-        "reflect.json": _goose_result(text="Skill updated"),
+        "main.jsonl": _goose_result(text="Completed"),
+        "reflect.jsonl": _goose_result(text="Skill updated"),
         "reflect.exit": "0",
     }
     runner = GooseJobRunner(settings, client=client)
@@ -917,10 +924,9 @@ def test_worker_recreates_a_stale_gateway_proxy(tmp_path: Path) -> None:
 def test_vm_does_not_pass_provider_credentials(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("OPENROUTER_API_KEY", "real-provider-key")
     monkeypatch.setenv("LLM_UPSTREAM_API_KEY", "real-provider-key")
     client = FakeDockerClient()
-    client.results = {"main.json": _goose_result()}
+    client.results = {"main.jsonl": _goose_result()}
     runner = GooseJobRunner(_settings_for(tmp_path), client=client)
     workspace = _workspace(tmp_path)
 
@@ -932,7 +938,6 @@ def test_vm_does_not_pass_provider_credentials(
 
     environment = client.create_body["Env"]
     assert not any("real-provider-key" in item for item in environment)
-    assert not any(item.startswith("OPENROUTER_API_KEY=") for item in environment)
     assert not any(item.startswith("LLM_UPSTREAM_API_KEY=") for item in environment)
     assert not any(item.startswith("OPENAI_API_KEY=real") for item in environment)
 
@@ -994,7 +999,7 @@ def test_unlimited_environment_disables_timeout_and_turn_caps(
     tmp_path: Path,
 ) -> None:
     client = FakeDockerClient()
-    client.results = {"main.json": _goose_result()}
+    client.results = {"main.jsonl": _goose_result()}
     settings = _settings_for(
         tmp_path,
         allow_unlimited_jobs=True,
@@ -1018,7 +1023,7 @@ def test_unlimited_environment_disables_timeout_and_turn_caps(
 
 def test_run_polls_the_heartbeat_while_waiting(tmp_path: Path) -> None:
     client = FakeDockerClient()
-    client.results = {"main.json": _goose_result()}
+    client.results = {"main.jsonl": _goose_result()}
     runner = GooseJobRunner(_settings_for(tmp_path), client=client)
     calls: list[int] = []
 
@@ -1034,7 +1039,7 @@ def test_run_polls_the_heartbeat_while_waiting(tmp_path: Path) -> None:
 
 def test_cancelled_job_stops_the_microvm(tmp_path: Path) -> None:
     client = FakeDockerClient()
-    client.results = {"main.json": _goose_result()}
+    client.results = {"main.jsonl": _goose_result()}
     runner = GooseJobRunner(_settings_for(tmp_path), client=client)
     calls: list[int] = []
 
@@ -1078,7 +1083,7 @@ def test_unlimited_result_is_stored_as_an_artifact(tmp_path: Path) -> None:
 
 def test_normal_jobs_use_the_configured_result_limit(tmp_path: Path) -> None:
     client = FakeDockerClient()
-    client.results = {"main.json": _goose_result(text="x" * 100)}
+    client.results = {"main.jsonl": _goose_result(text="x" * 100)}
     runner = GooseJobRunner(
         _settings_for(
             tmp_path,
@@ -1317,18 +1322,6 @@ def test_parse_goose_output_file_reads_past_the_control_file_limit(
     assert text == "FINAL ANSWER"
     assert usage == {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
     assert steps == 2
-    assert error is None
-
-
-def test_parse_goose_output_file_accepts_legacy_document(tmp_path: Path) -> None:
-    path = tmp_path / "main.json"
-    path.write_text(_goose_result(text="PONG"), encoding="utf-8")
-
-    text, usage, steps, error = parse_goose_output_file(path)
-
-    assert text == "PONG"
-    assert usage["total_tokens"] == 15
-    assert steps == 1
     assert error is None
 
 
@@ -1670,7 +1663,7 @@ def test_main_vm_skill_edits_stay_in_the_disposable_copy(tmp_path: Path) -> None
     store.mkdir(parents=True)
     (store / "SKILL.md").write_text("# Guard\ntrusted\n", encoding="utf-8")
     client = FakeDockerClient()
-    client.results = {"main.json": _goose_result(text="Completed")}
+    client.results = {"main.jsonl": _goose_result(text="Completed")}
 
     def edit_copy(container: FakeContainer) -> None:
         if container.role != "main":
@@ -1702,7 +1695,7 @@ def test_reflect_is_skipped_when_the_main_vm_cannot_be_removed(
     tmp_path: Path,
 ) -> None:
     client = FakeDockerClient()
-    client.results = {"main.json": _goose_result(text="Completed")}
+    client.results = {"main.jsonl": _goose_result(text="Completed")}
     client.fail_remove = True
     audit = FakeAudit()
     runner = GooseJobRunner(_settings_for(tmp_path), client=client)
@@ -1724,8 +1717,8 @@ def test_reflect_is_skipped_when_the_main_vm_cannot_be_removed(
 def test_reflect_vm_uses_a_fresh_workspace_and_safe_mounts(tmp_path: Path) -> None:
     client = FakeDockerClient()
     client.results = {
-        "main.json": _goose_result(text="Completed"),
-        "reflect.json": _goose_result(text="Skill updated"),
+        "main.jsonl": _goose_result(text="Completed"),
+        "reflect.jsonl": _goose_result(text="Skill updated"),
         "reflect.exit": "0",
     }
     runner = GooseJobRunner(_settings_for(tmp_path), client=client)
@@ -1772,8 +1765,8 @@ def test_reflect_merges_a_validated_skill_into_the_store(tmp_path: Path) -> None
     (store / "SKILL.md").write_text("# Guard\ntrusted\n", encoding="utf-8")
     client = FakeDockerClient()
     client.results = {
-        "main.json": _goose_result(text="Completed"),
-        "reflect.json": _goose_result(text="Skill updated"),
+        "main.jsonl": _goose_result(text="Completed"),
+        "reflect.jsonl": _goose_result(text="Skill updated"),
         "reflect.exit": "0",
     }
 
@@ -1807,8 +1800,8 @@ def test_reflect_merges_a_validated_skill_into_the_store(tmp_path: Path) -> None
 def test_failed_reflect_does_not_merge_skills(tmp_path: Path) -> None:
     client = FakeDockerClient()
     client.results = {
-        "main.json": _goose_result(text="Completed"),
-        "reflect.json": _goose_result(text="Skill updated"),
+        "main.jsonl": _goose_result(text="Completed"),
+        "reflect.jsonl": _goose_result(text="Skill updated"),
         "reflect.exit": "1",
     }
 
@@ -1841,7 +1834,7 @@ def test_symlinked_outputs_are_not_collected(tmp_path: Path) -> None:
     secret = tmp_path / "host-secret.txt"
     secret.write_text("host secret", encoding="utf-8")
     client = FakeDockerClient()
-    client.results = {"main.json": _goose_result(text="Completed")}
+    client.results = {"main.jsonl": _goose_result(text="Completed")}
 
     def write_outputs(container: FakeContainer) -> None:
         if container.role != "main":
@@ -1897,8 +1890,8 @@ def test_reflect_vm_process_failure_does_not_merge_skills(tmp_path: Path) -> Non
     client = FakeDockerClient()
     client.reflect_exit_code = 1
     client.results = {
-        "main.json": _goose_result(text="Completed"),
-        "reflect.json": _goose_result(text="Skill updated"),
+        "main.jsonl": _goose_result(text="Completed"),
+        "reflect.jsonl": _goose_result(text="Skill updated"),
         "reflect.exit": "0",
     }
 
