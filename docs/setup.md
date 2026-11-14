@@ -173,7 +173,7 @@ The Kafka UI runs at <http://localhost:8080>. MLflow runs at
 
 ## Configuration
 
-Runtime defaults live in `src/kafkallm/settings.py`. `.env`, created from
+Runtime defaults live in `src/kafkallm/core/settings.py`. `.env`, created from
 `.env.example`, only overrides them. The file is gitignored. `make setup`
 generates the virtual gateway key, validates the selected provider, and renders
 the agentgateway config. For hosted providers, the provider key is the only

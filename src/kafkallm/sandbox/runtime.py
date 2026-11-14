@@ -11,35 +11,28 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from kafkallm.audit import JobAudit
-from kafkallm.goose_activity import (
+from kafkallm.core.models import AgentResult, Job, SandboxSpec
+from kafkallm.core.settings import Settings
+from kafkallm.core.telemetry import get_tracer, set_content, set_error
+from kafkallm.sandbox.activity import (
     _DelegationTracker,  # noqa: F401 - re-exported for the old module layout
     _LogCollector,
     _SpanActivity,
     _stream_event_log_records,  # noqa: F401 - re-exported for tests
 )
-from kafkallm.goose_errors import (
+from kafkallm.sandbox.archive import (
+    copy_from_container,
+    copy_into_container,
+    read_container_file,
+)
+from kafkallm.sandbox.errors import (
     GooseJobRuntimeError,
     JobCancelledError,
 )
-from kafkallm.goose_errors import WorkerShutdown as WorkerShutdown
-from kafkallm.goose_output import NO_OUTPUT_ERROR, parse_goose_run
-from kafkallm.goose_prompts import (
-    agent_source as _agent_source,
-)
-from kafkallm.goose_prompts import (
-    build_prompt,
-    main_environment,
-    reflect_environment,
-)
-from kafkallm.goose_reflect import run_reflect
-from kafkallm.goose_scripts import _REFLECT_PROMPT as _REFLECT_PROMPT
-from kafkallm.goose_scripts import _REFLECT_RUN_SCRIPT as _REFLECT_RUN_SCRIPT
-from kafkallm.goose_scripts import _VM_RUN_SCRIPT
-from kafkallm.job_network import ensure_job_network
-from kafkallm.models import AgentResult, Job, SandboxSpec
-from kafkallm.podman_api import (
-    container_ipv6,
+from kafkallm.sandbox.errors import WorkerShutdown as WorkerShutdown
+from kafkallm.sandbox.network import ensure_job_network
+from kafkallm.sandbox.output import NO_OUTPUT_ERROR, parse_goose_run
+from kafkallm.sandbox.podman import (
     container_networks,
     create_container,
     is_not_found,
@@ -47,16 +40,22 @@ from kafkallm.podman_api import (
     remove_container,
     wait_for_ipv6,
 )
-from kafkallm.retry import RetryTimeout, retry_until
-from kafkallm.safe_fs import iter_regular_files, read_text_no_follow
-from kafkallm.sandbox_archive import (
-    copy_from_container,
-    copy_into_container,
-    read_container_file,
+from kafkallm.sandbox.prompts import (
+    agent_source as _agent_source,
 )
-from kafkallm.sandboxes import SandboxStore, builtin_sandbox
-from kafkallm.settings import Settings
-from kafkallm.telemetry import get_tracer, set_content, set_error
+from kafkallm.sandbox.prompts import (
+    build_prompt,
+    main_environment,
+    reflect_environment,
+)
+from kafkallm.sandbox.reflect import run_reflect
+from kafkallm.sandbox.safe_fs import iter_regular_files, read_text_no_follow
+from kafkallm.sandbox.sandboxes import SandboxStore, builtin_sandbox
+from kafkallm.sandbox.scripts import _REFLECT_PROMPT as _REFLECT_PROMPT
+from kafkallm.sandbox.scripts import _REFLECT_RUN_SCRIPT as _REFLECT_RUN_SCRIPT
+from kafkallm.sandbox.scripts import _VM_RUN_SCRIPT
+from kafkallm.worker.audit import JobAudit
+from kafkallm.worker.retry import RetryTimeout, retry_until
 
 logger = logging.getLogger(__name__)
 
@@ -767,9 +766,6 @@ class GooseJobRunner:
     def _container_has_network(self, container: Any) -> bool:
         return self.settings.goose_job_network in self._container_networks(container)
 
-    def _container_ipv6(self, container: Any) -> str:
-        return container_ipv6(container, self.settings.goose_job_network)
-
     def _wait_proxy_ipv6(self, container: Any) -> str:
         return wait_for_ipv6(container, self.settings.goose_job_network)
 
@@ -1175,8 +1171,3 @@ class GooseJobRunner:
     @staticmethod
     def _is_not_found(exc: Exception) -> bool:
         return is_not_found(exc)
-
-
-def _parse_bytes(value: str) -> int:
-    """Parse a Docker style size string such as 4g into bytes."""
-    return parse_size(value)

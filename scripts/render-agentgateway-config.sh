@@ -11,4 +11,4 @@ cd "$ROOT_DIR"
 load_env "$ROOT_DIR"
 
 PYTHONPATH="$ROOT_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
-    exec python3 -m kafkallm.agentgateway_config "$@"
+    exec python3 -m kafkallm.gateway.config "$@"

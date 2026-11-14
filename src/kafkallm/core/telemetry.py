@@ -11,7 +11,7 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace import Span, Status, StatusCode
 
 from kafkallm import __version__
-from kafkallm.settings import Settings
+from kafkallm.core.settings import Settings
 
 _provider: TracerProvider | None = None
 _capture_content = False
@@ -66,10 +66,6 @@ def shutdown_telemetry() -> None:
 
 def get_tracer() -> trace.Tracer:
     return trace.get_tracer("kafkallm", __version__)
-
-
-def capture_content() -> bool:
-    return _capture_content
 
 
 def set_content(span: Span, key: str, value: str | None) -> None:

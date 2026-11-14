@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import logging
 
-from kafkallm.kafka import KafkaProducer
-from kafkallm.models import Job, JobResult, JobState, utc_now
-from kafkallm.settings import Settings
+from kafkallm.core.models import Job, JobResult, JobState, utc_now
+from kafkallm.core.settings import Settings
+from kafkallm.kafka.kafka import KafkaProducer
 
 logger = logging.getLogger(__name__)
 

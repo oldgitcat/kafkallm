@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 import yaml
 
-from kafkallm.agentgateway_config import (
+from kafkallm.gateway.config import (
     ConfigError,
     api_key_from_env,
     base_url_from_env,

@@ -18,7 +18,7 @@ from typing import Any
 from confluent_kafka import Consumer, KafkaError, KafkaException, Message
 from pydantic import BaseModel
 
-from kafkallm.settings import Settings
+from kafkallm.core.settings import Settings
 
 logger = logging.getLogger(__name__)
 
@@ -48,18 +48,21 @@ def iter_messages(
     session_timeout_ms: int = 15000,
     offset_reset: str = "earliest",
     on_idle: Callable[[], bool] | None = None,
+    unique_group: bool = True,
 ) -> Iterator[Message]:
     """Yield messages until *stop* is set, reconnecting after consumer errors.
 
     ``on_idle`` runs after every poll that returned no message and may request
-    shutdown by returning True.
+    shutdown by returning True. ``unique_group`` gives the caller a private
+    consumer group (broadcast); set it to false for a stable shared group.
     """
     description = ",".join(topics)
+    group_id = f"{group_prefix}-{uuid.uuid4()}" if unique_group else group_prefix
     while not stop.is_set():
         consumer = Consumer(
             consumer_config(
                 settings,
-                f"{group_prefix}-{uuid.uuid4()}",
+                group_id,
                 session_timeout_ms=session_timeout_ms,
                 offset_reset=offset_reset,
             )

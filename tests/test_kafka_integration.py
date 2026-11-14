@@ -16,10 +16,10 @@ import pytest
 from confluent_kafka import Consumer, KafkaError, KafkaException
 from confluent_kafka.admin import AdminClient
 
-from kafkallm.kafka import KafkaProducer, wait_for_kafka
-from kafkallm.models import Job, JobState
-from kafkallm.settings import Settings
-from kafkallm.state import StatePublisher
+from kafkallm.core.models import Job, JobState
+from kafkallm.core.settings import Settings
+from kafkallm.kafka.kafka import KafkaProducer, wait_for_kafka
+from kafkallm.kafka.state import StatePublisher
 
 BOOTSTRAP = os.getenv("KAFKA_INTEGRATION_BOOTSTRAP")
 
@@ -41,7 +41,7 @@ def _settings() -> Settings:
         results_topic=f"test.results.{suffix}",
         state_topic=f"test.state.{suffix}",
         events_topic=f"test.events.{suffix}",
-        cancels_topic=f"test.cancels.{suffix}",
+        control_topic=f"test.controls.{suffix}",
         logs_topic=f"test.logs.{suffix}",
         agents_topic=f"test.agents.{suffix}",
         sandboxes_topic=f"test.sandboxes.{suffix}",
@@ -84,7 +84,7 @@ def _delete_topics(settings: Settings) -> None:
         settings.results_topic,
         settings.state_topic,
         settings.events_topic,
-        settings.cancels_topic,
+        settings.control_topic,
         settings.logs_topic,
         settings.agents_topic,
         settings.sandboxes_topic,

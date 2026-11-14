@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from kafkallm.dotenv import load_dotenv
+from kafkallm.core.dotenv import load_dotenv
 
 
 def test_load_dotenv_reads_values_and_keeps_existing_environment(

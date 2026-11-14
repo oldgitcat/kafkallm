@@ -1,7 +1,7 @@
 """Standalone entry point for creating the host-side job network.
 
 This module deliberately imports only the standard library and
-``kafkallm.settings``/``kafkallm.job_network``. It runs before the Python
+``kafkallm.core.settings``/``kafkallm.sandbox.network``. It runs before the Python
 package is installed, so ``make network`` works on a fresh checkout.
 """
 
@@ -10,9 +10,9 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from kafkallm.dotenv import load_dotenv
-from kafkallm.job_network import ensure_job_network
-from kafkallm.settings import Settings
+from kafkallm.core.dotenv import load_dotenv
+from kafkallm.core.settings import Settings
+from kafkallm.sandbox.network import ensure_job_network
 
 
 def main(argv: list[str] | None = None) -> int:

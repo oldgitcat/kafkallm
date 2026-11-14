@@ -10,21 +10,21 @@ from pathlib import Path
 
 from confluent_kafka import KafkaException
 
-from kafkallm.dotenv import load_dotenv
-from kafkallm.jobs import build_job, submit_job
-from kafkallm.kafka import KafkaProducer, ensure_topics
-from kafkallm.kafka_consumer import iter_messages
-from kafkallm.models import AgentSpec, FileRef, Job, SandboxSpec
-from kafkallm.sandboxes import resolve_sandbox
-from kafkallm.settings import Settings
-from kafkallm.telemetry import (
+from kafkallm.core.dotenv import load_dotenv
+from kafkallm.core.models import AgentSpec, FileRef, Job, SandboxSpec
+from kafkallm.core.settings import Settings
+from kafkallm.core.telemetry import (
     configure_telemetry,
     get_tracer,
     set_content,
     set_session,
     shutdown_telemetry,
 )
-from kafkallm.worker import run_workers
+from kafkallm.kafka.consumer import iter_messages
+from kafkallm.kafka.jobs import build_job, submit_job
+from kafkallm.kafka.kafka import KafkaProducer, ensure_topics
+from kafkallm.sandbox.sandboxes import resolve_sandbox
+from kafkallm.worker.worker import run_workers
 
 
 def _file_ref(value: str) -> FileRef:
@@ -216,7 +216,7 @@ def _attach_uploads(
 ) -> None:
     if not args.upload:
         return
-    from kafkallm.storage import S3Storage
+    from kafkallm.core.storage import S3Storage
 
     input_files = list(payload.get("input_files") or [])
     if len(input_files) + len(args.upload) > settings.upload_max_files:
@@ -360,11 +360,11 @@ def main() -> None:
 
             run_gui(settings)
         elif args.command == "doctor":
-            from kafkallm.doctor import run_doctor
+            from kafkallm.setup.doctor import run_doctor
 
             exit_code = run_doctor(settings, offline=args.offline, as_json=args.json)
         elif args.command == "init-job-network":
-            from kafkallm.job_network import ensure_job_network
+            from kafkallm.sandbox.network import ensure_job_network
 
             directory = (
                 Path(settings.goose_job_network_dir)

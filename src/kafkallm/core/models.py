@@ -122,12 +122,22 @@ class SandboxSpec(BaseModel):
         return value
 
 
-class JobCancel(BaseModel):
-    """A request to stop a queued or running job."""
+class JobControl(BaseModel):
+    """A request to stop or retry a job run.
+
+    ``job_id`` and ``run_id`` identify the run. Kafka offsets are deliberately
+    not used: they are partition-local and change across restarts.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
+    request_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    action: Literal["cancel", "retry"]
     job_id: str = Field(pattern=ID_PATTERN)
+    run_id: str | None = Field(default=None, pattern=ID_PATTERN)
+    # Retry only: IDs reserved by the GUI so it can show the new job at once.
+    new_job_id: str | None = Field(default=None, pattern=ID_PATTERN)
+    new_run_id: str | None = Field(default=None, pattern=ID_PATTERN)
     requested_at: datetime = Field(default_factory=utc_now)
 
 

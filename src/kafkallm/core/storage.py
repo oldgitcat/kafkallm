@@ -9,9 +9,9 @@ import boto3
 from botocore.client import Config
 from botocore.exceptions import ClientError
 
-from kafkallm.models import FileRef
-from kafkallm.safe_fs import iter_regular_files
-from kafkallm.settings import Settings
+from kafkallm.core.models import FileRef
+from kafkallm.core.settings import Settings
+from kafkallm.sandbox.safe_fs import iter_regular_files
 
 logger = logging.getLogger(__name__)
 
@@ -59,17 +59,6 @@ class S3Storage:
     def download(self, reference: FileRef, destination: Path) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
         self.client.download_file(reference.bucket, reference.key, str(destination))
-
-    def download_bytes(self, reference: FileRef) -> bytes:
-        response = self.client.get_object(
-            Bucket=reference.bucket,
-            Key=reference.key,
-        )
-        body = response["Body"]
-        try:
-            return body.read()
-        finally:
-            body.close()
 
     def open_download(self, reference: FileRef) -> tuple[object, int]:
         """Return a streaming body and its length for an S3 object."""

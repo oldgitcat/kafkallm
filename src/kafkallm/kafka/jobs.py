@@ -4,15 +4,15 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from kafkallm.kafka import KafkaProducer
-from kafkallm.models import AgentSpec, Job
-from kafkallm.settings import Settings
-from kafkallm.state import StatePublisher
-from kafkallm.telemetry import (
+from kafkallm.core.models import AgentSpec, Job, JobState
+from kafkallm.core.settings import Settings
+from kafkallm.core.telemetry import (
     current_trace_id,
     inject_trace_headers,
     new_trace_id,
 )
+from kafkallm.kafka.kafka import KafkaProducer
+from kafkallm.kafka.state import StatePublisher
 
 
 class AgentLookup(Protocol):
@@ -64,3 +64,35 @@ def submit_job(
     )
     StatePublisher(settings, producer).queued(job, worker_id=worker_id)
     return job
+
+
+def job_from_state(
+    settings: Settings,
+    state: JobState,
+    *,
+    job_id: str | None = None,
+    run_id: str | None = None,
+) -> Job:
+    """Build a fresh run from a finished job's materialized state."""
+    if not state.instruction.strip():
+        raise ValueError("This job has no instruction to retry.")
+    if state.unlimited and not settings.allow_unlimited_jobs:
+        raise ValueError("Unlimited jobs are disabled. Set ALLOW_UNLIMITED_JOBS=true.")
+    values: dict[str, Any] = {
+        "instruction": state.instruction,
+        "input": state.input,
+        "input_files": state.input_files,
+        "sandbox": state.sandbox,
+        "sandbox_image": state.sandbox_image,
+        "multi_agent": state.multi_agent,
+        "agents": state.agents,
+        "unlimited": state.unlimited,
+        "timeout_seconds": state.timeout_seconds,
+        "reflect": state.reflect,
+        "trace_id": current_trace_id() or new_trace_id(),
+    }
+    if job_id is not None:
+        values["job_id"] = job_id
+    if run_id is not None:
+        values["run_id"] = run_id
+    return Job(**values)

@@ -1,6 +1,6 @@
 import pytest
 
-from kafkallm.settings import Settings, SettingsError
+from kafkallm.core.settings import Settings, SettingsError
 
 
 def test_invalid_integer_setting_names_the_variable(

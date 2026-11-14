@@ -4,7 +4,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,
 )
 
-from kafkallm.telemetry import extract_trace_context, set_session
+from kafkallm.core.telemetry import extract_trace_context, set_session
 
 
 def test_trace_extraction_ignores_unrelated_binary_headers() -> None:

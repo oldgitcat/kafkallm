@@ -13,7 +13,7 @@ import getpass
 import sys
 from pathlib import Path
 
-from kafkallm.agentgateway_config import (
+from kafkallm.gateway.config import (
     DEFAULT_CORS_ORIGINS,
     DEFAULT_CUSTOM_FORMAT,
     DEFAULT_MODELS,

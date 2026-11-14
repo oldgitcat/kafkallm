@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from kafkallm.job_network import JobNetworkError, ensure_job_network
+from kafkallm.sandbox.network import JobNetworkError, ensure_job_network
 
 
 def test_creates_an_ipv6_only_internal_network(tmp_path: Path) -> None:

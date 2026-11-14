@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from kafkallm.storage import S3Storage, _safe_filename
+from kafkallm.core.storage import S3Storage, _safe_filename
 
 
 class FakeS3Client:

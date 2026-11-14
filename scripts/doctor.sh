@@ -13,4 +13,4 @@ if [ -x .venv/bin/python ]; then
     PYTHON=.venv/bin/python
 fi
 
-PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" exec "$PYTHON" -m kafkallm.doctor "$@"
+PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" exec "$PYTHON" -m kafkallm.setup.doctor "$@"

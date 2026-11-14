@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from kafkallm import setup_wizard
+from kafkallm.setup import wizard as setup_wizard
 
 BASE_ENV = """\
 LLM_GATEWAY_VIRTUAL_KEY=test-virtual-key

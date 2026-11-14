@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from kafkallm.safe_fs import (
+from kafkallm.sandbox.safe_fs import (
     iter_regular_files,
     open_text_no_follow,
     read_text_no_follow,

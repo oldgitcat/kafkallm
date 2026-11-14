@@ -3,7 +3,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from kafkallm.models import AgentSpec, Job, JobState, SandboxSpec, to_json_bytes
+from kafkallm.core.models import AgentSpec, Job, JobState, SandboxSpec, to_json_bytes
 
 
 def test_job_defaults_and_serialization() -> None:

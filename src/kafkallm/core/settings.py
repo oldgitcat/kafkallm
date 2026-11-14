@@ -70,7 +70,7 @@ class Settings:
     events_topic: str
     agents_topic: str
     sandboxes_topic: str
-    cancels_topic: str
+    control_topic: str
     logs_topic: str
     kafka_group_id: str
     kafka_topic_partitions: int
@@ -103,7 +103,6 @@ class Settings:
     goose_job_workspace_root: str
     goose_job_skills_dir: str
     goose_job_agents_dir: str
-    goose_job_default_agents_dir: str
     goose_job_tools_dir: str
     goose_job_config_dir: str
     goose_job_reflect_enabled: bool
@@ -183,7 +182,7 @@ class Settings:
             events_topic=_str_env("EVENTS_TOPIC", "agent.events"),
             agents_topic=_str_env("AGENTS_TOPIC", "agents.state"),
             sandboxes_topic=_str_env("SANDBOXES_TOPIC", "sandboxes.state"),
-            cancels_topic=_str_env("CANCELS_TOPIC", "jobs.cancel"),
+            control_topic=_str_env("CONTROL_TOPIC", "jobs.control"),
             logs_topic=_str_env("LOGS_TOPIC", "jobs.logs"),
             kafka_group_id=_str_env("KAFKA_GROUP_ID", "agent-workers"),
             kafka_topic_partitions=_int_env("KAFKA_TOPIC_PARTITIONS", 3),
@@ -235,9 +234,6 @@ class Settings:
             ),
             goose_job_agents_dir=_str_env(
                 "GOOSE_JOB_AGENTS_DIR", str(Path(job_root) / "agents")
-            ),
-            goose_job_default_agents_dir=_str_env(
-                "GOOSE_JOB_DEFAULT_AGENTS_DIR", "gaense/agents"
             ),
             goose_job_tools_dir=_str_env(
                 "GOOSE_JOB_TOOLS_DIR", str(Path(job_root) / "tools")

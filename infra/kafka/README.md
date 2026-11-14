@@ -19,7 +19,7 @@ Application topics:
 | `agents.state` | Compacted agent registry |
 | `sandboxes.state` | Compacted sandbox registry |
 | `agent.events` | Agent activity |
-| `jobs.cancel` | Cancellation requests |
+| `jobs.control` | Cancel and retry requests |
 | `jobs.logs` | Job log lines |
 
 Relevant settings are documented in `docs/setup.md` and `compose.yaml`.

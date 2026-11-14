@@ -3,15 +3,15 @@ from __future__ import annotations
 from dataclasses import replace
 from types import SimpleNamespace
 
-from kafkallm import doctor
-from kafkallm.doctor import (
+from kafkallm.core.settings import Settings
+from kafkallm.setup import doctor
+from kafkallm.setup.doctor import (
     Check,
     configuration_checks,
     format_report,
     gateway_config_check,
     valid_virtual_key,
 )
-from kafkallm.settings import Settings
 
 
 def _settings() -> Settings:

@@ -7,9 +7,9 @@ from confluent_kafka import KafkaError, KafkaException, Producer
 from confluent_kafka.admin import AdminClient, NewTopic
 from pydantic import BaseModel
 
-from kafkallm.models import to_json_bytes
-from kafkallm.retry import RetryTimeout, retry_until
-from kafkallm.settings import Settings
+from kafkallm.core.models import to_json_bytes
+from kafkallm.core.settings import Settings
+from kafkallm.worker.retry import RetryTimeout, retry_until
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ def ensure_topics(settings: Settings) -> None:
             settings.jobs_topic,
             settings.results_topic,
             settings.events_topic,
-            settings.cancels_topic,
+            settings.control_topic,
             settings.logs_topic,
         }
     }

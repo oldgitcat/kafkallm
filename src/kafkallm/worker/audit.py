@@ -6,10 +6,10 @@ from typing import Any
 
 from opentelemetry import trace as otel_trace
 
-from kafkallm.kafka import KafkaProducer
-from kafkallm.models import AgentEvent, Job
-from kafkallm.settings import Settings
-from kafkallm.telemetry import inject_trace_headers, new_trace_id
+from kafkallm.core.models import AgentEvent, Job
+from kafkallm.core.settings import Settings
+from kafkallm.core.telemetry import inject_trace_headers, new_trace_id
+from kafkallm.kafka.kafka import KafkaProducer
 
 logger = logging.getLogger(__name__)
 

@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from kafkallm.models import SandboxSpec
-from kafkallm.sandboxes import (
+from kafkallm.core.models import SandboxSpec
+from kafkallm.core.settings import Settings
+from kafkallm.sandbox.sandboxes import (
     SandboxStore,
     builtin_sandbox,
     default_sandboxes,
     new_sandbox_id,
 )
-from kafkallm.settings import Settings
 
 
 def _settings() -> Settings:

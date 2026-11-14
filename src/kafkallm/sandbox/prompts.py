@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 
-from kafkallm.goose_errors import GooseJobRuntimeError
-from kafkallm.models import AgentSpec, Job, SandboxSpec
-from kafkallm.settings import Settings
+from kafkallm.core.models import AgentSpec, Job, SandboxSpec
+from kafkallm.core.settings import Settings
+from kafkallm.sandbox.errors import GooseJobRuntimeError
 
 _MAIN_PATH = (
     "/opt/kafkallm/tools/bin:/opt/java/openjdk/bin:"

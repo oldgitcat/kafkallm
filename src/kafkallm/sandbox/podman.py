@@ -8,7 +8,7 @@ from typing import Any
 
 from docker.utils import parse_bytes
 
-from kafkallm.goose_errors import GooseJobRuntimeError
+from kafkallm.sandbox.errors import GooseJobRuntimeError
 
 
 def create_container(

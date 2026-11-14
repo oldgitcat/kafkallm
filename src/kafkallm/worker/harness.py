@@ -7,24 +7,24 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from kafkallm.audit import AuditLogger, JobAudit
-from kafkallm.goose_job_runtime import (
-    GooseJobRunner,
-    JobCancelledError,
-    WorkerShutdown,
-)
-from kafkallm.models import AgentResult, FileRef, Job, JobResult, utc_now
-from kafkallm.safe_fs import iter_regular_files
-from kafkallm.sandboxes import SandboxStore
-from kafkallm.settings import Settings
-from kafkallm.storage import S3Storage
-from kafkallm.telemetry import (
+from kafkallm.core.models import AgentResult, FileRef, Job, JobResult, utc_now
+from kafkallm.core.settings import Settings
+from kafkallm.core.storage import S3Storage
+from kafkallm.core.telemetry import (
     current_trace_id,
     get_tracer,
     new_trace_id,
     set_content,
     set_error,
 )
+from kafkallm.sandbox.runtime import (
+    GooseJobRunner,
+    JobCancelledError,
+    WorkerShutdown,
+)
+from kafkallm.sandbox.safe_fs import iter_regular_files
+from kafkallm.sandbox.sandboxes import SandboxStore
+from kafkallm.worker.audit import AuditLogger, JobAudit
 
 logger = logging.getLogger(__name__)
 

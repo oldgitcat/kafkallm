@@ -69,7 +69,7 @@ The microVM never talks to Kafka. The worker is the only Kafka participant.
 | `jobs.state` | **compact** | Latest materialized `JobState` per `job_id`; the GUI's database |
 | `agents.state` | **compact** | Latest goosetown `AgentSpec` per `agent_id` |
 | `sandboxes.state` | **compact** | Latest `SandboxSpec` per `sandbox_id`; the environment registry |
-| `jobs.cancel` | delete, 7 days | Cancellation requests published by the GUI |
+| `jobs.control` | delete, 7 days | Cancel and retry requests published by the GUI |
 | `jobs.logs` | delete, 7 days | Live job activity from goose stream-json and stderr |
 | `agent.events` | delete, 7 days | Audit events for each job |
 

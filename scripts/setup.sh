@@ -26,7 +26,7 @@ import secrets
 import sys
 
 sys.path.insert(0, "src")
-from kafkallm.agentgateway_config import PLACEHOLDER_VIRTUAL_KEYS as placeholder
+from kafkallm.gateway.config import PLACEHOLDER_VIRTUAL_KEYS as placeholder
 
 path = Path(".env")
 lines = path.read_text(encoding="utf-8").splitlines()
@@ -97,7 +97,7 @@ PY
 # Ask which LLM provider to use when a terminal is attached. In scripts/CI
 # this validates the existing values instead of prompting.
 PYTHONPATH="$ROOT_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
-    python3 -m kafkallm.setup_wizard --env-file "$ROOT_DIR/.env"
+    python3 -m kafkallm.setup.wizard --env-file "$ROOT_DIR/.env"
 
 load_env "$ROOT_DIR"
 ./scripts/prepare-job-root.sh

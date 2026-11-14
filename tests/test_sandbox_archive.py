@@ -6,7 +6,7 @@ import tarfile
 from pathlib import Path
 from typing import Any
 
-from kafkallm.sandbox_archive import (
+from kafkallm.sandbox.archive import (
     copy_from_container,
     copy_into_container,
     read_container_file,

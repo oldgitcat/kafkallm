@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from kafkallm.agents import (
+from kafkallm.core.models import AgentSpec
+from kafkallm.core.settings import Settings
+from tools.gui.agents import (
     AgentStore,
     agent_profile_text,
     agent_spec_from_file,
@@ -14,8 +16,6 @@ from kafkallm.agents import (
     new_agent_id,
     seed_default_agent_profiles,
 )
-from kafkallm.models import AgentSpec
-from kafkallm.settings import Settings
 
 
 def test_default_flock_contains_the_goosetown_roles() -> None:
@@ -192,7 +192,7 @@ def test_seed_default_agent_profiles_copies_only_missing_files(
     )
     target = tmp_path / "agents"
     target.mkdir()
-    monkeypatch.setattr("kafkallm.agents._default_agents_dir", lambda: source)
+    monkeypatch.setattr("tools.gui.agents._default_agents_dir", lambda: source)
     settings = replace(Settings.from_env(), goose_job_agents_dir=str(target))
 
     assert seed_default_agent_profiles(settings) == 1

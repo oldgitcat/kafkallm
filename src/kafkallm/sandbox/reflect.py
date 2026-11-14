@@ -10,13 +10,13 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from kafkallm.audit import JobAudit
-from kafkallm.goose_errors import JobCancelledError, WorkerShutdown
-from kafkallm.goose_output import NO_OUTPUT_ERROR, parse_goose_run
-from kafkallm.goose_scripts import _REFLECT_PROMPT, _REFLECT_RUN_SCRIPT
-from kafkallm.models import Job
-from kafkallm.sandbox_archive import copy_from_container
-from kafkallm.skills import copy_skills, merge_skills
+from kafkallm.core.models import Job
+from kafkallm.sandbox.archive import copy_from_container
+from kafkallm.sandbox.errors import JobCancelledError, WorkerShutdown
+from kafkallm.sandbox.output import NO_OUTPUT_ERROR, parse_goose_run
+from kafkallm.sandbox.scripts import _REFLECT_PROMPT, _REFLECT_RUN_SCRIPT
+from kafkallm.sandbox.skills import copy_skills, merge_skills
+from kafkallm.worker.audit import JobAudit
 
 logger = logging.getLogger(__name__)
 

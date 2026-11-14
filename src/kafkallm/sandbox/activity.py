@@ -9,8 +9,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from kafkallm.goose_output import stream_event_log_records
-from kafkallm.safe_fs import open_text_no_follow
+from kafkallm.sandbox.output import stream_event_log_records
+from kafkallm.sandbox.safe_fs import open_text_no_follow
 
 # Kept as a module alias so existing tests and callers can import it here.
 _stream_event_log_records = stream_event_log_records
@@ -157,14 +157,6 @@ def _tool_result_text(value: dict[str, Any]) -> str:
     if isinstance(content, str):
         return content
     return ""
-
-
-def _json_object(text: str) -> dict[str, Any] | None:
-    try:
-        value = json.loads(text)
-    except ValueError:
-        return None
-    return value if isinstance(value, dict) else None
 
 
 class _LogCollector:

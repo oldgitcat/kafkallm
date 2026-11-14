@@ -19,7 +19,14 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,
 )
 
-from kafkallm.goose_job_runtime import (
+from kafkallm.core.models import AgentResult, AgentSpec, Job, SandboxSpec
+from kafkallm.core.settings import Settings
+from kafkallm.sandbox.output import (
+    NO_OUTPUT_ERROR,
+    parse_goose_output,
+    parse_goose_output_file,
+)
+from kafkallm.sandbox.runtime import (
     _REFLECT_RUN_SCRIPT,
     _VM_RUN_SCRIPT,
     GooseJobRunner,
@@ -27,19 +34,11 @@ from kafkallm.goose_job_runtime import (
     JobCancelledError,
     _DelegationTracker,
     _LogCollector,
-    _parse_bytes,
     _SpanActivity,
     _stream_event_log_records,
 )
-from kafkallm.goose_output import (
-    NO_OUTPUT_ERROR,
-    parse_goose_output,
-    parse_goose_output_file,
-)
-from kafkallm.harness import Harness
-from kafkallm.models import AgentResult, AgentSpec, Job, SandboxSpec
-from kafkallm.sandboxes import SandboxStore
-from kafkallm.settings import Settings
+from kafkallm.sandbox.sandboxes import SandboxStore
+from kafkallm.worker.harness import Harness
 
 
 class FakeResponse:
@@ -1345,7 +1344,7 @@ def test_parse_goose_output_file_reports_missing_output(tmp_path: Path) -> None:
 def test_parse_goose_output_file_rejects_oversized_lines(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("kafkallm.goose_output._MAX_STREAM_LINE_BYTES", 128)
+    monkeypatch.setattr("kafkallm.sandbox.output._MAX_STREAM_LINE_BYTES", 128)
     path = tmp_path / "main.jsonl"
     event = {
         "type": "message",
@@ -1439,12 +1438,6 @@ def test_parse_goose_output_rejects_empty_output() -> None:
     _, _, _, error = parse_goose_output("")
 
     assert error is not None
-
-
-def test_parse_bytes() -> None:
-    assert _parse_bytes("4g") == 4 * 1024**3
-    assert _parse_bytes("512m") == 512 * 1024**2
-    assert _parse_bytes("1024") == 1024
 
 
 def test_span_activity_records_bounded_events() -> None:

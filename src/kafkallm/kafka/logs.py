@@ -3,9 +3,9 @@ from __future__ import annotations
 import logging
 import threading
 
-from kafkallm.kafka import KafkaProducer
-from kafkallm.models import JobLog
-from kafkallm.settings import Settings
+from kafkallm.core.models import JobLog
+from kafkallm.core.settings import Settings
+from kafkallm.kafka.kafka import KafkaProducer
 
 logger = logging.getLogger(__name__)
 

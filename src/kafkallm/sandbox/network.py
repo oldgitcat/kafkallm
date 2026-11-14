@@ -22,7 +22,6 @@ from pathlib import Path
 
 DEFAULT_NETWORK = "kafkallm-jobs"
 DEFAULT_SUBNET = "fd00:6b61:666b:616c::/64"
-DEFAULT_INTERFACE = "podman1"
 
 
 class JobNetworkError(RuntimeError):

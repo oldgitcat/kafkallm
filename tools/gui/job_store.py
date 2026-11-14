@@ -3,8 +3,8 @@ from __future__ import annotations
 import threading
 from typing import Any
 
-from kafkallm.kafka_consumer import decode_json_value, iter_messages
-from kafkallm.settings import Settings
+from kafkallm.core.settings import Settings
+from kafkallm.kafka.consumer import decode_json_value, iter_messages
 
 _MAX_EVENTS_PER_JOB = 200
 _MAX_LOGS_PER_JOB = 3000

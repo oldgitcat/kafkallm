@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from kafkallm.safe_fs import open_text_no_follow, read_text_no_follow
+from kafkallm.sandbox.safe_fs import open_text_no_follow, read_text_no_follow
 
 # A stream-json event repeats large metadata (for example the advertised tool
 # list) on every line. A long job can therefore produce a main.jsonl that is

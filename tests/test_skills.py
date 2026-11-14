@@ -4,7 +4,7 @@ import os
 import stat
 from pathlib import Path
 
-from kafkallm.skills import copy_skills, merge_skills
+from kafkallm.sandbox.skills import copy_skills, merge_skills
 
 
 def _skill(root: Path, name: str, body: str = "# Skill\n") -> Path:

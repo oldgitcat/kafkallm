@@ -19,16 +19,16 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from kafkallm.agentgateway_config import (
+from kafkallm.core.dotenv import load_dotenv
+from kafkallm.core.settings import Settings, default_job_root
+from kafkallm.gateway.config import (
     DEFAULT_OLLAMA_BASE_URL,
     PLACEHOLDER_VIRTUAL_KEYS,
     provider_settings,
 )
-from kafkallm.agentgateway_config import (
+from kafkallm.gateway.config import (
     KEY_OPTIONAL_PROVIDERS as PROVIDER_KEY_OPTIONAL,
 )
-from kafkallm.dotenv import load_dotenv
-from kafkallm.settings import Settings, default_job_root
 
 AGENTGATEWAY_IMAGE = os.getenv(
     "AGENTGATEWAY_IMAGE", "cr.agentgateway.dev/agentgateway:v1.7.0"

@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 
 from kafkallm.cli import _attach_sandbox_image, _job_payload, build_parser, print_schema
-from kafkallm.models import SandboxSpec
-from kafkallm.settings import Settings
+from kafkallm.core.models import SandboxSpec
+from kafkallm.core.settings import Settings
 
 
 def _args(*argv: str):

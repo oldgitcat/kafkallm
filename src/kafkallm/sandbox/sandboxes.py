@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import logging
 
-from kafkallm.kafka import KafkaProducer
-from kafkallm.kafka_consumer import CompactedStore, read_compacted
-from kafkallm.models import SandboxSpec, utc_now
-from kafkallm.settings import Settings
-from kafkallm.slugs import slugify
+from kafkallm.core.models import SandboxSpec, utc_now
+from kafkallm.core.settings import Settings
+from kafkallm.core.slugs import slugify
+from kafkallm.kafka.consumer import CompactedStore, read_compacted
+from kafkallm.kafka.kafka import KafkaProducer
 
 logger = logging.getLogger(__name__)
 

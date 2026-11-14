@@ -55,10 +55,6 @@ class MergeResult:
     files: int = 0
     bytes: int = 0
 
-    @property
-    def changed(self) -> bool:
-        return bool(self.persisted)
-
 
 def _skill_entries(directory: Path) -> Iterator[tuple[Path, Path, int]]:
     """Yield ``(absolute, relative, size)`` for a validated skill tree."""

@@ -9,10 +9,10 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from kafkallm.agents import AgentStore, default_agents
-from kafkallm.models import FileRef, Job, JobState
-from kafkallm.sandboxes import SandboxStore, default_sandboxes
-from kafkallm.settings import Settings
+from kafkallm.core.models import FileRef, Job, JobState
+from kafkallm.core.settings import Settings
+from kafkallm.sandbox.sandboxes import SandboxStore, default_sandboxes
+from tools.gui.agents import AgentStore, default_agents
 from tools.gui.gui import JobServer, JobStore
 
 
@@ -24,10 +24,6 @@ class FakeStorage:
     def upload_input(self, filename: str, data: bytes) -> FileRef:
         self.uploads.append((filename, data))
         return FileRef(bucket="jobs", key=f"uploads/{filename}")
-
-    def download_bytes(self, reference: FileRef) -> bytes:
-        self.downloads.append(reference)
-        return b"artifact-data"
 
     def open_download(self, reference: FileRef) -> tuple[io.BytesIO, int]:
         self.downloads.append(reference)
@@ -295,7 +291,14 @@ def test_gui_stops_queued_and_running_jobs() -> None:
         )
         assert status == 202
         assert data == {"status": "cancelling", "job_id": job.job_id}
-        assert "jobs.cancel" in [topic for topic, _, _ in producer.messages]
+        assert [topic for topic, _, _ in producer.messages] == [
+            "jobs.control",
+            "jobs.state",
+        ]
+        control = producer.messages[0][2]
+        assert control.action == "cancel"
+        assert control.job_id == job.job_id
+        assert control.run_id == job.run_id
         detail = store.job(job.job_id)
         assert detail is not None
         assert detail["cancelled"] is True
@@ -619,7 +622,7 @@ def test_gui_restarts_a_finished_job_with_its_settings() -> None:
     try:
         status, restarted = _request(f"{base}/api/jobs/{job.job_id}/restart", {})
 
-        assert status == 201
+        assert status == 202
         assert restarted["job_id"] != job.job_id
         assert restarted["run_id"] != job.run_id
         assert restarted["instruction"] == "Do it again"
@@ -627,10 +630,13 @@ def test_gui_restarts_a_finished_job_with_its_settings() -> None:
         assert restarted["sandbox_image"] == "kafkallm-rea-job:latest"
         assert restarted["multi_agent"] is False
         assert restarted["reflect"] is False
-        assert [message[0] for message in producer.messages] == [
-            "jobs.in",
-            "jobs.state",
-        ]
+        assert [message[0] for message in producer.messages] == ["jobs.control"]
+        control = producer.messages[0][2]
+        assert control.action == "retry"
+        assert control.job_id == job.job_id
+        assert control.run_id == job.run_id
+        assert control.new_job_id == restarted["job_id"]
+        assert control.new_run_id == restarted["run_id"]
         assert store.job(restarted["job_id"]) is not None
     finally:
         server.shutdown()

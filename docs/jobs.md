@@ -141,7 +141,22 @@ starts at the worker.
 | `jobs.state` | `JobState` (compacted) | GUI database / latest state |
 | `jobs.logs` | `JobLog` | Live activity |
 | `agent.events` | Audit event | Submission, worker, Goose, artifacts |
-| `jobs.cancel` | `JobCancel` | Stop request |
+| `jobs.control` | `JobControl` | Cancel and retry requests |
+
+A control record names the run, never a Kafka offset:
+
+```json
+{
+  "request_id": "…",
+  "action": "cancel",
+  "job_id": "…",
+  "run_id": "…"
+}
+```
+
+For `retry`, the GUI also reserves `new_job_id` and `new_run_id`, so it can
+show the replacement job immediately. The worker creates the new run from the
+latest `JobState`.
 
 Read them with the CLI:
 

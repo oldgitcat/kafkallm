@@ -33,7 +33,7 @@ Kafka is both the queue and the GUI database. The important topics are:
 | `jobs.state` | compact | Latest `JobState` per job |
 | `agents.state` | compact | Agent registry |
 | `sandboxes.state` | compact | Sandbox registry |
-| `jobs.cancel` | delete | Cancellation requests |
+| `jobs.control` | delete | Cancel and retry requests |
 | `jobs.logs` | delete | Live activity |
 | `agent.events` | delete | Audit events |
 

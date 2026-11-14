@@ -17,7 +17,27 @@ from urllib.parse import parse_qs, quote, urlsplit
 
 from pydantic import ValidationError
 
-from kafkallm.agents import (
+from kafkallm.core.models import (
+    AgentSpec,
+    FileRef,
+    Job,
+    JobControl,
+    JobState,
+    SandboxSpec,
+    utc_now,
+)
+from kafkallm.core.settings import Settings
+from kafkallm.core.storage import S3Storage
+from kafkallm.kafka.jobs import build_job, job_from_state, select_agents, submit_job
+from kafkallm.kafka.kafka import KafkaProducer, ensure_topics, wait_for_kafka
+from kafkallm.sandbox.sandboxes import (
+    SandboxPublisher,
+    SandboxStore,
+    builtin_sandbox,
+    new_sandbox_id,
+    seed_default_sandboxes,
+)
+from tools.gui.agents import (
     AgentPublisher,
     AgentStore,
     default_agent_ids,
@@ -25,31 +45,7 @@ from kafkallm.agents import (
     sync_agents,
     write_agent_profile,
 )
-from kafkallm.job_store import JobStore
-from kafkallm.jobs import build_job, select_agents, submit_job
-from kafkallm.kafka import KafkaProducer, ensure_topics, wait_for_kafka
-from kafkallm.models import (
-    AgentSpec,
-    FileRef,
-    Job,
-    JobCancel,
-    JobState,
-    SandboxSpec,
-    utc_now,
-)
-from kafkallm.sandboxes import (
-    SandboxPublisher,
-    SandboxStore,
-    builtin_sandbox,
-    new_sandbox_id,
-    seed_default_sandboxes,
-)
-from kafkallm.settings import Settings
-from kafkallm.storage import S3Storage
-from kafkallm.telemetry import (
-    current_trace_id,
-    new_trace_id,
-)
+from tools.gui.job_store import JobStore
 
 logger = logging.getLogger(__name__)
 
@@ -380,9 +376,13 @@ class JobHandler(BaseHTTPRequestHandler):
         try:
             with self.server.producer_lock:
                 self.server.producer.send(
-                    self.server.settings.cancels_topic,
+                    self.server.settings.control_topic,
                     job_id,
-                    JobCancel(job_id=job_id),
+                    JobControl(
+                        action="cancel",
+                        job_id=job_id,
+                        run_id=state.run_id,
+                    ),
                 )
                 self.server.producer.send(
                     self.server.settings.state_topic,
@@ -466,31 +466,29 @@ class JobHandler(BaseHTTPRequestHandler):
                 status=HTTPStatus.BAD_REQUEST,
             )
             return
-        restarted = Job(
-            instruction=state.instruction,
-            input=state.input,
-            input_files=state.input_files,
-            sandbox=state.sandbox,
-            sandbox_image=state.sandbox_image,
-            multi_agent=state.multi_agent,
-            agents=state.agents,
-            unlimited=state.unlimited,
-            timeout_seconds=state.timeout_seconds,
-            reflect=state.reflect,
-            trace_id=current_trace_id() or new_trace_id(),
-        )
+        restarted = job_from_state(self.server.settings, state)
         try:
             with self.server.producer_lock:
-                submit_job(self.server.settings, self.server.producer, restarted)
+                self.server.producer.send(
+                    self.server.settings.control_topic,
+                    job_id,
+                    JobControl(
+                        action="retry",
+                        job_id=job_id,
+                        run_id=state.run_id,
+                        new_job_id=restarted.job_id,
+                        new_run_id=restarted.run_id,
+                    ),
+                )
         except Exception as exc:
-            logger.exception("Could not restart job %s", job_id)
+            logger.exception("Could not request restart for job %s", job_id)
             self._send_json(
                 {"error": f"Could not restart job: {exc}"},
                 status=HTTPStatus.SERVICE_UNAVAILABLE,
             )
             return
         self.server.store.put_state(JobState.queued(restarted).model_dump(mode="json"))
-        self._send_json(restarted.model_dump(mode="json"), status=HTTPStatus.CREATED)
+        self._send_json(restarted.model_dump(mode="json"), status=HTTPStatus.ACCEPTED)
 
     def _handle_job_submit(self) -> None:
         try:

@@ -21,7 +21,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-from kafkallm.goose_errors import GooseJobRuntimeError
+from kafkallm.sandbox.errors import GooseJobRuntimeError
 
 logger = logging.getLogger(__name__)
 

@@ -9,11 +9,11 @@ from typing import Any
 
 import yaml
 
-from kafkallm.kafka import KafkaProducer
-from kafkallm.kafka_consumer import CompactedStore, read_compacted
-from kafkallm.models import ID_PATTERN, AgentSpec
-from kafkallm.settings import Settings
-from kafkallm.slugs import slugify
+from kafkallm.core.models import ID_PATTERN, AgentSpec
+from kafkallm.core.settings import Settings
+from kafkallm.core.slugs import slugify
+from kafkallm.kafka.consumer import CompactedStore, read_compacted
+from kafkallm.kafka.kafka import KafkaProducer
 
 logger = logging.getLogger(__name__)
 

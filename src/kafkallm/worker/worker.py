@@ -14,17 +14,9 @@ from confluent_kafka import Consumer, KafkaError, KafkaException, Message
 from opentelemetry.trace import Status, StatusCode
 from pydantic import ValidationError
 
-from kafkallm.audit import AuditLogger
-from kafkallm.cancels import CancelStore
-from kafkallm.goose_job_runtime import WorkerShutdown
-from kafkallm.harness import Harness
-from kafkallm.kafka import KafkaProducer, wait_for_kafka
-from kafkallm.logs import LogPublisher
-from kafkallm.models import ID_PATTERN, Job, JobResult
-from kafkallm.sandboxes import SandboxStore
-from kafkallm.settings import Settings
-from kafkallm.state import StatePublisher
-from kafkallm.telemetry import (
+from kafkallm.core.models import ID_PATTERN, Job, JobControl, JobResult, JobState
+from kafkallm.core.settings import Settings
+from kafkallm.core.telemetry import (
     current_trace_id,
     extract_trace_context,
     get_tracer,
@@ -33,6 +25,16 @@ from kafkallm.telemetry import (
     set_content,
     set_session,
 )
+from kafkallm.kafka.consumer import read_compacted
+from kafkallm.kafka.jobs import job_from_state, submit_job
+from kafkallm.kafka.kafka import KafkaProducer, wait_for_kafka
+from kafkallm.kafka.logs import LogPublisher
+from kafkallm.kafka.state import StatePublisher
+from kafkallm.sandbox.runtime import WorkerShutdown
+from kafkallm.sandbox.sandboxes import SandboxStore
+from kafkallm.worker.audit import AuditLogger
+from kafkallm.worker.controls import ControlStore
+from kafkallm.worker.harness import Harness
 
 logger = logging.getLogger(__name__)
 
@@ -57,8 +59,8 @@ class Worker:
         self.logs = LogPublisher(settings, self.producer)
         self.sandboxes = SandboxStore(settings)
         self.sandboxes.start()
-        self.cancels = CancelStore(settings)
-        self.cancels.start()
+        self.controls = ControlStore(settings, on_retry=self._retry_job)
+        self.controls.start()
         self.harness = Harness(settings, audit=self.audit, sandboxes=self.sandboxes)
         self.harness.wait_ready()
         max_poll_ms = (settings.max_job_timeout_seconds + 120) * 1000
@@ -99,7 +101,7 @@ class Worker:
                 updates["trace_id"] = trace_id
         return result.model_copy(update=updates)
 
-    def _heartbeat(self, job_id: str) -> bool:
+    def _heartbeat(self, job_id: str, run_id: str) -> bool:
         """Poll the consumer while a long job runs and report cancellation."""
         if not self.running:
             raise WorkerShutdown("Worker is shutting down; job interrupted.")
@@ -116,7 +118,50 @@ class Worker:
                         )
                 else:
                     self._pending_messages.append(message)
-        return self.cancels.is_cancelled(job_id)
+        return self.controls.is_cancelled(job_id, run_id)
+
+    def _retry_job(self, control: JobControl) -> None:
+        """Create a fresh run from the stored state of a finished job."""
+        if not self.running:
+            return
+        states = read_compacted(
+            self.settings,
+            self.settings.state_topic,
+            JobState.model_validate_json,
+            timeout=3.0,
+        )
+        state = states.get(control.job_id)
+        if state is None:
+            logger.warning("Retry requested for unknown job %s", control.job_id)
+            return
+        if control.run_id is not None and state.run_id != control.run_id:
+            logger.warning(
+                "Retry requested for stale run %s of job %s (current run %s)",
+                control.run_id,
+                control.job_id,
+                state.run_id,
+            )
+            return
+        if state.status in {"queued", "running"}:
+            logger.warning(
+                "Retry requested while job %s is still %s",
+                control.job_id,
+                state.status,
+            )
+            return
+        job = job_from_state(
+            self.settings,
+            state,
+            job_id=control.new_job_id,
+            run_id=control.new_run_id,
+        )
+        submit_job(self.settings, self.producer, job)
+        logger.info(
+            "Retry requested for job %s: queued new job %s / run %s",
+            control.job_id,
+            job.job_id,
+            job.run_id,
+        )
 
     def handle_message(self, message: Message) -> None:
         parent_context = extract_trace_context(message.headers())
@@ -161,7 +206,7 @@ class Worker:
                 result = self.harness.process(
                     job,
                     job_audit=job_audit,
-                    heartbeat=lambda: self._heartbeat(job.job_id),
+                    heartbeat=lambda: self._heartbeat(job.job_id, job.run_id),
                     log=lambda kind, text: self.logs.publish(job.job_id, kind, text),
                 )
                 if not self.state.completed(state, result):
@@ -245,7 +290,7 @@ class Worker:
                         self.consumer.resume(current)
         finally:
             self.consumer.close()
-            self.cancels.stop()
+            self.controls.stop()
             self.sandboxes.stop()
             self.producer.close()
             self.harness.close()

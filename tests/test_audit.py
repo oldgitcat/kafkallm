@@ -7,9 +7,9 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,
 )
 
-from kafkallm.audit import AuditLogger
-from kafkallm.models import AgentEvent, Job
-from kafkallm.settings import Settings
+from kafkallm.core.models import AgentEvent, Job
+from kafkallm.core.settings import Settings
+from kafkallm.worker.audit import AuditLogger
 
 
 class RecordingProducer:

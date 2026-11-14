@@ -30,7 +30,7 @@ number of partitions; extra consumers remain idle.
 ### Stopping jobs
 
 The job detail in the GUI has a **Stop job** button for queued and running
-jobs. It publishes a `JobCancel` record to `jobs.cancel` and marks the job as
+jobs. It publishes a `JobControl` record to `jobs.control` and marks the job as
 cancelled in the GUI immediately. Workers consume that topic and:
 - stop the active microVM container if the job is running
 - skip the job if it has not started yet
@@ -41,8 +41,9 @@ publish its normal result.
 
 ### Restarting jobs
 
-Finished jobs (`succeeded` or `failed`) have a **Restart job** button. It
-queues a new job with a new `job_id` and `run_id`, keeping the instruction,
+Finished jobs (`succeeded` or `failed`) have a **Restart job** button. The GUI
+publishes a `JobControl` with `action: retry` to `jobs.control`; the worker
+creates a new job with a new `job_id` and `run_id`, keeping the instruction,
 structured input, input files, sandbox ID, image reference, agent profiles,
 limits, and the learning-pass choice. Queued or running jobs cannot be
 restarted; stop them first. Clicking an open job row again collapses its detail
@@ -210,15 +211,20 @@ the wrapper and builtins. Possible future work, not required now:
 ## Repository layout
 
 ```text
-src/kafkallm/       worker, job store, doctor, Kafka, state, agents,
-                    sandboxes, goose runtime, output parsing, models
-tools/gui/          browser UI and static assets
-gaense/             built-in agents, skills, template, Goose config
-stall/              sandbox images and REA requirements
-infra/              Kafka, MLflow, S3, agentgateway, Caddy, and proxy
-scripts/            setup, doctor, config render, image builds, network init, sandbox helpers
-tests/              unit tests
-Makefile            one-command setup, diagnostics, build, and run targets
+src/kafkallm/           CLI and package entry point
+src/kafkallm/core/      models, settings, storage, telemetry, helpers
+src/kafkallm/kafka/     producer, consumer, jobs, state, logs
+src/kafkallm/worker/    worker, harness, controls, retry, audit
+src/kafkallm/sandbox/   goose runtime, archive, network, containers
+src/kafkallm/gateway/   agentgateway config rendering
+src/kafkallm/setup/     doctor and setup wizard
+tools/gui/              browser UI, agent profiles, job store, static assets
+gaense/                 built-in agents, skills, template, Goose config
+stall/                  sandbox images and REA requirements
+infra/                  Kafka, MLflow, S3, agentgateway, Caddy, and proxy
+scripts/                setup, doctor, config render, image builds, network init, sandbox helpers
+tests/                  unit tests
+Makefile                one-command setup, diagnostics, build, and run targets
 ```
 
 
