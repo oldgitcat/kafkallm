@@ -26,37 +26,36 @@ def test_configuration_checks_accept_a_complete_environment() -> None:
     checks = configuration_checks(
         _settings(),
         {
-            "LLM_UPSTREAM_PROVIDER": "openrouter",
+            "LLM_UPSTREAM_BASE_URL": "https://openrouter.ai/api/v1",
             "LLM_UPSTREAM_API_KEY": "sk-or-v1-test",
         },
     )
 
     assert [check.name for check in checks] == [
         "Goose model",
-        "LLM provider",
+        "LLM endpoint",
         "Provider API key",
-        "Provider base URL",
         "Gateway virtual key",
     ]
-    assert [check.status for check in checks] == ["ok"] * 5
+    assert [check.status for check in checks] == ["ok"] * 4
 
 
-def test_configuration_checks_accept_ollama_without_a_key() -> None:
-    checks = configuration_checks(_settings(), {"LLM_UPSTREAM_PROVIDER": "ollama"})
-    by_name = {check.name: check for check in checks}
-
-    assert all(check.status == "ok" for check in checks)
-    assert "11434" in by_name["Provider base URL"].detail
-
-
-def test_custom_provider_requires_a_base_url() -> None:
+def test_configuration_checks_allow_an_unauthenticated_endpoint() -> None:
     checks = configuration_checks(
         _settings(),
-        {"LLM_UPSTREAM_PROVIDER": "custom", "LLM_UPSTREAM_API_KEY": "key"},
+        {"LLM_UPSTREAM_BASE_URL": "http://host.containers.internal:11434/v1"},
     )
     by_name = {check.name: check for check in checks}
 
-    assert by_name["Provider base URL"].status == "fail"
+    assert by_name["LLM endpoint"].status == "ok"
+    assert by_name["Provider API key"].status == "warn"
+
+
+def test_configuration_checks_require_a_base_url() -> None:
+    checks = configuration_checks(_settings(), {})
+    by_name = {check.name: check for check in checks}
+
+    assert by_name["LLM endpoint"].status == "fail"
 
 
 def test_configuration_checks_report_missing_values() -> None:
@@ -66,9 +65,8 @@ def test_configuration_checks_report_missing_values() -> None:
     by_name = {check.name: check for check in checks}
 
     assert by_name["Goose model"].status == "fail"
-    assert by_name["LLM provider"].status == "ok"
-    assert by_name["Provider API key"].status == "fail"
-    assert by_name["Provider base URL"].status == "ok"
+    assert by_name["LLM endpoint"].status == "fail"
+    assert by_name["Provider API key"].status == "warn"
     assert by_name["Gateway virtual key"].status == "fail"
 
 

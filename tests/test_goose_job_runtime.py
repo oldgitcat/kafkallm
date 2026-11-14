@@ -370,7 +370,7 @@ def _settings(**overrides: Any) -> Settings:
         "goose_job_reflect_enabled": True,
         "goose_job_reflect_timeout_seconds": 60,
         "goose_model": "test-model",
-        "goose_provider": "openrouter",
+        "goose_provider": "openai-compatible",
         "llm_gateway_url": "http://gateway:8091",
         "llm_gateway_virtual_key": "test-virtual-key",
         "llm_gateway_ready_url": "",

@@ -23,7 +23,6 @@ x-app-environment: &app-environment
   WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-}
   GOOSE_MODEL: ${GOOSE_MODEL:-}
   GOOSE_PROVIDER: ${GOOSE_PROVIDER:-}
-  LLM_UPSTREAM_PROVIDER: ${LLM_UPSTREAM_PROVIDER:-}
   GOOSE_STARTUP_TIMEOUT_SECONDS: ${GOOSE_STARTUP_TIMEOUT_SECONDS:-}
   GOOSE_IMAGE: ${GOOSE_IMAGE:-}
   # Optional reverse-engineering sandbox (REA + Ghidra).
@@ -179,7 +178,6 @@ services:
       # The provider key lives only in this service. The worker and the job
       # microVM receive the virtual key, which the gateway validates and
       # replaces with the provider key before forwarding upstream.
-      # Provider selection is rendered into the config before startup.
       LLM_UPSTREAM_API_KEY: ${LLM_UPSTREAM_API_KEY:-}
       LLM_GATEWAY_VIRTUAL_KEY: ${LLM_GATEWAY_VIRTUAL_KEY:-}
       MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://mlflow:5000}

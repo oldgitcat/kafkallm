@@ -22,12 +22,9 @@ from urllib.request import Request, urlopen
 from kafkallm.core.dotenv import load_dotenv
 from kafkallm.core.settings import Settings, default_job_root
 from kafkallm.gateway.config import (
-    DEFAULT_OLLAMA_BASE_URL,
     PLACEHOLDER_VIRTUAL_KEYS,
-    provider_settings,
-)
-from kafkallm.gateway.config import (
-    KEY_OPTIONAL_PROVIDERS as PROVIDER_KEY_OPTIONAL,
+    api_key_from_env,
+    base_url_from_env,
 )
 
 AGENTGATEWAY_IMAGE = os.getenv(
@@ -92,58 +89,24 @@ def configuration_checks(
         )
     )
 
-    provider, provider_key, base_url = provider_settings(values)
+    base_url = base_url_from_env(values)
     checks.append(
         Check(
-            "LLM provider",
-            "ok",
-            provider,
-            "Set LLM_UPSTREAM_PROVIDER (openrouter, openai, ollama, custom, ...).",
+            "LLM endpoint",
+            "ok" if base_url else "fail",
+            base_url or "not set",
+            "Set LLM_UPSTREAM_BASE_URL to an OpenAI-compatible /v1 endpoint.",
         )
     )
-    key_required = provider not in PROVIDER_KEY_OPTIONAL
-    if provider_key:
-        key_status, key_detail = "ok", "configured"
-    elif key_required:
-        key_status, key_detail = "fail", "not set"
-    else:
-        key_status, key_detail = "ok", "not required"
+    provider_key = api_key_from_env(values)
     checks.append(
         Check(
             "Provider API key",
-            key_status,
-            key_detail,
-            "Set LLM_UPSTREAM_API_KEY. Get an OpenRouter key at "
-            "https://openrouter.ai/keys.",
+            "ok" if provider_key else "warn",
+            "configured" if provider_key else "not set",
+            "Set LLM_UPSTREAM_API_KEY for authenticated endpoints.",
         )
     )
-    if provider == "custom" and not base_url:
-        checks.append(
-            Check(
-                "Provider base URL",
-                "fail",
-                "not set",
-                "Set LLM_UPSTREAM_BASE_URL for provider=custom.",
-            )
-        )
-    elif provider == "ollama" and not base_url:
-        checks.append(
-            Check(
-                "Provider base URL",
-                "ok",
-                f"default {DEFAULT_OLLAMA_BASE_URL}",
-                "Override LLM_UPSTREAM_BASE_URL if Ollama runs elsewhere.",
-            )
-        )
-    else:
-        checks.append(
-            Check(
-                "Provider base URL",
-                "ok",
-                base_url or "provider default",
-                "Set LLM_UPSTREAM_BASE_URL for a custom or self-hosted endpoint.",
-            )
-        )
 
     virtual_key = settings.llm_gateway_virtual_key.strip()
     key_ok = valid_virtual_key(virtual_key)
@@ -450,21 +413,12 @@ def service_checks(settings: Settings, offline: bool = False) -> list[Check]:
         )
     )
 
-    provider, provider_key, base_url = provider_settings(os.environ)
+    provider_key = api_key_from_env(os.environ)
+    base_url = base_url_from_env(os.environ)
     upstream_url = ""
-    if provider == "openrouter":
-        upstream_url = "https://openrouter.ai/api/v1/key"
-    elif provider == "openai":
-        upstream_url = "https://api.openai.com/v1/models"
-    elif provider == "ollama":
-        ollama_url = (base_url or DEFAULT_OLLAMA_BASE_URL).replace(
-            "host.containers.internal", "127.0.0.1"
-        )
-        upstream_url = ollama_url.rstrip("/") + "/models"
-    elif base_url:
-        upstream_url = base_url.replace("host.containers.internal", "127.0.0.1").rstrip(
-            "/"
-        )
+    if base_url:
+        upstream_url = base_url.replace("host.containers.internal", "127.0.0.1")
+        upstream_url = upstream_url.rstrip("/")
         if not upstream_url.endswith("/models"):
             upstream_url += "/models"
 
@@ -477,27 +431,16 @@ def service_checks(settings: Settings, offline: bool = False) -> list[Check]:
                 "Set LLM_UPSTREAM_BASE_URL to enable a reachability check.",
             )
         )
-    elif not provider_key and provider not in PROVIDER_KEY_OPTIONAL:
-        checks.append(
-            Check(
-                "LLM upstream",
-                "warn",
-                "skipped (no provider key)",
-                "Set LLM_UPSTREAM_API_KEY in .env.",
-            )
-        )
     else:
         status = _http_status(upstream_url, provider_key)
         if status in {200, 204}:
-            checks.append(
-                Check("LLM upstream", "ok", f"{provider} accepted the request")
-            )
+            checks.append(Check("LLM upstream", "ok", "endpoint accepted the request"))
         elif status in {401, 403}:
             checks.append(
                 Check(
                     "LLM upstream",
                     "fail",
-                    f"{provider} rejected the provider key",
+                    "endpoint rejected the provider key",
                     "Create a new key and update LLM_UPSTREAM_API_KEY in .env.",
                 )
             )
@@ -506,8 +449,8 @@ def service_checks(settings: Settings, offline: bool = False) -> list[Check]:
                 Check(
                     "LLM upstream",
                     "warn",
-                    f"{provider} does not expose /models",
-                    "The provider may still work for chat completions.",
+                    "endpoint does not expose /models",
+                    "The endpoint may still work for chat completions.",
                 )
             )
         elif status is None:
@@ -515,7 +458,7 @@ def service_checks(settings: Settings, offline: bool = False) -> list[Check]:
                 Check(
                     "LLM upstream",
                     "warn",
-                    f"could not reach {provider}",
+                    "could not reach the endpoint",
                     "Check LLM_UPSTREAM_BASE_URL and your network, or run "
                     "with --offline.",
                 )
@@ -525,8 +468,8 @@ def service_checks(settings: Settings, offline: bool = False) -> list[Check]:
                 Check(
                     "LLM upstream",
                     "warn",
-                    f"{provider} returned HTTP {status}",
-                    "Check the provider settings and 'make logs'.",
+                    f"endpoint returned HTTP {status}",
+                    "Check the endpoint settings and 'make logs'.",
                 )
             )
 

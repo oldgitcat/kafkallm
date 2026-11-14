@@ -173,7 +173,7 @@ Common failures:
 | `Podman socket` fails | `systemctl --user enable --now podman.socket` |
 | `Job network` warns | Run `make network` on the host, not inside a container |
 | `Goose job image` warns | Run `make images` |
-| Worker waits for the gateway | Check `LLM_UPSTREAM_PROVIDER`/`LLM_UPSTREAM_API_KEY` in `.env`, run `make gateway-config`, then `make restart` |
+| Worker waits for the gateway | Check `LLM_UPSTREAM_BASE_URL`/`LLM_UPSTREAM_API_KEY` in `.env`, run `make gateway-config`, then `make restart` |
 | Gateway rejects the virtual key | Rerun `make setup`, then `make restart` |
 | `Gateway config` warns | Run `make gateway-config` after changing provider settings |
 | Provider key rejected | Create a new key and update `LLM_UPSTREAM_API_KEY` |

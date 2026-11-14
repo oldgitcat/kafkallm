@@ -2,8 +2,7 @@
 # Prepare a local checkout for the first start:
 #   - create .env from .env.example if needed
 #   - generate a random LLM gateway virtual key
-#   - migrate the old OpenRouter-only key to the generic provider setting
-#   - verify that the selected provider is usable
+#   - verify that the configured OpenAI-compatible endpoint is usable
 #   - render infra/agentgateway/config.yml
 #
 # The provider key is never printed. Edit .env yourself; it is gitignored.
@@ -67,19 +66,15 @@ if current in placeholder or len(current) < 32:
 else:
     print("Kept existing LLM_GATEWAY_VIRTUAL_KEY")
 
-# Provider-neutral settings. Existing values are never overwritten.
-if not has("LLM_UPSTREAM_PROVIDER"):
-    append("LLM_UPSTREAM_PROVIDER", "openrouter")
+# One OpenAI-compatible endpoint. Existing values are never overwritten.
 if not has("LLM_UPSTREAM_BASE_URL"):
-    append("LLM_UPSTREAM_BASE_URL", "")
-if not has("LLM_UPSTREAM_FORMAT"):
-    append("LLM_UPSTREAM_FORMAT", "completions")
+    append("LLM_UPSTREAM_BASE_URL", "https://openrouter.ai/api/v1")
 
 path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 PY
 
-# Ask which LLM provider to use when a terminal is attached. In scripts/CI
-# this validates the existing values instead of prompting.
+# Ask for the OpenAI-compatible endpoint when a terminal is attached. In
+# scripts/CI this validates the existing values instead of prompting.
 PYTHONPATH="$ROOT_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
     python3 -m kafkallm.setup.wizard --env-file "$ROOT_DIR/.env"
 
@@ -87,7 +82,5 @@ load_env "$ROOT_DIR"
 ./scripts/prepare-job-root.sh
 ./scripts/gui-auth.sh
 
-provider="${LLM_UPSTREAM_PROVIDER:-openrouter}"
-
 ./scripts/render-agentgateway-config.sh
-echo "Environment is ready ($provider). Next: make doctor"
+echo "Environment is ready (endpoint: ${LLM_UPSTREAM_BASE_URL:-}). Next: make doctor"

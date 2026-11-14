@@ -8,10 +8,6 @@ SETTINGS = ROOT / "src" / "kafkallm" / "core" / "settings.py"
 COMPOSE = ROOT / "compose.yaml"
 ENV_EXAMPLE = ROOT / ".env.example"
 
-# Rendering happens on the host before Compose starts; the worker receives the
-# resolved value through GOOSE_PROVIDER instead.
-HOST_ONLY = {"LLM_UPSTREAM_PROVIDER"}
-
 
 def _settings_env_names() -> set[str]:
     source = SETTINGS.read_text(encoding="utf-8")
@@ -34,7 +30,7 @@ def _example_env_names() -> list[str]:
 
 
 def test_compose_forwards_every_settings_variable() -> None:
-    missing = _settings_env_names() - _compose_env_names() - HOST_ONLY
+    missing = _settings_env_names() - _compose_env_names()
 
     assert missing == set()
 

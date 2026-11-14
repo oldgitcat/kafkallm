@@ -28,12 +28,10 @@ make setup
 This creates `.env` from `.env.example`, generates
 `LLM_GATEWAY_VIRTUAL_KEY`, asks for the GUI username and password, and renders
 `infra/agentgateway/config.yml`.
-When a terminal is attached, `make setup` asks which provider to use
-(OpenRouter, Ollama, or a custom OpenAI-compatible endpoint), then prompts for
-the key/base URL and model. In a non-interactive shell it validates the
-existing values instead. You can also edit `LLM_UPSTREAM_PROVIDER`,
-`LLM_UPSTREAM_API_KEY`, `LLM_UPSTREAM_BASE_URL`, and `GOOSE_MODEL` directly in
-`.env`. Other provider presets remain available for manual configuration.
+When a terminal is attached, `make setup` asks for the OpenAI-compatible base
+URL, API key, and model. In a non-interactive shell it validates the existing
+values instead. You can also edit `LLM_UPSTREAM_BASE_URL`,
+`LLM_UPSTREAM_API_KEY`, and `GOOSE_MODEL` directly in `.env`.
 Then check the host:
 
 ```bash
@@ -175,17 +173,15 @@ The Kafka UI runs at <http://localhost:8080>. MLflow runs at
 
 Runtime defaults live in `src/kafkallm/core/settings.py`. `.env`, created from
 `.env.example`, only overrides them. The file is gitignored. `make setup`
-generates the virtual gateway key, validates the selected provider, and renders
+generates the virtual gateway key, validates the configured endpoint, and renders
 the agentgateway config. For hosted providers, the provider key is the only
 required secret.
 
 | Setting | Default | Purpose |
 |---|---|---|
-| `GOOSE_MODEL` | `nvidia/nemotron-3.5-lightning:free` | Model used inside the job; must exist at the selected provider |
-| `LLM_UPSTREAM_PROVIDER` | `openrouter` | Upstream provider (`openrouter`, `openai`, `ollama`, `custom`, provider presets) |
-| `LLM_UPSTREAM_API_KEY` | — | Provider credential; only agentgateway sees it |
-| `LLM_UPSTREAM_BASE_URL` | provider default | Endpoint override; required for `custom`, defaults to host Ollama for `ollama` |
-| `LLM_UPSTREAM_FORMAT` | `completions` | Wire format for `custom` (see the module's `PROVIDER_FORMATS`) |
+| `GOOSE_MODEL` | `nvidia/nemotron-3.5-lightning:free` | Model used inside the job; must exist at the configured endpoint |
+| `LLM_UPSTREAM_BASE_URL` | `https://openrouter.ai/api/v1` | OpenAI-compatible `/v1` endpoint |
+| `LLM_UPSTREAM_API_KEY` | — | Provider credential; only agentgateway sees it. Optional for unauthenticated local endpoints |
 | `LLM_GATEWAY_VIRTUAL_KEY` | generated | Rotatable key used by jobs |
 | `AGENTGATEWAY_INLINE_VIRTUAL_KEY` | `true` | Write the local virtual key into the gitignored config so the playground's saved key works; `false` keeps only the environment reference |
 | `KAFKALLM_JOB_ROOT` | `~/.local/share/kafkallm` | Host directory for workspaces, skills, tools, and Goose config |
