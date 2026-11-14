@@ -15,11 +15,10 @@ from dataclasses import replace
 import pytest
 from confluent_kafka import Consumer, KafkaError, KafkaException
 from confluent_kafka.admin import AdminClient
-
-from kafkallm.core.models import Job, JobState
-from kafkallm.core.settings import Settings
-from kafkallm.kafka.kafka import KafkaProducer, wait_for_kafka
-from kafkallm.kafka.state import StatePublisher
+from gaensestall.core.models import Job, JobState
+from gaensestall.core.settings import Settings
+from gaensestall.kafka.client import KafkaProducer, wait_for_kafka
+from gaensestall.kafka.state import StatePublisher
 
 BOOTSTRAP = os.getenv("KAFKA_INTEGRATION_BOOTSTRAP")
 
@@ -54,7 +53,7 @@ def _consume_one(settings: Settings, topic: str) -> bytes:
     consumer = Consumer(
         {
             "bootstrap.servers": settings.kafka_bootstrap_servers,
-            "group.id": f"kafkallm-integration-{uuid.uuid4()}",
+            "group.id": f"gaensestall-integration-{uuid.uuid4()}",
             "auto.offset.reset": "earliest",
             "enable.auto.commit": False,
         }

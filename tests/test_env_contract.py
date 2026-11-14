@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SETTINGS = ROOT / "src" / "kafkallm" / "core" / "settings.py"
+SETTINGS = ROOT / "backend" / "gaensestall" / "core" / "settings.py"
 COMPOSE = ROOT / "compose.yaml"
 ENV_EXAMPLE = ROOT / ".env.example"
 

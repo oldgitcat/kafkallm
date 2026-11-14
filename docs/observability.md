@@ -13,11 +13,11 @@ to the worker and goose spans. Audit events include:
 - `goose.reflect`
 - `artifact.stored` and `artifact.failed`
 
-**MLflow** is the default backend. It runs as one container with a SQLite store
-and an OTLP/HTTP endpoint, so it does not add PostgreSQL, ClickHouse, or Redis.
-Open <http://localhost:5000> and use the **Traces** tab. Each trace includes the
-job span, the goose microVM span, durations, steps, token usage, artifacts, and
-errors.
+**MLflow** is the default backend. It runs as one container with a PostgreSQL
+store and an OTLP/HTTP endpoint, and it also hosts the LLM gateway. Open
+<http://localhost:5000> and use the **Traces** tab. Each trace includes the job
+span, the goose microVM span, MLflow gateway child spans, durations, steps, token
+usage, artifacts, and errors.
 
 Every span carries the OpenTelemetry `session.id` attribute set to the job ID.
 MLflow maps that to `mlflow.trace.session`, so the **Sessions** view groups the
@@ -35,22 +35,20 @@ columns stay empty.
 
 One trace per job includes the LLM calls as child spans:
 
-- The worker starts the `goose.job.vm.run` trace and a per-job allowlisting
+- The worker starts the `goose.job.vm.run` trace and a per-job LLM
   proxy is created with its W3C `traceparent` and the `job.id`.
-- The proxy injects `traceparent` and `x-kafkallm-job-id` into every gateway
-  request, replacing any client-supplied values. agentgateway continues that
-  trace, so its `POST /v1/chat/completions` and upstream spans are children of
-  the job trace.
-- Both the worker and agentgateway export to the same MLflow experiment
+- The proxy injects `traceparent` and `x-gaensestall-job-id` into every gateway
+  request, replacing any client-supplied values. The MLflow AI Gateway continues
+  that trace, so its chat-completion and upstream spans are children of the job
+  trace.
+- Both the worker and the MLflow gateway write to the same MLflow experiment
   (`MLFLOW_EXPERIMENT_ID`), so the **Traces** tab shows one trace per job with
   `job.submit`, `job.handle`, `agent.run`, `goose.job.vm.run`, and the individual
   LLM requests. The **Sessions** view still groups it by the `job_id`.
-- Standalone playground requests have no job traceparent. They create their own
-  traces in the same experiment; filter with
-  `service.name = 'agent-worker'` to show one trace per job, or
-  `service.name = 'agentgateway'` to inspect individual LLM requests.
-- Older installations may still have an `agentgateway` experiment from the
-  earlier split-experiment layout. It is no longer used and can be deleted.
+
+MLflow stores traces and gateway configuration in PostgreSQL. The `postgres`
+service is internal to the Compose network; back up its volume together with
+`mlflow-data`.
 
 MLflow is configured with:
 
@@ -68,11 +66,11 @@ them in the traces.
 
 Trace export happens in the worker/control plane, which can reach MLflow over
 the Compose network. The goose microVM keeps its strict egress isolation: it
-does not export traces directly and reaches only the allowlisting proxy.
+does not export traces directly and reaches only the LLM proxy.
 
 The host CLI wrapper points `MLFLOW_TRACKING_URI` at `http://localhost:5000`
 when `.env` uses the Compose hostname `mlflow`, so `job.submit` spans still
-reach MLflow. If you run `kafkallm` directly, set
+reach MLflow. If you run `gaensestall` directly, set
 `MLFLOW_TRACKING_URI=http://localhost:5000` yourself. GUI submissions are
 unaffected.
 

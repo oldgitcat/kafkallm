@@ -12,9 +12,9 @@ cd "$ROOT_DIR"
 . scripts/common.sh
 load_env "$ROOT_DIR"
 
-IMAGE="${GOOSE_IMAGE:-kafkallm-goose-job:latest}"
-ROOT="${KAFKALLM_JOB_ROOT:-$HOME/.local/share/kafkallm}"
-NAME="kafkallm-sandbox-shell-$$"
+IMAGE="${GOOSE_IMAGE:-gaensestall-goose-job:latest}"
+ROOT="${GAENSESTALL_JOB_ROOT:-$HOME/.local/share/gaensestall}"
+NAME="gaensestall-sandbox-shell-$$"
 
 cleanup() {
     podman rm -f "$NAME" >/dev/null 2>&1 || true
@@ -26,12 +26,12 @@ podman create \
     --network none \
     -e HOME=/opt/data \
     -e GOOSE_PATH_ROOT=/opt/data/goose \
-    -e PATH=/opt/kafkallm/tools/bin:/usr/local/goose/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    -e PATH=/opt/gaensestall/tools/bin:/usr/local/goose/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     -w /workspace \
     --entrypoint /bin/sh \
     "$IMAGE" -c '
         mkdir -p "$GOOSE_PATH_ROOT/config"
-        cp -an /opt/kafkallm/config/. "$GOOSE_PATH_ROOT/config/" 2>/dev/null || true
+        cp -an /opt/gaensestall/config/. "$GOOSE_PATH_ROOT/config/" 2>/dev/null || true
         exec /bin/bash
     ' >/dev/null
 
@@ -41,11 +41,11 @@ if [ -d "$ROOT/skills" ]; then
 fi
 if [ -d "$ROOT/tools" ]; then
     tar -C "$ROOT/tools" --transform='s,^\.,tools,' -cf - . \
-        | podman cp - "$NAME:/opt/kafkallm"
+        | podman cp - "$NAME:/opt/gaensestall"
 fi
 if [ -d "$ROOT/config" ]; then
     tar -C "$ROOT/config" --transform='s,^\.,config,' -cf - . \
-        | podman cp - "$NAME:/opt/kafkallm"
+        | podman cp - "$NAME:/opt/gaensestall"
 fi
 
 podman start -ai "$NAME"

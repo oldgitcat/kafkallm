@@ -9,8 +9,8 @@ cd "$ROOT_DIR"
 . scripts/common.sh
 load_env "$ROOT_DIR"
 
-BASE_IMAGE="${GOOSE_JOB_BASE_IMAGE:-kafkallm-goose-job:latest}"
-IMAGE="${GOOSE_RE_IMAGE:-kafkallm-rea-job:latest}"
+BASE_IMAGE="${GOOSE_JOB_BASE_IMAGE:-gaensestall-goose-job:latest}"
+IMAGE="${GOOSE_RE_IMAGE:-gaensestall-rea-job:latest}"
 
 if ! command -v podman >/dev/null 2>&1; then
   echo "podman is required to build the REA job image" >&2
@@ -24,7 +24,7 @@ fi
 
 GOOSE_IMAGE="$IMAGE" \
 GOOSE_JOB_BASE_IMAGE="$BASE_IMAGE" \
-GOOSE_JOB_DOCKERFILE=stall/reversing/Dockerfile \
+GOOSE_JOB_DOCKERFILE=sandboxes/reversing/Dockerfile \
   ./scripts/build-goose-image.sh
 
 echo "Built $IMAGE"

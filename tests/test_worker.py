@@ -1,11 +1,10 @@
 from dataclasses import replace
 
 import pytest
-
-from kafkallm.core.models import Job, JobControl, JobState
-from kafkallm.core.settings import Settings
-from kafkallm.sandbox.runtime import WorkerShutdown
-from kafkallm.worker.worker import Worker
+from gaensestall.core.models import Job, JobControl, JobState
+from gaensestall.core.settings import Settings
+from gaensestall.sandbox.job_runtime import WorkerShutdown
+from gaensestall.worker.service import Worker
 
 
 class FakeMessage:
@@ -86,12 +85,12 @@ def test_retry_job_submits_a_new_run(monkeypatch) -> None:
         Job(job_id="job-1", run_id="run-1", instruction="Retry me")
     ).model_copy(update={"status": "succeeded"})
     monkeypatch.setattr(
-        "kafkallm.worker.worker.read_compacted",
+        "gaensestall.worker.service.read_compacted",
         lambda *args, **kwargs: {"job-1": state},
     )
     submitted: list[Job] = []
     monkeypatch.setattr(
-        "kafkallm.worker.worker.submit_job",
+        "gaensestall.worker.service.submit_job",
         lambda settings, producer, job: submitted.append(job),
     )
 

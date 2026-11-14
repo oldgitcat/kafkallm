@@ -1,6 +1,5 @@
 import pytest
-
-from kafkallm.core.settings import Settings, SettingsError
+from gaensestall.core.settings import Settings, SettingsError
 
 
 def test_invalid_integer_setting_names_the_variable(
@@ -58,7 +57,7 @@ def test_gui_port_must_be_a_valid_tcp_port(monkeypatch: pytest.MonkeyPatch) -> N
 def test_job_directories_derive_from_the_job_root(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
-    monkeypatch.setenv("KAFKALLM_JOB_ROOT", str(tmp_path))
+    monkeypatch.setenv("GAENSESTALL_JOB_ROOT", str(tmp_path))
     for name in (
         "WORKSPACE_ROOT",
         "GOOSE_JOB_WORKSPACE_ROOT",

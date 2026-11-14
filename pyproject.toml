@@ -3,7 +3,7 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "kafkallm"
+name = "gaensestall"
 version = "0.1.0"
 description = "Gänsestall: Kafka-based goose/goosetown job processing in isolated microVMs"
 readme = "README.md"
@@ -37,15 +37,15 @@ Repository = "https://github.com/oldgitcat/kafkallm"
 Issues = "https://github.com/oldgitcat/kafkallm/issues"
 
 [project.scripts]
-kafkallm = "kafkallm.cli:main"
+gaensestall = "gaensestall.cli:main"
 
 [tool.setuptools.packages.find]
-where = ["src"]
-include = ["kafkallm*"]
+where = ["backend"]
+include = ["gaensestall*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = [".", "tools"]
+pythonpath = [".", "frontend"]
 addopts = "-q"
 markers = [
     "integration: requires a running Kafka broker",

@@ -1,12 +1,12 @@
-name: kafkallm
+name: gaensestall
 
 x-app-environment: &app-environment
   KAFKA_BOOTSTRAP_SERVERS: kafka:9092
   # Host-side data root. The worker and GUI run with a keep-id user namespace,
   # so they see the same files as the microVMs without world-writable modes.
-  KAFKALLM_JOB_ROOT: ${KAFKALLM_JOB_ROOT:-${HOME}/.local/share/kafkallm}
+  GAENSESTALL_JOB_ROOT: ${GAENSESTALL_JOB_ROOT:-${HOME}/.local/share/gaensestall}
   # Empty values intentionally fall back to the defaults in
-  # src/kafkallm/settings.py. That module is the single source of truth.
+  # backend/gaensestall/settings.py. That module is the single source of truth.
   JOBS_TOPIC: ${JOBS_TOPIC:-}
   RESULTS_TOPIC: ${RESULTS_TOPIC:-}
   STATE_TOPIC: ${STATE_TOPIC:-}
@@ -27,8 +27,8 @@ x-app-environment: &app-environment
   GOOSE_IMAGE: ${GOOSE_IMAGE:-}
   # Optional reverse-engineering sandbox (REA + Ghidra).
   GOOSE_RE_IMAGE: ${GOOSE_RE_IMAGE:-}
-  # Distroless proxy image started next to each job microVM.
-  GOOSE_JOB_PROXY_IMAGE: ${GOOSE_JOB_PROXY_IMAGE:-}
+  # Distroless LLM proxy image started next to each job microVM.
+  LLM_PROXY_IMAGE: ${LLM_PROXY_IMAGE:-}
   GOOSE_JOB_RAM_MIB: ${GOOSE_JOB_RAM_MIB:-}
   GOOSE_JOB_CPUS: ${GOOSE_JOB_CPUS:-}
   GOOSE_JOB_MEMORY_LIMIT: ${GOOSE_JOB_MEMORY_LIMIT:-}
@@ -52,9 +52,9 @@ x-app-environment: &app-environment
   # The network definition lives in the host's rootless Podman storage and is
   # created by scripts/init-job-network.sh. The worker only verifies it.
   GOOSE_JOB_NETWORK_AUTOCREATE: ${GOOSE_JOB_NETWORK_AUTOCREATE:-}
-  GOOSE_JOB_PROXY_NETWORK: ${GOOSE_JOB_PROXY_NETWORK:-}
-  GOOSE_JOB_PROXY_UPSTREAM_HOST: ${GOOSE_JOB_PROXY_UPSTREAM_HOST:-}
-  GOOSE_JOB_PROXY_UPSTREAM_PORT: ${GOOSE_JOB_PROXY_UPSTREAM_PORT:-}
+  LLM_PROXY_NETWORK: ${LLM_PROXY_NETWORK:-}
+  LLM_PROXY_UPSTREAM_HOST: ${LLM_PROXY_UPSTREAM_HOST:-}
+  LLM_PROXY_UPSTREAM_PORT: ${LLM_PROXY_UPSTREAM_PORT:-}
   WORKSPACE_ROOT: ${WORKSPACE_ROOT:-}
   MAX_JOB_TIMEOUT_SECONDS: ${MAX_JOB_TIMEOUT_SECONDS:-}
   ALLOW_UNLIMITED_JOBS: ${ALLOW_UNLIMITED_JOBS:-}
@@ -74,7 +74,7 @@ x-app-environment: &app-environment
   S3_BUCKET: ${S3_BUCKET:-}
   S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
   S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
-  AGENT_NAME: ${AGENT_NAME:-}
+  SERVICE_NAME: ${SERVICE_NAME:-}
   TELEMETRY_CAPTURE_CONTENT: ${TELEMETRY_CAPTURE_CONTENT:-}
   # MLflow is the default observability backend. It ingests OTLP/HTTP traces.
   MLFLOW_ENABLED: ${MLFLOW_ENABLED:-}
@@ -84,14 +84,13 @@ x-app-environment: &app-environment
 x-worker-environment: &worker-environment
   <<: *app-environment
   # The job-facing URL is resolved inside the microVM to the IPv6 address of
-  # the allowlisting proxy. Do not point this at a Compose service name: the
+  # the LLM proxy. Do not point this at a Compose service name: the
   # microVM cannot reach the Docker network.
-  LLM_GATEWAY_URL: ${LLM_GATEWAY_URL:-}
-  LLM_GATEWAY_VIRTUAL_KEY: ${LLM_GATEWAY_VIRTUAL_KEY:-}
-  # The worker polls the agentgateway readiness listener over the Compose
-  # network. agentgateway has no shell, so Compose cannot healthcheck it.
-  LLM_GATEWAY_READY_URL: ${LLM_GATEWAY_READY_URL:-}
-  LLM_GATEWAY_PORT: ${LLM_GATEWAY_PORT:-}
+  LLM_PROXY_URL: ${LLM_PROXY_URL:-}
+  LLM_PROXY_TOKEN: ${LLM_PROXY_TOKEN:-}
+  # The worker polls the MLflow health endpoint over the Compose network.
+  MLFLOW_READY_URL: ${MLFLOW_READY_URL:-}
+  LLM_PROXY_PORT: ${LLM_PROXY_PORT:-}
   # The worker talks to the rootless Podman API through the mounted Unix socket.
   # No TCP socket proxy is involved.
   PODMAN_SOCKET: ${PODMAN_SOCKET:-/run/user/1000/podman/podman.sock}
@@ -103,7 +102,7 @@ services:
   kafka:
     image: docker.io/apache/kafka:4.4.0@sha256:76af3d0116abbb33b4cd964af410d4921c33d1f663e7a95d5453a9c35a84869b
     environment:
-      CLUSTER_ID: ${KAFKA_CLUSTER_ID:-kafkallm-local-cluster}
+      CLUSTER_ID: ${KAFKA_CLUSTER_ID:-gaensestall-local-cluster}
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_LISTENERS: INTERNAL://:9092,EXTERNAL://:19092,CONTROLLER://:9093
@@ -138,7 +137,7 @@ services:
   kafka-ui:
     image: ghcr.io/kafbat/kafka-ui:v1.5.0@sha256:2fc9a60b223de6d8cb45a64175afcbb79207ae19306a0b99c558aeaa1b22b6e9
     environment:
-      KAFKA_CLUSTERS_0_NAME: kafkallm
+      KAFKA_CLUSTERS_0_NAME: gaensestall
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
     ports:
       - "127.0.0.1:8080:8080"
@@ -149,70 +148,79 @@ services:
       - no-new-privileges:true
     restart: unless-stopped
 
+  # MLflow owns the tracking database and the AI Gateway. Postgres keeps
+  # experiments, traces, and gateway definitions durable across restarts.
+  postgres:
+    image: docker.io/library/postgres:17-alpine@sha256:005c5c37db96c1e6652a79ea31f9886402fba81ac95dc2db897739121dd7f8f2
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mlflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gaensestall-mlflow}
+      POSTGRES_DB: ${POSTGRES_DB:-mlflow}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
   mlflow:
-    image: ghcr.io/mlflow/mlflow:v3.18.0@sha256:19f9de44741318515fc3a992429f177420c32d40d971a25f6ae4621a1b9c8516
-    command:
-      - mlflow
-      - server
-      - --backend-store-uri
-      - sqlite:////mlflow/mlflow.db
-      - --default-artifact-root
-      - /mlflow/artifacts
-      - --host
-      - 0.0.0.0
-      - --port
-      - "5000"
-      # OTLP exporters in the Compose network use the service name as Host.
-      - --allowed-hosts
-      - "mlflow,mlflow:5000,localhost,localhost:5000,127.0.0.1,127.0.0.1:5000"
+    image: ${GAENSESTALL_MLFLOW_IMAGE:-gaensestall-mlflow:latest}
+    build:
+      context: .
+      dockerfile: infra/mlflow/Dockerfile
+    environment:
+      # SQLAlchemy needs the explicit psycopg2 driver; the custom image adds it.
+      MLFLOW_BACKEND_STORE_URI: postgresql+psycopg2://${POSTGRES_USER:-mlflow}:${POSTGRES_PASSWORD:-gaensestall-mlflow}@postgres:5432/${POSTGRES_DB:-mlflow}
+      MLFLOW_ARTIFACT_ROOT: /mlflow/artifacts
+      # The LLM proxy forwards with Host: mlflow:5000. Allow the published UI port
+      # as well so the browser and the doctor can reach the same server.
+      MLFLOW_ALLOWED_HOSTS: "mlflow,mlflow:5000,localhost,localhost:${MLFLOW_UI_PORT:-5000},127.0.0.1,127.0.0.1:${MLFLOW_UI_PORT:-5000}"
+      MLFLOW_GATEWAY_ENDPOINT: ${MLFLOW_GATEWAY_ENDPOINT:-gaensestall}
+      MLFLOW_EXPERIMENT_ID: ${MLFLOW_EXPERIMENT_ID:-0}
+      MLFLOW_UI_PORT: ${MLFLOW_UI_PORT:-5000}
+      # The provider key is stored encrypted in Postgres. Jobs never see it.
+      MLFLOW_CRYPTO_KEK_PASSPHRASE: ${MLFLOW_CRYPTO_KEK_PASSPHRASE:-gaensestall-local-kek}
+      LLM_UPSTREAM_BASE_URL: ${LLM_UPSTREAM_BASE_URL:-}
+      LLM_UPSTREAM_MODEL: ${LLM_UPSTREAM_MODEL:-}
+      LLM_UPSTREAM_API_KEY: ${LLM_UPSTREAM_API_KEY:-}
+      LLM_UPSTREAM_INSECURE_SKIP_TLS_VERIFY: ${LLM_UPSTREAM_INSECURE_SKIP_TLS_VERIFY:-false}
+      # MLflow's gateway blocks HTTP and private upstream addresses by default.
+      # Set these to "https,http" and "true" for local model servers.
+      MLFLOW_GATEWAY_API_BASE_ALLOWED_SCHEMES: ${MLFLOW_GATEWAY_API_BASE_ALLOWED_SCHEMES:-https}
+      MLFLOW_GATEWAY_API_BASE_ALLOW_PRIVATE_IPS: ${MLFLOW_GATEWAY_API_BASE_ALLOW_PRIVATE_IPS:-false}
     ports:
       - "127.0.0.1:${MLFLOW_UI_PORT:-5000}:5000"
     volumes:
       - mlflow-data:/mlflow
-    restart: unless-stopped
-
-  agentgateway:
-    image: cr.agentgateway.dev/agentgateway:v1.7.0@sha256:460dda874be2dfa95fa5713c1f46f26079dce78df576008df704e54a59d5780d
-    command: ["-f", "/config/config.yml"]
-    environment:
-      # The provider key lives only in this service. The worker and the job
-      # microVM receive the virtual key, which the gateway validates and
-      # replaces with the provider key before forwarding upstream.
-      LLM_UPSTREAM_API_KEY: ${LLM_UPSTREAM_API_KEY:-}
-      LLM_GATEWAY_VIRTUAL_KEY: ${LLM_GATEWAY_VIRTUAL_KEY:-}
-      MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://mlflow:5000}
-      MLFLOW_OTLP_HOST: ${MLFLOW_OTLP_HOST:-mlflow}
-      MLFLOW_OTLP_PORT: ${MLFLOW_OTLP_PORT:-5000}
-      # Gateway spans continue the job trace via the per-job proxy traceparent,
-      # so both exporters write to the same MLflow experiment.
-      MLFLOW_EXPERIMENT_ID: ${MLFLOW_EXPERIMENT_ID:-0}
-    volumes:
-      # The admin UI saves CORS/model changes to this file. It contains no
-      # secrets; the provider key stays in the process environment.
-      - ./infra/agentgateway/config.yml:/config/config.yml:rw,z
-    ports:
-      # Rootless Podman cannot reach a host service bound only to loopback:
-      # host.containers.internal is mapped to the host-side pasta address.
-      # The virtual key still gates every request.
-      # The LLM listener and the published port are the same value so the
-      # browser playground, jobs, and external clients all use one port.
-      - "${LLM_GATEWAY_BIND:-0.0.0.0}:${LLM_GATEWAY_PORT:-8091}:${LLM_GATEWAY_PORT:-8091}"
-      # agentgateway admin UI; localhost only.
-      - "127.0.0.1:${AGENTGATEWAY_UI_PORT:-15000}:15000"
-    restart: unless-stopped
-    read_only: true
-    tmpfs:
-      - /tmp:size=32m
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=2)"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
     security_opt:
       - no-new-privileges:true
-    cap_drop:
-      - ALL
-    networks:
-      default:
+    restart: unless-stopped
 
-  agent-worker:
-    image: ${KAFKALLM_APP_IMAGE:-kafkallm-app:latest}
-    build: .
+  worker:
+    image: ${GAENSESTALL_WORKER_IMAGE:-gaensestall-worker:latest}
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     environment: *worker-environment
     init: true
     # Map the image's UID/GID 10001 to the host user. The worker, the job
@@ -220,16 +228,14 @@ services:
     # world-writable modes or sudo are needed.
     userns_mode: "keep-id:uid=10001,gid=10001"
     volumes:
-      - ${KAFKALLM_JOB_ROOT:-${HOME}/.local/share/kafkallm}:${KAFKALLM_JOB_ROOT:-${HOME}/.local/share/kafkallm}:z
+      - ${GAENSESTALL_JOB_ROOT:-${HOME}/.local/share/gaensestall}:${GAENSESTALL_JOB_ROOT:-${HOME}/.local/share/gaensestall}:z
       # Rootless Podman API. Adjust PODMAN_SOCKET if your UID is not 1000.
       - ${PODMAN_SOCKET:-/run/user/1000/podman/podman.sock}:${PODMAN_SOCKET:-/run/user/1000/podman/podman.sock}
     depends_on:
       kafka:
         condition: service_healthy
-      agentgateway:
-        condition: service_started
       mlflow:
-        condition: service_started
+        condition: service_healthy
     restart: unless-stopped
     read_only: true
     tmpfs:
@@ -246,7 +252,7 @@ services:
         - CMD
         - python
         - -c
-        - "import pathlib,sys; sys.exit(0 if pathlib.Path('/tmp/kafkallm-worker-ready').exists() else 1)"
+        - "import pathlib,sys; sys.exit(0 if pathlib.Path('/tmp/gaensestall-worker-ready').exists() else 1)"
       interval: 15s
       timeout: 5s
       retries: 5
@@ -254,10 +260,10 @@ services:
     stop_grace_period: 30s
 
   gui:
-    image: ${KAFKALLM_GUI_IMAGE:-kafkallm-gui:latest}
+    image: ${GAENSESTALL_GUI_IMAGE:-gaensestall-gui:latest}
     build:
       context: .
-      dockerfile: tools/gui/Dockerfile
+      dockerfile: frontend/Dockerfile
     environment: *app-environment
     expose:
       - "8090"
@@ -265,7 +271,7 @@ services:
     # into the per-user data root.
     userns_mode: "keep-id:uid=10001,gid=10001"
     volumes:
-      - ${KAFKALLM_JOB_ROOT:-${HOME}/.local/share/kafkallm}:${KAFKALLM_JOB_ROOT:-${HOME}/.local/share/kafkallm}:z
+      - ${GAENSESTALL_JOB_ROOT:-${HOME}/.local/share/gaensestall}:${GAENSESTALL_JOB_ROOT:-${HOME}/.local/share/gaensestall}:z
     depends_on:
       kafka:
         condition: service_healthy
@@ -326,7 +332,7 @@ services:
     profiles: ["storage"]
     environment:
       RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY_ID:-rustfs}
-      RUSTFS_SECRET_KEY: ${S3_SECRET_ACCESS_KEY:-kafkallm-secret}
+      RUSTFS_SECRET_KEY: ${S3_SECRET_ACCESS_KEY:-gaensestall-secret}
       RUSTFS_CONSOLE_ENABLE: "true"
       RUSTFS_REGION: ${S3_REGION:-local}
     ports:
@@ -346,3 +352,10 @@ volumes:
   kafka-data:
   rustfs-data:
   mlflow-data:
+  postgres-data:
+
+networks:
+  # Fixed name: the worker attaches per-job proxies to this network so they can
+  # resolve `mlflow` without publishing MLflow to the host.
+  default:
+    name: gaensestall

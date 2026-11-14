@@ -2,12 +2,11 @@ import logging
 import time
 
 import pytest
-
-from kafkallm.worker.retry import RetryTimeout, retry_until
+from gaensestall.worker.retry import RetryTimeout, retry_until
 
 
 def test_retry_returns_the_first_success(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("kafkallm.worker.retry.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr("gaensestall.worker.retry.time.sleep", lambda _seconds: None)
     calls: list[int] = []
 
     def attempt() -> str:
@@ -41,7 +40,7 @@ def test_retry_reports_the_deadline() -> None:
 
 
 def test_retry_keeps_the_last_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("kafkallm.worker.retry.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr("gaensestall.worker.retry.time.sleep", lambda _seconds: None)
 
     def attempt() -> None:
         raise RuntimeError("broker down")

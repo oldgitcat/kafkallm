@@ -10,7 +10,7 @@ cd "$ROOT_DIR"
 . scripts/common.sh
 load_env "$ROOT_DIR"
 
-JOB_ROOT="${KAFKALLM_JOB_ROOT:-$HOME/.local/share/kafkallm}"
+JOB_ROOT="${GAENSESTALL_JOB_ROOT:-$HOME/.local/share/gaensestall}"
 if ! mkdir -p \
     "$JOB_ROOT/jobs" \
     "$JOB_ROOT/staging" \

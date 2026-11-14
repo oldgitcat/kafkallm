@@ -1,6 +1,6 @@
-from kafkallm.core.models import Job, JobResult, JobState, utc_now
-from kafkallm.core.settings import Settings
-from kafkallm.kafka.state import StatePublisher
+from gaensestall.core.models import Job, JobResult, JobState, utc_now
+from gaensestall.core.settings import Settings
+from gaensestall.kafka.state import StatePublisher
 
 
 class FlakyProducer:

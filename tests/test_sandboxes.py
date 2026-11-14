@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from kafkallm.core.models import SandboxSpec
-from kafkallm.core.settings import Settings
-from kafkallm.sandbox.sandboxes import (
+from gaensestall.core.models import SandboxSpec
+from gaensestall.core.settings import Settings
+from gaensestall.sandbox.registry import (
     SandboxStore,
     builtin_sandbox,
     default_sandboxes,
@@ -26,12 +26,12 @@ def test_default_sandboxes_describe_both_images() -> None:
     assert [sandbox.sandbox_id for sandbox in sandboxes] == ["default", "reverse"]
     assert sandboxes[0].image == "goose:test"
     assert sandboxes[1].image == "rea:test"
-    assert sandboxes[1].extensions == ["rea:/opt/kafkallm/rea-mcp"]
+    assert sandboxes[1].extensions == ["rea:/opt/gaensestall/rea-mcp"]
     assert sandboxes[1].env["GHIDRA_INSTALL_DIR"] == "/opt/ghidra"
     assert sandboxes[1].env["REA_KUNA_COMMAND"] == "/usr/local/bin/kuna"
     assert (
         sandboxes[1].env["REA_JADX_MCP_JAR"]
-        == "/opt/kafkallm/jadx-headless-mcp-all.jar"
+        == "/opt/gaensestall/jadx-headless-mcp-all.jar"
     )
     assert "REA" in sandboxes[1].instructions
 

@@ -11,11 +11,11 @@ worker-created runtime container does.
 |---|---|---|---|---|
 | `kafka` | Apache Kafka 4.4.0 | Queue and compacted state store | `19092` on host, `kafka:9092` in Compose | `kafka-data` volume |
 | `kafka-ui` | kafbat/kafka-ui | Inspect topics and messages | <http://localhost:8080> | — |
-| `mlflow` | MLflow 3.18 | Trace/observability backend, SQLite + OTLP/HTTP | <http://localhost:5000> | `mlflow-data` volume |
+| `postgres` | PostgreSQL 17 | Durable MLflow tracking and gateway store | internal `5432` | `postgres-data` volume |
+| `mlflow` | MLflow 3.18 | Trace backend, AI Gateway, provider key, OTLP/HTTP | <http://localhost:5000> | `mlflow-data` + `postgres-data` volumes |
 | `rustfs` | RustFS 1.0.0 | S3-compatible input and artifact store | `9000` API, `9001` console (localhost) | `rustfs-data` volume |
-| `agentgateway` | agentgateway 1.7.0 | OpenAI-compatible LLM gateway, provider key, CORS, playground | `8091` LLM, `15000` admin/playground, `15021` readiness | Generated config |
-| `agent-worker` | `kafkallm-app` | Consume `jobs.in`, run microVMs, own Podman API, publish results/state/logs/events | — | `~/.local/share/kafkallm`, Podman storage |
-| `gui` | `kafkallm-gui` | Browser UI/API, job submission, agents, sandboxes, live state | internal `8090` | `~/.local/share/kafkallm` |
+| `worker` | `gaensestall-worker` | Consume `jobs.in`, run microVMs, own Podman API, publish results/state/logs/events | — | `~/.local/share/gaensestall`, Podman storage |
+| `gui` | `gaensestall-gui` | Browser UI/API, job submission, agents, sandboxes, live state | internal `8090` | `~/.local/share/gaensestall` |
 | `caddy` | Caddy 2.10 | HTTP basic auth and reverse proxy in front of the GUI | `GUI_BIND:8090` (default all interfaces) | — |
 
 `rustfs` is behind the optional `storage` profile; `make up` enables it. The GUI
@@ -39,12 +39,16 @@ Kafka is both the queue and the GUI database. The important topics are:
 
 See [Jobs and manual Kafka submission](jobs.md) for the exact message format.
 
-### MLflow
+### MLflow and Postgres
 
-MLflow receives OTLP/HTTP traces on `/v1/traces`. Worker and gateway spans share
-the job trace: the worker starts it, and the per-job proxy injects that
-`traceparent` into every gateway request. See
-[Observability with MLflow](observability.md).
+MLflow receives OTLP/HTTP traces on `/v1/traces` and serves the AI Gateway at
+`/gateway/mlflow/v1`. Worker and gateway spans share the job trace: the worker
+starts it, and the per-job LLM proxy injects that `traceparent` into every gateway
+request. See [Observability with MLflow](observability.md) and
+[LLM providers and the MLflow AI Gateway](providers.md).
+
+PostgreSQL stores experiments, runs, traces, and encrypted LLM proxy credentials.
+It is internal to the Compose network; only MLflow talks to it.
 
 ### RustFS
 
@@ -59,25 +63,18 @@ rootless Podman API. Compose mounts the Unix socket directly into the worker
 (`PODMAN_SOCKET`); there is no TCP socket proxy. Access to that socket is
 equivalent to root on the host, so it is never published on a network.
 
-### agentgateway
-
-The gateway holds the real provider key and exposes an OpenAI-compatible API to
-jobs. Jobs see only the virtual key. The admin UI also serves the LLM
-playground. The gateway is published on port `8091`; the admin/playground UI is
-on `15000` (localhost only). See [LLM providers and agentgateway](providers.md).
-
-### agent-worker
+### Worker
 
 The worker is the only Kafka participant that starts jobs. It:
 
 1. Consumes `jobs.in` with manual offset commits.
-2. Creates a per-job allowlisting proxy with the job `traceparent`.
+2. Creates a per-job LLM proxy with the job `traceparent`.
 3. Creates the main Goose microVM through the Podman API.
 4. Collects outputs and publishes `jobs.out`, `jobs.state`, `jobs.logs`, and
    `agent.events`.
 5. Optionally creates a separate reflection microVM, validates its skill
    changes, and merges them into the persistent store.
-6. Removes the main/reflect microVMs and the per-job proxy.
+6. Removes the main/reflect microVMs and the per-job LLM proxy.
 
 ### GUI
 
@@ -89,12 +86,12 @@ basic auth; the GUI itself listens only on the Compose network.
 ### Host CLI
 
 The CLI runs on the host and does not need a Compose container. Kafka is
-published on `127.0.0.1:19092`; `scripts/kafkallm-cli` creates the local
+published on `127.0.0.1:19092`; `scripts/gaensestall-cli` creates the local
 virtualenv on first use and loads `.env`.
 
 ```bash
-./scripts/kafkallm-cli submit "Say hello"
-./scripts/kafkallm-cli results --from-beginning --idle-timeout 5
+./scripts/gaensestall-cli submit "Say hello"
+./scripts/gaensestall-cli results --from-beginning --idle-timeout 5
 ```
 
 For uploads, the wrapper points `S3_ENDPOINT_URL` at `http://localhost:9000`
@@ -108,22 +105,21 @@ through the rootless Podman API.
 
 | Container | Purpose | Network |
 |---|---|---|
-| `kafkallm-gateway-proxy` | Long-lived global allowlisting proxy / health check (distroless Python) | `podman` IPv4 + `kafkallm-jobs` IPv6 |
-| `kafkallm-gateway-proxy-<run>` | Per-job proxy; injects `traceparent` and `x-kafkallm-job-id` (distroless Python) | `podman` IPv4 + `kafkallm-jobs` IPv6 |
-| Main Goose microVM | Runs the job (`goose run`) and writes `/workspace/outputs` | `kafkallm-jobs` only |
-| Reflection microVM | Runs the optional learning pass in a fresh workspace | `kafkallm-jobs` only |
+| `gaensestall-llm-proxy` | Long-lived global LLM proxy / health check (distroless Python) | `gaensestall` IPv4 + `gaensestall-jobs` IPv6 |
+| `gaensestall-llm-proxy-<run>` | Per-job LLM proxy; validates the proxy token and injects `traceparent` / `x-gaensestall-job-id` (distroless Python) | `gaensestall` IPv4 + `gaensestall-jobs` IPv6 |
+| Main Goose microVM | Runs the job (`goose run`) and writes `/workspace/outputs` | `gaensestall-jobs` only |
+| Reflection microVM | Runs the optional learning pass in a fresh workspace | `gaensestall-jobs` only |
 
 The job microVM has no Kafka access, no internet, no LAN access, and no Podman
-API. Its only peer is the proxy, which forwards only chat-completions and
+API. Its only peer is the LLM proxy, which forwards only chat-completions and
 model-list requests to the gateway.
 
 ## Networks
 
 | Network | Members | Notes |
 |---|---|---|
-| `kafkallm_default` | Compose services | Kafka, MLflow, RustFS, GUI, worker, gateway |
-| `kafkallm-jobs` | Proxies and job microVMs | IPv6-only, internal, no default route |
-| `podman` | Proxies | IPv4 route to the gateway on the host |
+| `gaensestall` | Compose services and proxies | Kafka, Postgres, MLflow, RustFS, GUI, worker, proxy |
+| `gaensestall-jobs` | Proxies and job microVMs | IPv6-only, internal, no default route |
 
 The worker mounts the rootless Podman socket directly; no extra network
 namespace or proxy container is involved.
@@ -132,13 +128,14 @@ namespace or proxy container is involved.
 
 | Path / volume | Contents |
 |---|---|
-| `~/.local/share/kafkallm/jobs` | Per-job workspaces (temporary) |
-| `~/.local/share/kafkallm/staging` | Upload/download staging |
-| `~/.local/share/kafkallm/skills` | Persistent skill store |
-| `~/.local/share/kafkallm/agents` | Agent profile files |
-| `~/.local/share/kafkallm/tools` / `config` | Sandbox tools and Goose config |
+| `~/.local/share/gaensestall/jobs` | Per-job workspaces (temporary) |
+| `~/.local/share/gaensestall/staging` | Upload/download staging |
+| `~/.local/share/gaensestall/skills` | Persistent skill store |
+| `~/.local/share/gaensestall/agents` | Agent profile files |
+| `~/.local/share/gaensestall/tools` / `config` | Sandbox tools and Goose config |
 | `kafka-data` | Kafka log segments |
-| `mlflow-data` | MLflow SQLite and artifacts |
+| `mlflow-data` | MLflow artifacts |
+| `postgres-data` | MLflow tracking database and encrypted gateway secrets |
 | `rustfs-data` | S3 objects |
 
 ## Typical data flow
@@ -147,7 +144,7 @@ namespace or proxy container is involved.
 GUI / CLI / Kafka UI
         │
         ▼
-    jobs.in ──→ agent-worker ──→ per-job proxy ──→ agentgateway ──→ provider
+    jobs.in ──→ worker ──→ per-job LLM proxy ──→ MLflow AI Gateway ──→ provider
         │              │
         │              ├──→ main/reflect microVMs
         │              ├──→ jobs.out     (result)
@@ -166,8 +163,6 @@ GUI / CLI / Kafka UI
 |---|---|
 | `8090` | Caddy → GUI (basic auth) |
 | `8080` | Kafka UI |
-| `5000` | MLflow |
-| `8091` | agentgateway OpenAI-compatible API |
-| `15000` | agentgateway admin UI / playground (localhost only) |
+| `5000` | MLflow UI, tracking, and OpenAI-compatible AI Gateway |
 | `19000` / `19001` | RustFS API / console |
 | `19092` | Kafka from the host |

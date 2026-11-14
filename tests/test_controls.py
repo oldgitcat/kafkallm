@@ -4,9 +4,9 @@ import json
 from dataclasses import replace
 from typing import Any
 
-from kafkallm.core.models import JobControl
-from kafkallm.core.settings import Settings
-from kafkallm.worker.controls import ControlStore
+from gaensestall.core.models import JobControl
+from gaensestall.core.settings import Settings
+from gaensestall.worker.controls import ControlStore
 
 
 class FakeMessage:
@@ -27,7 +27,7 @@ def _store(
         for payload in messages:
             yield FakeMessage(payload)
 
-    monkeypatch.setattr("kafkallm.worker.controls.iter_messages", fake_iter)
+    monkeypatch.setattr("gaensestall.worker.controls.iter_messages", fake_iter)
     return ControlStore(settings, **kwargs)
 
 

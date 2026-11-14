@@ -1,10 +1,9 @@
+from gaensestall.core.telemetry import extract_trace_context, set_session
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,
 )
-
-from kafkallm.core.telemetry import extract_trace_context, set_session
 
 
 def test_trace_extraction_ignores_unrelated_binary_headers() -> None:

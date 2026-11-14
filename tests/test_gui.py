@@ -9,12 +9,11 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from gaensestall.core.models import FileRef, Job, JobState
+from gaensestall.core.settings import Settings
+from gaensestall.sandbox.registry import SandboxStore, default_sandboxes
 from gui.agents import AgentStore, default_agents
 from gui.gui import JobServer, JobStore
-
-from kafkallm.core.models import FileRef, Job, JobState
-from kafkallm.core.settings import Settings
-from kafkallm.sandbox.sandboxes import SandboxStore, default_sandboxes
 
 
 class FakeStorage:
@@ -89,7 +88,7 @@ def _download(url: str) -> tuple[int, dict[str, str], bytes]:
 
 
 def _post_multipart(
-    url: str, filename: str, data: bytes, boundary: str = "kafkallm-test"
+    url: str, filename: str, data: bytes, boundary: str = "gaensestall-test"
 ) -> tuple[int, Any]:
     body = (
         (
@@ -191,7 +190,7 @@ def test_gui_submits_a_job_and_serves_state() -> None:
         assert job["sandbox"] == "reverse"
         assert job["reflect"] is False
         # The Job message carries the OCI image reference to run.
-        assert job["sandbox_image"] == "kafkallm-rea-job:latest"
+        assert job["sandbox_image"] == "gaensestall-rea-job:latest"
         assert producer.messages[0][2].sandbox_image == job["sandbox_image"]
         assert producer.messages[0][2].reflect is False
         assert [message[0] for message in producer.messages] == [
@@ -435,7 +434,7 @@ def test_gui_manages_agents_and_attaches_the_selected_flock(
         queued = next(
             model for topic, _, model in producer.messages if topic == "jobs.state"
         )
-        assert queued.agent_names == ["Worker", "Security reviewer"]
+        assert queued.service_names == ["Worker", "Security reviewer"]
 
         profile = (tmp_path / "security-reviewer.md").read_text(encoding="utf-8")
         assert 'name: "Security reviewer"' in profile
@@ -491,10 +490,10 @@ def test_gui_manages_sandboxes_and_validates_job_environments() -> None:
             f"{base}/api/sandboxes",
             {
                 "name": "Malware analysis",
-                "image": "localhost/kafkallm-malware:latest",
+                "image": "localhost/gaensestall-malware:latest",
                 "description": "YARA and Python RE tooling.",
                 "env": {"YARA_RULES": "/opt/rules"},
-                "extensions": ["rea:/opt/kafkallm/rea-mcp"],
+                "extensions": ["rea:/opt/gaensestall/rea-mcp"],
             },
         )
         assert status == 201
@@ -606,7 +605,7 @@ def test_gui_restarts_a_finished_job_with_its_settings() -> None:
         instruction="Do it again",
         input={"key": "value"},
         sandbox="reverse",
-        sandbox_image="kafkallm-rea-job:latest",
+        sandbox_image="gaensestall-rea-job:latest",
         multi_agent=False,
         timeout_seconds=120,
         reflect=False,
@@ -628,7 +627,7 @@ def test_gui_restarts_a_finished_job_with_its_settings() -> None:
         assert restarted["run_id"] != job.run_id
         assert restarted["instruction"] == "Do it again"
         assert restarted["input"] == {"key": "value"}
-        assert restarted["sandbox_image"] == "kafkallm-rea-job:latest"
+        assert restarted["sandbox_image"] == "gaensestall-rea-job:latest"
         assert restarted["multi_agent"] is False
         assert restarted["reflect"] is False
         assert [message[0] for message in producer.messages] == ["jobs.control"]

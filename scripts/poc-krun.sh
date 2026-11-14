@@ -13,7 +13,7 @@ ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 . "$ROOT_DIR/scripts/common.sh"
 load_env "$ROOT_DIR"
 
-IMAGE="${1:-${GOOSE_IMAGE:-kafkallm-goose-job:latest}}"
+IMAGE="${1:-${GOOSE_IMAGE:-gaensestall-goose-job:latest}}"
 RAM_MIB="${KRAM_MIB:-2048}"
 CPUS="${KCPUS:-2}"
 

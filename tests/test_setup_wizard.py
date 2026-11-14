@@ -3,13 +3,15 @@ from __future__ import annotations
 from collections.abc import Iterator
 from types import SimpleNamespace
 
-from kafkallm.setup import wizard as setup_wizard
+from gaensestall.setup import wizard as setup_wizard
 
 BASE_ENV = """\
-LLM_GATEWAY_VIRTUAL_KEY=test-virtual-key
+LLM_PROXY_TOKEN=test-virtual-key
 LLM_UPSTREAM_BASE_URL=https://openrouter.ai/api/v1
 LLM_UPSTREAM_API_KEY=
-GOOSE_MODEL=nvidia/nemotron-3.5-lightning:free
+LLM_UPSTREAM_MODEL=nvidia/nemotron-3.5-lightning:free
+MLFLOW_GATEWAY_ENDPOINT=gaensestall
+GOOSE_MODEL=gaensestall
 """
 
 
@@ -49,13 +51,13 @@ def test_non_interactive_setup_requires_a_base_url(tmp_path) -> None:
     assert setup_wizard.run(path, interactive=False) == 2
 
 
-def test_non_interactive_setup_requires_a_model(tmp_path) -> None:
-    path = _env(tmp_path, BASE_ENV.replace("GOOSE_MODEL=.*", "GOOSE_MODEL="))
-    path.write_text(
+def test_non_interactive_setup_requires_an_upstream_model(tmp_path) -> None:
+    path = _env(
+        tmp_path,
         BASE_ENV.replace(
-            "GOOSE_MODEL=nvidia/nemotron-3.5-lightning:free\n", "GOOSE_MODEL=\n"
+            "LLM_UPSTREAM_MODEL=nvidia/nemotron-3.5-lightning:free\n",
+            "LLM_UPSTREAM_MODEL=\n",
         ),
-        encoding="utf-8",
     )
 
     assert setup_wizard.run(path, interactive=False) == 2
@@ -72,7 +74,9 @@ def test_wizard_writes_endpoint_key_and_model(tmp_path, monkeypatch) -> None:
 
     assert values["LLM_UPSTREAM_BASE_URL"] == "https://llm.example/v1"
     assert values["LLM_UPSTREAM_API_KEY"] == "test-key"
-    assert values["GOOSE_MODEL"] == "my-model"
+    assert values["LLM_UPSTREAM_MODEL"] == "my-model"
+    assert values["MLFLOW_GATEWAY_ENDPOINT"] == "gaensestall"
+    assert values["GOOSE_MODEL"] == "gaensestall"
 
 
 def test_wizard_keeps_an_existing_key_when_blank(tmp_path, monkeypatch) -> None:

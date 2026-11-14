@@ -7,7 +7,14 @@ ROOT = Path(__file__).resolve().parents[1]
 SKIP_DIRS = {".git", ".venv", "__pycache__", ".pytest_cache", ".ruff_cache"}
 LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 CODE = re.compile(r"`([^`]+)`")
-ROOTED_PATHS = ("src/", "stall/", "gaense/", "infra/", "tools/", "scripts/")
+ROOTED_PATHS = (
+    "backend/",
+    "frontend/",
+    "goose-assets/",
+    "sandboxes/",
+    "infra/",
+    "scripts/",
+)
 ROOT_FILES = {"compose.yaml", "Makefile", "pyproject.toml", "constraints.txt"}
 
 

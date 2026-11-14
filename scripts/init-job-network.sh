@@ -24,4 +24,4 @@ if [ -x .venv/bin/python ]; then
     PYTHON=.venv/bin/python
 fi
 
-PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" exec "$PYTHON" -m kafkallm.sandbox.network_cli "$@"
+PYTHONPATH="backend${PYTHONPATH:+:$PYTHONPATH}" exec "$PYTHON" -m gaensestall.sandbox.network_cli "$@"

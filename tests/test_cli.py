@@ -6,10 +6,14 @@ import sys
 from pathlib import Path
 
 import pytest
-
-from kafkallm.cli import _attach_sandbox_image, _job_payload, build_parser, print_schema
-from kafkallm.core.models import SandboxSpec
-from kafkallm.core.settings import Settings
+from gaensestall.cli import (
+    _attach_sandbox_image,
+    _job_payload,
+    build_parser,
+    print_schema,
+)
+from gaensestall.core.models import SandboxSpec
+from gaensestall.core.settings import Settings
 
 
 def _args(*argv: str):
@@ -123,7 +127,7 @@ def test_submit_image_comes_from_the_sandbox_registry(
         image="ghcr.io/example/reverse:1",
     )
     monkeypatch.setattr(
-        "kafkallm.cli.resolve_sandbox", lambda settings, sandbox_id: sandbox
+        "gaensestall.cli.resolve_sandbox", lambda settings, sandbox_id: sandbox
     )
     payload = {"instruction": "Analyze", "sandbox": "reverse"}
 
@@ -136,7 +140,7 @@ def test_submit_image_can_be_overridden_for_an_ad_hoc_registry_image(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "kafkallm.cli.resolve_sandbox", lambda settings, sandbox_id: None
+        "gaensestall.cli.resolve_sandbox", lambda settings, sandbox_id: None
     )
     payload = {"instruction": "Analyze", "sandbox": "adhoc"}
 
@@ -149,7 +153,7 @@ def test_submit_rejects_an_unknown_sandbox_without_an_image(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "kafkallm.cli.resolve_sandbox", lambda settings, sandbox_id: None
+        "gaensestall.cli.resolve_sandbox", lambda settings, sandbox_id: None
     )
 
     with pytest.raises(ValueError, match="Unknown sandbox"):

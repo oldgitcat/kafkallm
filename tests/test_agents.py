@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+from gaensestall.core.models import AgentSpec
+from gaensestall.core.settings import Settings
 from gui.agents import (
     AgentStore,
     agent_profile_text,
@@ -14,9 +16,6 @@ from gui.agents import (
     new_agent_id,
     seed_default_agent_profiles,
 )
-
-from kafkallm.core.models import AgentSpec
-from kafkallm.core.settings import Settings
 
 
 def test_default_flock_contains_the_goosetown_roles() -> None:

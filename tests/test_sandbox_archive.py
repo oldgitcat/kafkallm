@@ -6,7 +6,7 @@ import tarfile
 from pathlib import Path
 from typing import Any
 
-from kafkallm.sandbox.archive import (
+from gaensestall.sandbox.archive import (
     copy_from_container,
     copy_into_container,
     read_container_file,
@@ -107,7 +107,7 @@ def test_read_container_file_honours_the_limit() -> None:
     assert (
         read_container_file(
             container,
-            "/workspace/.kafkallm/main.jsonl",
+            "/workspace/.gaensestall/main.jsonl",
             max_bytes=10,
         )
         == b"x" * 10

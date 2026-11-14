@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gänsestall · goose jobs</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Gänsestall</h1>
+      <p class="sub">goose jobs · Kafka queue · isolated microVMs</p>
+    </div>
+    <a class="sub" href="http://localhost:5000" target="_blank" rel="noreferrer">MLflow traces ↗</a>
+  </header>
+
+  <main>
+    <div class="stack">
+    <section>
+      <h2>Submit a job</h2>
+      <form id="job-form">
+        <label for="instruction">Instruction</label>
+        <textarea id="instruction" required placeholder="Describe the result you want. Be specific about outputs and verification."></textarea>
+
+        <label for="input">Structured input (JSON)</label>
+        <textarea id="input" spellcheck="false">{}</textarea>
+
+        <label for="files">Input files or binaries</label>
+        <input id="files" type="file" multiple>
+        <div class="hint">Any file type. Files are uploaded to RustFS and copied into the job at <span class="mono">/workspace/inputs</span>.</div>
+
+        <label for="sandbox">Sandbox</label>
+        <select id="sandbox" disabled>
+          <option value="">Loading sandboxes…</option>
+        </select>
+        <div id="sandbox-hint" class="hint">The environment provides the job image and its tools.</div>
+
+        <label class="check"><input id="multi_agent" type="checkbox" checked> Use goosetown multi-agent flock</label>
+        <div class="flock-head">
+          <span class="muted">Flock members</span>
+          <button id="agent-new-inline" type="button" class="link-button">+ New agent</button>
+        </div>
+        <div id="agent-options" class="agent-options"><span class="muted">Loading agents…</span></div>
+
+        <div id="limit-fields" class="row">
+          <div>
+            <label for="timeout">Timeout (seconds)</label>
+            <input id="timeout" type="number" min="1" max="3600" value="600">
+          </div>
+        </div>
+
+        <label class="check"><input id="unlimited" type="checkbox" disabled> Unlimited runtime and result size</label>
+        <div id="unlimited-hint" class="hint">Checking this disables the job timeout and Goose turn cap. Oversized results are preserved as a <span class="mono">result-full.md</span> artifact.</div>
+
+        <label class="check"><input id="reflect" type="checkbox" checked> Run learning pass (improve reusable skills)</label>
+        <div id="reflect-hint" class="hint">After the main run, a short second Goose session can update one skill in the shared skills directory.</div>
+
+        <button id="submit" type="submit">Submit job</button>
+        <div id="message" class="message"></div>
+        <div class="hint">The worker runs the job in an isolated goose microVM. Files written to <span class="mono">outputs/</span> are uploaded as artifacts.</div>
+      </form>
+    </section>
+
+    <section id="sandboxes-panel">
+      <div class="panel-head">
+        <h2>Sandboxes</h2>
+        <button id="sandbox-new" type="button" class="compact">+ New sandbox</button>
+      </div>
+      <div id="sandboxes" class="agent-list"><span class="muted">Loading sandboxes…</span></div>
+      <details id="sandbox-details">
+        <summary>Add or edit sandbox</summary>
+        <form id="sandbox-form">
+          <input id="sandbox-id" type="hidden">
+          <label for="sandbox-name">Name</label>
+          <input id="sandbox-name" required placeholder="e.g. Malware analysis">
+          <label for="sandbox-image">Container image</label>
+          <input id="sandbox-image" required placeholder="localhost/gaensestall-malware-job:latest">
+          <div class="hint">Build the image into the rootless Podman storage first. Registry images are pulled when the worker can reach them.</div>
+          <label for="sandbox-description">Description</label>
+          <input id="sandbox-description" placeholder="What this environment is for">
+          <label for="sandbox-instructions">Prompt notes (optional)</label>
+          <textarea id="sandbox-instructions" placeholder="Capabilities or conventions the agent should know about this environment."></textarea>
+          <label for="sandbox-env">Extra environment (JSON, optional)</label>
+          <textarea id="sandbox-env" spellcheck="false" placeholder='{"MY_TOOL_HOME": "/opt/mytool"}'>{}</textarea>
+          <label for="sandbox-extensions">Goose extensions (comma separated, optional)</label>
+          <input id="sandbox-extensions" placeholder="rea:/opt/gaensestall/rea-mcp">
+          <label class="check"><input id="sandbox-enabled" type="checkbox" checked> Enabled</label>
+          <div class="agent-actions">
+            <button id="sandbox-save" type="submit">Save sandbox</button>
+            <button id="sandbox-reset" type="button" class="secondary">New</button>
+          </div>
+          <div id="sandbox-message" class="message"></div>
+        </form>
+      </details>
+    </section>
+
+    <section id="agents-panel">
+      <div class="panel-head">
+        <h2>Goosetown agents</h2>
+        <div class="agent-actions">
+          <button id="agent-reload" type="button" class="compact secondary">Reload from files</button>
+          <button id="agent-new" type="button" class="compact">+ New agent</button>
+        </div>
+      </div>
+      <div id="agents" class="agent-list"><span class="muted">Loading agents…</span></div>
+      <details>
+        <summary>Add or edit agent</summary>
+        <form id="agent-form">
+          <input id="agent-id" type="hidden">
+          <label for="agent-name">Name</label>
+          <input id="agent-name" required placeholder="e.g. Security reviewer">
+          <div class="hint">The name is shown in the flock list and can be changed at any time.</div>
+          <div class="row">
+            <div>
+              <label for="agent-role">Role</label>
+              <input id="agent-role" placeholder="reviewer">
+            </div>
+            <div>
+              <label for="agent-skills">Skills (comma separated)</label>
+              <input id="agent-skills" placeholder="goosetown-reviewer">
+            </div>
+          </div>
+          <label for="agent-description">Description</label>
+          <input id="agent-description" placeholder="What this agent is for">
+          <label for="agent-instructions">Instructions</label>
+          <textarea id="agent-instructions" class="small" placeholder="Role-specific instructions passed to the delegate."></textarea>
+          <label class="check"><input id="agent-enabled" type="checkbox" checked> Enabled</label>
+          <div class="hint">Built-in agents are seeded from the app image; edit their files in the configured agents directory and click <strong>Reload from files</strong>. Custom agents are saved as markdown profiles there. Built-in roles stay read-only in this form.</div>
+          <div class="agent-actions">
+            <button id="agent-save" type="submit">Save agent</button>
+            <button id="agent-reset" type="button" class="secondary">New</button>
+          </div>
+          <div id="agent-message" class="message"></div>
+        </form>
+      </details>
+    </section>
+    </div>
+
+    <section>
+      <div class="panel-head">
+        <h2>Jobs</h2>
+        <button id="clear-finished" type="button" class="compact">Clear finished</button>
+      </div>
+      <input id="job-search" placeholder="Filter by job ID, instruction, sandbox, or status">
+      <div id="jobs" class="empty">Loading…</div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

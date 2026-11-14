@@ -24,7 +24,7 @@ WORKER_CONCURRENCY=2
 ```
 
 You can also add more worker containers with
-`podman compose up -d --scale agent-worker=2`. Do not set both higher than the
+`podman compose up -d --scale worker=2`. Do not set both higher than the
 number of partitions; extra consumers remain idle.
 
 ### Stopping jobs
@@ -63,7 +63,7 @@ small `JobLog` records to the non-compacted `jobs.logs` topic. The GUI shows:
 
 The panel polls the `GET /api/jobs/<job_id>/logs?after=<sequence>` endpoint
 every two seconds and keeps a bounded ring buffer per job. Raw log records are
-also available with `kafkallm logs`. Job logs expire with the normal topic
+also available with `gaensestall logs`. Job logs expire with the normal topic
 retention (`KAFKA_TOPIC_RETENTION_MS`, seven days by default).
 
 When the orchestrator delegates, the panel shows two extra records:
@@ -77,7 +77,7 @@ it took. They are also mirrored to the MLflow span events.
 ## Multiple workers
 
 ```bash
-podman compose up -d --scale agent-worker=2
+podman compose up -d --scale worker=2
 ```
 
 Workers share the `agent-workers` consumer group. Each worker can run
@@ -88,11 +88,10 @@ last-writer-wins semantics; existing files are never deleted.
 
 ## Operations and guarantees
 
-- The worker waits for Kafka, agentgateway readiness, the Podman API, the
-  job network, the allowlisting proxy, and the goose image before consuming
-  jobs.
-- Kafka, the Kafka UI, RustFS, the Podman proxy, MLflow, the worker, and the GUI
-  have restart policies.
+- The worker waits for Kafka, MLflow readiness, the Podman API, the job
+  network, the LLM proxy, and the goose image before consuming jobs.
+- Kafka, the Kafka UI, RustFS, Postgres, MLflow, the worker, and the GUI have
+  restart policies.
 - The Kafka offset is committed only after the result is written to `jobs.out`.
 - Processing is **at-least-once**. A redelivered job starts a new microVM, so
   side effects must be idempotent.
@@ -123,7 +122,7 @@ and its data volume differ:
 - The new volume is `kafka-data`, mounted at `/var/lib/kafka/data`.
 - Kafka does not read the old `redpanda-data` volume. Start the new stack and
   verify it, then remove the old volume when you no longer need its topics, for
-  example `podman volume rm kafkallm_redpanda-data` (adjust the Compose project
+  example `podman volume rm gaensestall_redpanda-data` (adjust the Compose project
   prefix if needed).
 - The compacted `agents.state` and `sandboxes.state` topics start empty, so the
   default flock and the two built-in sandboxes are seeded again on the first
@@ -144,8 +143,8 @@ dependencies. The equivalent manual commands are:
 python3 -m venv .venv
 .venv/bin/pip install -e '.[dev]'
 .venv/bin/pytest
-.venv/bin/ruff check src tests
-.venv/bin/ruff format --check src tests
+.venv/bin/ruff check backend tests tools
+.venv/bin/ruff format --check backend tests tools
 ```
 
 The unit tests use a fake Podman client, a fake Kafka producer, and the real GUI
@@ -161,8 +160,8 @@ make doctor
 ```
 
 It checks Python, Podman and Podman Compose, the rootless socket, KVM, the job
-network, the job image, the required `.env` values, the rendered gateway config,
-the gateway, the GUI, and the selected LLM provider. Use
+network, the job image, the required `.env` values, the MLflow AI Gateway
+endpoint, the GUI, and the selected LLM provider. Use
 `./scripts/doctor.sh --offline` to skip network checks.
 
 Common failures:
@@ -173,10 +172,10 @@ Common failures:
 | `Podman socket` fails | `systemctl --user enable --now podman.socket` |
 | `Job network` warns | Run `make network` on the host, not inside a container |
 | `Goose job image` warns | Run `make images` |
-| Worker waits for the gateway | Check `LLM_UPSTREAM_BASE_URL`/`LLM_UPSTREAM_API_KEY` in `.env`, run `make gateway-config`, then `make restart` |
-| Gateway rejects the virtual key | Rerun `make setup`, then `make restart` |
-| `Gateway config` warns | Run `make gateway-config` after changing provider settings |
-| Provider key rejected | Create a new key and update `LLM_UPSTREAM_API_KEY` |
+| Worker waits for the gateway | Check `LLM_UPSTREAM_BASE_URL`/`LLM_UPSTREAM_MODEL` and MLflow logs, then run `make restart` |
+| LLM proxy rejects the token | Rerun `make setup`, then `make restart` |
+| MLflow endpoint not provisioned | Check `MLFLOW_GATEWAY_ENDPOINT` and the bootstrap logs in `podman compose logs mlflow` |
+| Provider key rejected | Create a new key, update `LLM_UPSTREAM_API_KEY`, then run `make restart` |
 | Ollama unreachable from the gateway | Use `LLM_UPSTREAM_BASE_URL=http://host.containers.internal:11434/v1` |
 | `podman compose config` fails | Fix the reported `.env` or `compose.yaml` value |
 
@@ -184,9 +183,10 @@ Logs:
 
 ```bash
 make logs
-podman compose logs -f agent-worker
+podman compose logs -f worker
 podman compose logs -f gui
-podman compose logs -f agentgateway
+podman compose logs -f mlflow
+podman compose logs -f postgres
 ```
 
 
@@ -211,19 +211,19 @@ the wrapper and builtins. Possible future work, not required now:
 ## Repository layout
 
 ```text
-src/kafkallm/           CLI and package entry point
-src/kafkallm/core/      models, settings, storage, telemetry, helpers
-src/kafkallm/kafka/     producer, consumer, jobs, state, logs
-src/kafkallm/worker/    worker, harness, controls, retry, audit
-src/kafkallm/sandbox/   goose runtime, archive, network, containers
-src/kafkallm/gateway/   agentgateway config rendering
-src/kafkallm/setup/     doctor and setup wizard
-tools/gui/              browser UI, agent profiles, job store, static assets
-gaense/                 built-in agents, skills, template, Goose config
-stall/                  sandbox images and REA requirements
-infra/                  Kafka, MLflow, S3, agentgateway, Caddy, and proxy
-scripts/                setup, doctor, config render, image builds, network init, sandbox helpers
-tests/                  unit tests
+backend/gaensestall/            CLI and package entry point
+backend/gaensestall/core/       models, settings, storage, telemetry, helpers
+backend/gaensestall/kafka/      client, consumer, job_submission, state, logs
+backend/gaensestall/worker/     service, job_runner, controls, retry, audit
+backend/gaensestall/sandbox/    job runtime, archive, network, registry, containers
+backend/gaensestall/llm/        MLflow AI Gateway environment helpers
+backend/gaensestall/setup/      doctor and setup wizard
+frontend/gui/                   browser UI, agent profiles, job store, static assets
+goose-assets/                   built-in agents, skills, template, Goose config
+sandboxes/                      sandbox images and REA requirements
+infra/                          Kafka, MLflow, Postgres, S3, Caddy, and LLM proxy
+scripts/                        setup, doctor, image builds, network init, sandbox helpers
+tests/                          unit tests
 Makefile                one-command setup, diagnostics, build, and run targets
 ```
 

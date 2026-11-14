@@ -14,14 +14,14 @@ The job image contains a small goosetown hub:
 - role skills for workers, writers, reviewers, and a local researcher
 
 The upstream role skills and `gtwall` are vendored from goosetown under
-Apache 2.0; see `gaense/LICENSE-goosetown`. The orchestrator and `AGENTS.md`
+Apache 2.0; see `goose-assets/LICENSE-goosetown`. The orchestrator and `AGENTS.md`
 are adapted so they do not depend on the internet, `bd`, `uv`, or the goosetown
 dashboard. The browser-based goosetown dashboard is not used; Gänsestall has its
 own job GUI.
 
 Skills are stored on the host at `GOOSE_JOB_SKILLS_DIR`
-(`~/.local/share/kafkallm/skills` by default). The store is copied into
-each main job at `/opt/kafkallm/skills-persistent`; the guest entrypoint copies
+(`~/.local/share/gaensestall/skills` by default). The store is copied into
+each main job at `/opt/gaensestall/skills-persistent`; the guest entrypoint copies
 it into a disposable `/workspace/.claude/skills` tree. A job can edit that copy,
 but it cannot write the shared store. Only the worker writes the store, after a
 separate learning-pass microVM proposes changes and the worker has validated
@@ -63,7 +63,7 @@ delegation.
 #### Agent profile directory
 
 The GUI also imports agent profiles from `GOOSE_JOB_AGENTS_DIR`
-(`~/.local/share/kafkallm/agents` by default) at startup, next to the skills
+(`~/.local/share/gaensestall/agents` by default) at startup, next to the skills
 directory. Each `*.md` file needs YAML front matter; the filename is the
 `agent_id`:
 
@@ -87,7 +87,7 @@ used by goose agent sources: strings (optionally quoted), booleans, and lists in
 The directory is the durable store for agents:
 
 - The five built-in roles are defined as files in the repository/app image at
-  `gaense/agents/*.md`. On GUI start they are copied into `GOOSE_JOB_AGENTS_DIR` if
+  `goose-assets/agents/*.md`. On GUI start they are copied into `GOOSE_JOB_AGENTS_DIR` if
   missing, so every agent is file-defined. They use the same format as custom
   profiles.
 - The GUI still marks the built-in IDs as read-only and blocks disable/delete.
@@ -112,7 +112,7 @@ The GUI has a **Sandboxes** panel and the job form's sandbox dropdown is built
 from it. The registry is the compacted `sandboxes.state` topic, so there is no
 separate database. On submit, the GUI writes the selected entry's image
 reference into the job as `sandbox_image` (for example
-`localhost/kafkallm-goose-job:latest` or `ghcr.io/org/agent:1.2.3`). The worker
+`localhost/gaensestall-goose-job:latest` or `ghcr.io/org/agent:1.2.3`). The worker
 runs that reference and pulls it from its registry when it is not already in
 local Podman storage. The sandbox entry itself supplies the optional `env`,
 `extensions`, and `instructions`. On the first GUI start two environments are
@@ -131,7 +131,7 @@ Use **+ New sandbox** to register another image. A sandbox entry has:
 | Field | Purpose |
 |---|---|
 | `name` | Label shown in the dropdown and job detail |
-| `image` | OCI image reference, for example `localhost/kafkallm-malware:latest` |
+| `image` | OCI image reference, for example `localhost/gaensestall-malware:latest` |
 | `description` | Short explanation shown below the dropdown |
 | `instructions` | Optional prompt note about the environment's capabilities |
 | `env` | Optional non-reserved environment variables for the microVM |
@@ -140,9 +140,9 @@ Use **+ New sandbox** to register another image. A sandbox entry has:
 
 Build or pull the image into the worker's rootless Podman storage first. The
 worker verifies the image at job start and gives a clear error if it is
-unavailable. `KAFKALLM_*`, `GOOSE_*`, `OPENAI_*`, and process-critical variables
+unavailable. `GAENSESTALL_*`, `GOOSE_*`, `OPENAI_*`, and process-critical variables
 such as `PATH` and `HOME` are reserved and rejected in the GUI, so registry
-entries cannot override gateway credentials or runtime controls.
+entries cannot override LLM proxy credentials or runtime controls.
 
 Adding an image therefore needs no Python or Compose change:
 
@@ -163,7 +163,7 @@ registry at run time.
 The CLI accepts the same registry IDs:
 
 ```bash
-./scripts/kafkallm-cli submit "Analyze the sample" --sandbox malware-analysis
+./scripts/gaensestall-cli submit "Analyze the sample" --sandbox malware-analysis
 ```
 
 New agent profiles follow the same pattern: **Goosetown agents → + New agent**,

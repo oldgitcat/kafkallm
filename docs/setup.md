@@ -25,13 +25,13 @@ directly.
 make setup
 ```
 
-This creates `.env` from `.env.example`, generates
-`LLM_GATEWAY_VIRTUAL_KEY`, asks for the GUI username and password, and renders
-`infra/agentgateway/config.yml`.
-When a terminal is attached, `make setup` asks for the OpenAI-compatible base
-URL, API key, and model. In a non-interactive shell it validates the existing
-values instead. You can also edit `LLM_UPSTREAM_BASE_URL`,
-`LLM_UPSTREAM_API_KEY`, and `GOOSE_MODEL` directly in `.env`.
+This creates `.env` from `.env.example`, generates `LLM_PROXY_TOKEN`,
+the Postgres password, and the MLflow KEK passphrase, and asks for the GUI
+username and password. When a terminal is attached, `make setup` asks for the
+OpenAI-compatible base URL, API key, and upstream model. In a non-interactive
+shell it validates the existing values instead. You can also edit
+`LLM_UPSTREAM_BASE_URL`, `LLM_UPSTREAM_MODEL`, and
+`LLM_UPSTREAM_API_KEY` directly in `.env`.
 Then check the host:
 
 ```bash
@@ -45,9 +45,9 @@ make network   # once per host: create the isolated IPv6-only Podman network
 make images    # build the goose job image into rootless Podman storage
 ```
 
-The host directories under `KAFKALLM_JOB_ROOT` are created by
+The host directories under `GAENSESTALL_JOB_ROOT` are created by
 `scripts/prepare-job-root.sh`, which `make setup` and `make up` call
-automatically. The default is `~/.local/share/kafkallm`, owned by your user;
+automatically. The default is `~/.local/share/gaensestall`, owned by your user;
 no `sudo` is needed.
 
 If `make doctor` reports a missing Podman socket, enable the rootless API:
@@ -91,14 +91,14 @@ to `jobs.in` and reads the state and audit topics. The GUI has no local database
 The Make targets wrap the scripts in this repository:
 
 ```bash
-./scripts/setup.sh             # creates .env, generates the gateway key
+./scripts/setup.sh             # creates .env, generates the LLM proxy token
 ./scripts/prepare-job-root.sh  # creates the host job directories
 ./scripts/init-job-network.sh
 ./scripts/build-goose-image.sh
 ./scripts/build-rea-image.sh   # optional
-./scripts/build-proxy-image.sh
-podman build -t kafkallm-app:latest .
-podman build -f tools/gui/Dockerfile -t kafkallm-gui:latest .
+./scripts/build-llm-proxy-image.sh
+podman build -f backend/Dockerfile -t gaensestall-worker:latest .
+podman build -f frontend/Dockerfile -t gaensestall-gui:latest .
 podman compose --profile storage up -d
 ./scripts/doctor.sh
 ```
@@ -108,41 +108,41 @@ podman compose --profile storage up -d
 
 ### Command line
 
-The CLI runs on the host. `scripts/kafkallm-cli` creates/uses the local
+The CLI runs on the host. `scripts/gaensestall-cli` creates/uses the local
 virtualenv, loads `.env`, and talks to Kafka on `127.0.0.1:19092`. No extra
 Compose container is needed.
 
 ```bash
 # Submit a job
-./scripts/kafkallm-cli submit "Say hello"
+./scripts/gaensestall-cli submit "Say hello"
 
 # Submit a job with a local file or binary
-./scripts/kafkallm-cli submit \
+./scripts/gaensestall-cli submit \
   "Inspect the uploaded binary" --upload "$PWD/tool.bin"
 
 # Submit into the reverse-engineering sandbox (REA + Ghidra)
-./scripts/kafkallm-cli submit \
+./scripts/gaensestall-cli submit \
   "Reverse engineer this binary and summarize its behavior" \
   --sandbox reverse --upload "$PWD/tool.bin"
 
 # Pull and run an image that is not in the sandbox registry
-./scripts/kafkallm-cli submit "Say hello" \
+./scripts/gaensestall-cli submit "Say hello" \
   --sandbox adhoc --image ghcr.io/example/agent:1.2.3
 
 # Submit without the learning pass (skill improvement)
-./scripts/kafkallm-cli submit "Say hello" --no-reflect
+./scripts/gaensestall-cli submit "Say hello" --no-reflect
 
 # Submit a complete Job JSON payload from a file or stdin
-./scripts/kafkallm-cli submit --job-json - < job.json
+./scripts/gaensestall-cli submit --job-json - < job.json
 
 # Print the exact Job JSON schema (job, agent, or sandbox)
-./scripts/kafkallm-cli schema job
+./scripts/gaensestall-cli schema job
 
 # Read results, materialized state, audit events, or live activity
-./scripts/kafkallm-cli results --from-beginning --idle-timeout 5
-./scripts/kafkallm-cli states --from-beginning --idle-timeout 5
-./scripts/kafkallm-cli events --from-beginning --idle-timeout 5
-./scripts/kafkallm-cli logs --from-beginning --idle-timeout 5
+./scripts/gaensestall-cli results --from-beginning --idle-timeout 5
+./scripts/gaensestall-cli states --from-beginning --idle-timeout 5
+./scripts/gaensestall-cli events --from-beginning --idle-timeout 5
+./scripts/gaensestall-cli logs --from-beginning --idle-timeout 5
 ```
 
 Kafka is also published directly on `127.0.0.1:19092`, so any Kafka client can
@@ -158,11 +158,11 @@ printf '%s\n' \
 Worker and GUI logs:
 
 ```bash
-podman compose logs -f agent-worker
+podman compose logs -f worker
 podman compose logs -f gui
 podman compose logs -f caddy
-podman compose logs -f agentgateway
 podman compose logs -f mlflow
+podman compose logs -f postgres
 ```
 
 The Kafka UI runs at <http://localhost:8080>. MLflow runs at
@@ -171,42 +171,45 @@ The Kafka UI runs at <http://localhost:8080>. MLflow runs at
 
 ## Configuration
 
-Runtime defaults live in `src/kafkallm/core/settings.py`. `.env`, created from
+Runtime defaults live in `backend/gaensestall/core/settings.py`. `.env`, created from
 `.env.example`, only overrides them. The file is gitignored. `make setup`
-generates the virtual gateway key, validates the configured endpoint, and renders
-the agentgateway config. For hosted providers, the provider key is the only
-required secret.
+generates the LLM proxy token, the Postgres password, and the MLflow KEK,
+and validates the configured endpoint. For hosted providers, the provider key
+is the only required secret.
 
 | Setting | Default | Purpose |
 |---|---|---|
-| `GOOSE_MODEL` | `nvidia/nemotron-3.5-lightning:free` | Model used inside the job; must exist at the configured endpoint |
+| `GOOSE_MODEL` | `gaensestall` | Model id used inside the job; must equal `MLFLOW_GATEWAY_ENDPOINT` |
+| `MLFLOW_GATEWAY_ENDPOINT` | `gaensestall` | Name of the provisioned MLflow AI Gateway endpoint |
 | `LLM_UPSTREAM_BASE_URL` | `https://openrouter.ai/api/v1` | OpenAI-compatible `/v1` endpoint |
-| `LLM_UPSTREAM_API_KEY` | — | Provider credential; only agentgateway sees it. Optional for unauthenticated local endpoints |
-| `LLM_GATEWAY_VIRTUAL_KEY` | generated | Rotatable key used by jobs |
-| `AGENTGATEWAY_INLINE_VIRTUAL_KEY` | `true` | Write the local virtual key into the gitignored config so the playground's saved key works; `false` keeps only the environment reference |
-| `KAFKALLM_JOB_ROOT` | `~/.local/share/kafkallm` | Host directory for workspaces, skills, tools, and Goose config |
+| `LLM_UPSTREAM_MODEL` | `nvidia/nemotron-3.5-lightning:free` | Model id sent to the upstream provider |
+| `LLM_UPSTREAM_API_KEY` | — | Provider credential; stored encrypted in Postgres and used only by MLflow. Optional for unauthenticated local endpoints |
+| `LLM_PROXY_TOKEN` | generated | Rotatable key validated by the LLM proxy |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | `mlflow` / generated / `mlflow` | MLflow tracking database; internal to Compose |
+| `MLFLOW_CRYPTO_KEK_PASSPHRASE` | generated | Encrypts LLM proxy credentials in Postgres |
+| `GAENSESTALL_JOB_ROOT` | `~/.local/share/gaensestall` | Host directory for workspaces, skills, tools, and Goose config |
 | `PODMAN_SOCKET` | `/run/user/$UID/podman/podman.sock` | Rootless Podman API socket mounted into the worker |
-| `GOOSE_IMAGE` | `kafkallm-goose-job:latest` | Default job microVM image |
-| `GOOSE_RE_IMAGE` | `kafkallm-rea-job:latest` | Optional reverse-engineering image |
-| `GOOSE_JOB_PROXY_IMAGE` | `kafkallm-gateway-proxy:latest` | Distroless proxy image started next to each job |
+| `GOOSE_IMAGE` | `gaensestall-goose-job:latest` | Default job microVM image |
+| `GOOSE_RE_IMAGE` | `gaensestall-rea-job:latest` | Optional reverse-engineering image |
+| `LLM_PROXY_IMAGE` | `gaensestall-llm-proxy:latest` | Distroless proxy image started next to each job |
 | `GOOSE_JOB_RAM_MIB` / `GOOSE_JOB_CPUS` | `2048` / `2` | Per-job resources |
 | `GOOSE_JOB_REFLECT_ENABLED` | `true` | Default for the per-job learning pass |
-| `GOOSE_JOB_AGENTS_DIR` | `~/.local/share/kafkallm/agents` | Markdown agent profiles, built-in and custom (GUI reads/writes them) |
-| `GOOSE_JOB_CONFIG_DIR` | `~/.local/share/kafkallm/config` | Goose config copied into each job (active file: `config.yaml`) |
+| `GOOSE_JOB_AGENTS_DIR` | `~/.local/share/gaensestall/agents` | Markdown agent profiles, built-in and custom (GUI reads/writes them) |
+| `GOOSE_JOB_CONFIG_DIR` | `~/.local/share/gaensestall/config` | Goose config copied into each job (active file: `config.yaml`) |
 | `GUI_BIND` | `0.0.0.0` | Host interface for the Caddy GUI endpoint; `127.0.0.1` for local-only access |
 | `GUI_PORT` | `8090` | Published Caddy/GUI port |
 | `GUI_AUTH_USER` / `GUI_AUTH_HASH` | generated by `make setup` | HTTP basic auth credentials enforced by Caddy |
 | `GUI_MAX_REQUEST_BYTES` | `2097152` | Limit for JSON request bodies (uploads use `UPLOAD_MAX_*`) |
-| `LLM_GATEWAY_PORT` | `8091` | LLM listener port inside the container and published on the host; the playground uses it too |
-| `AGENTGATEWAY_UI_PORT` | `15000` | agentgateway admin UI / LLM playground (localhost only) |
-| `AGENTGATEWAY_CORS_ORIGINS` | local playground origins | Browser origins allowed to call the LLM listener; empty disables CORS |
+| `LLM_PROXY_PORT` | `8091` | Job-facing proxy listener; reachable only from the microVM |
+| `MLFLOW_UI_PORT` | `5000` | Published MLflow UI, tracking API, and AI Gateway |
+| `MLFLOW_GATEWAY_API_BASE_ALLOWED_SCHEMES` | `https` | Add `http` for local model servers |
+| `MLFLOW_GATEWAY_API_BASE_ALLOW_PRIVATE_IPS` | `false` | Allow private-IP upstreams such as Ollama on the host |
 | `S3_ENDPOINT_URL` | `http://rustfs:9000` (storage profile) | Uploads and artifacts |
 | `MLFLOW_ENABLED` | `true` | OTLP traces to MLflow |
 
-See `.env.example` for the common settings. The active gateway config is
-`infra/agentgateway/config.yml` (gitignored), rendered by
-`make gateway-config` or automatically by `make up`. A complete standalone
-example is `infra/agentgateway/config.yml.example`.
+See `.env.example` for the common settings. The gateway endpoint is provisioned
+automatically by `infra/mlflow/bootstrap_gateway.py` before the MLflow server
+starts; see `infra/mlflow/README.md`.
 
 ## Reproducible builds
 
@@ -216,9 +219,9 @@ example is `infra/agentgateway/config.yml.example`.
   services are pinned by digest in `compose.yaml`. Update the digests
   intentionally when you upgrade.
 - The Goose release tarball is pinned by version and SHA-256 in
-  `stall/standard/Dockerfile`. The REA image downloads are pinned the same way.
+  `sandboxes/standard/Dockerfile`. The REA image downloads are pinned the same way.
 - `make images` builds the Goose job image. `make rea-image` builds the optional
   REA image; its Frida CLI dependencies are pinned in
-  `stall/reversing/requirements.txt`.
+  `sandboxes/reversing/requirements.txt`.
 
 

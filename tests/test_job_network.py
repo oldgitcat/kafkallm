@@ -4,8 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
-
-from kafkallm.sandbox.network import JobNetworkError, ensure_job_network
+from gaensestall.sandbox.network import JobNetworkError, ensure_job_network
 
 
 def test_creates_an_ipv6_only_internal_network(tmp_path: Path) -> None:

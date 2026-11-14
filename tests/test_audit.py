@@ -1,15 +1,14 @@
 from dataclasses import replace
 
+from gaensestall.core.models import AgentEvent, Job
+from gaensestall.core.settings import Settings
+from gaensestall.worker.audit import AuditLogger
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,
 )
-
-from kafkallm.core.models import AgentEvent, Job
-from kafkallm.core.settings import Settings
-from kafkallm.worker.audit import AuditLogger
 
 
 class RecordingProducer:
@@ -31,7 +30,7 @@ def test_audit_events_keep_trace_and_parent_relationship() -> None:
     producer = RecordingProducer()
     settings = replace(
         Settings.from_env(),
-        agent_name="test-agent",
+        service_name="test-agent",
         events_topic="agent.events",
     )
     job = Job(instruction="Hello", trace_id="trace-123")
@@ -69,7 +68,7 @@ def test_audit_events_keep_trace_and_parent_relationship() -> None:
 
 
 def test_audit_failure_does_not_raise() -> None:
-    settings = replace(Settings.from_env(), agent_name="test-agent")
+    settings = replace(Settings.from_env(), service_name="test-agent")
     audit = AuditLogger(settings, FailingProducer()).for_job(
         Job(instruction="Hello", trace_id="trace-123")
     )
@@ -83,7 +82,7 @@ def test_audit_events_are_mirrored_to_the_active_span() -> None:
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
     span = provider.get_tracer("test").start_span("job.handle")
-    settings = replace(Settings.from_env(), agent_name="test-agent")
+    settings = replace(Settings.from_env(), service_name="test-agent")
     audit = AuditLogger(settings, RecordingProducer()).for_job(
         Job(instruction="Hello", trace_id="trace-123")
     )
@@ -98,5 +97,5 @@ def test_audit_events_are_mirrored_to_the_active_span() -> None:
     event = finished.events[0]
     assert event.name == "job.received"
     assert event.attributes["status"] == "info"
-    assert event.attributes["kafkallm.input_files"] == 2
-    assert "kafkallm.nested" not in event.attributes
+    assert event.attributes["gaensestall.input_files"] == 2
+    assert "gaensestall.nested" not in event.attributes

@@ -1,9 +1,8 @@
 import json
 
 import pytest
+from gaensestall.core.models import AgentSpec, Job, JobState, SandboxSpec, to_json_bytes
 from pydantic import ValidationError
-
-from kafkallm.core.models import AgentSpec, Job, JobState, SandboxSpec, to_json_bytes
 
 
 def test_job_defaults_and_serialization() -> None:
@@ -49,19 +48,19 @@ def test_sandbox_spec_accepts_custom_environment_settings() -> None:
     sandbox = SandboxSpec(
         sandbox_id="malware",
         name="Malware analysis",
-        image="localhost/kafkallm-malware:latest",
+        image="localhost/gaensestall-malware:latest",
         env={"YARA_RULES": "/opt/rules"},
-        extensions=["rea:/opt/kafkallm/rea-mcp"],
+        extensions=["rea:/opt/gaensestall/rea-mcp"],
     )
 
     assert sandbox.enabled
     assert sandbox.env["YARA_RULES"] == "/opt/rules"
-    assert sandbox.extensions == ["rea:/opt/kafkallm/rea-mcp"]
+    assert sandbox.extensions == ["rea:/opt/gaensestall/rea-mcp"]
 
 
 @pytest.mark.parametrize(
     "key",
-    ["OPENAI_API_KEY", "GOOSE_MODEL", "KAFKALLM_SANDBOX", "PATH"],
+    ["OPENAI_API_KEY", "GOOSE_MODEL", "GAENSESTALL_SANDBOX", "PATH"],
 )
 def test_sandbox_spec_rejects_reserved_environment_names(key: str) -> None:
     with pytest.raises(ValidationError):

@@ -54,7 +54,7 @@ The image comes from the `default` sandbox registry entry.
     {"bucket": "jobs", "key": "uploads/example/tool.bin"}
   ],
   "sandbox": "reverse",
-  "sandbox_image": "kafkallm-rea-job:latest",
+  "sandbox_image": "gaensestall-rea-job:latest",
   "multi_agent": true,
   "agents": [],
   "unlimited": false,
@@ -71,7 +71,7 @@ The image comes from the `default` sandbox registry entry.
 - `input` is JSON and limited to 256,000 bytes. Put larger data in a file and attach
   it with `input_files`.
 - `input_files` contains S3/RustFS references (`{"bucket": "...", "key": "..."}`).
-  `kafkallm submit --upload FILE` uploads and fills this list for you.
+  `gaensestall submit --upload FILE` uploads and fills this list for you.
 - `sandbox` names a built-in (`default`, `reverse`) or a GUI registry entry.
   If `sandbox_image` is omitted, the worker uses the registry image. A manual
   job with an unknown `sandbox` must provide `sandbox_image`.
@@ -90,13 +90,13 @@ The image comes from the `default` sandbox registry entry.
 ### CLI (recommended)
 
 ```bash
-kafkallm submit --job-json job.json
+gaensestall submit --job-json job.json
 ```
 
 Or from stdin:
 
 ```bash
-kafkallm submit --job-json - < job.json
+gaensestall submit --job-json - < job.json
 ```
 
 The CLI validates, injects trace headers, adds the sandbox image, publishes to
@@ -161,12 +161,12 @@ latest `JobState`.
 Read them with the CLI:
 
 ```bash
-kafkallm results --from-beginning
-kafkallm states --from-beginning
-kafkallm events --from-beginning
-kafkallm logs --from-beginning
+gaensestall results --from-beginning
+gaensestall states --from-beginning
+gaensestall events --from-beginning
+gaensestall logs --from-beginning
 ```
 
 The complete `Job` and `JobResult` schemas are available with
-`kafkallm schema job` and in the GUI's `/api/schema/job` endpoint.
+`gaensestall schema job` and in the GUI's `/api/schema/job` endpoint.
 

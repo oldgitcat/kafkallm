@@ -13,8 +13,8 @@ Each job runs in its own KVM microVM.
 | Resources | `GOOSE_JOB_RAM_MIB` (default `2048`), `GOOSE_JOB_CPUS` (default `2`), `GOOSE_JOB_PIDS_LIMIT` (default `512`) |
 | Filesystem | Disposable container root filesystem, copied tools and Goose config, and a copied persistent skill store |
 | Skills | Each job edits a disposable copy. The learning pass runs in a separate microVM, and only the worker merges validated changes into the shared store |
-| Network | Attached only to the IPv6-only `kafkallm-jobs` internal network. The HTTP allowlisting proxy is the only peer; it accepts only the chat-completions and model-list endpoints and forwards them to agentgateway. Internet, LAN, Compose services, other Podman services, and the Podman API are unreachable |
-| Credentials | The real provider key stays in agentgateway. The job gets a rotatable virtual key that is valid only through the gateway |
+| Network | Attached only to the IPv6-only `gaensestall-jobs` internal network. The HTTP LLM proxy is the only peer; it validates the proxy token, accepts only the chat-completions and model-list endpoints, and forwards them to the MLflow AI Gateway. Internet, LAN, Compose services, other Podman services, and the Podman API are unreachable |
+| Credentials | The real provider key is encrypted in Postgres and used only by MLflow. The job gets a rotatable proxy token that is valid only through the proxy |
 | Tools | No browser, no `curl`/`wget` in the image; the prompt forbids web and other network use |
 | Lifetime | The microVM and its job directory are removed after the job |
 
@@ -35,22 +35,23 @@ What the boundary does **not** cover:
   compromised learning pass can propose misleading or malicious instructions.
   Merge validation is structural, not semantic. Review learned skills before
   relying on them in a higher-trust setting.
-- **Gateway virtual key.** The job holds a static virtual key for the whole job.
-  A malicious job can reuse it for its own gateway requests, and the gateway
-  does not enforce a per-job request or token budget. Rotate
-  `LLM_GATEWAY_VIRTUAL_KEY` if a job is untrusted.
-- **Gateway transport.** The gateway listener is plain HTTP. Keep it on a
-  trusted network or terminate TLS in front of it.
+- **LLM proxy token.** The job holds a static proxy token for the whole job.
+  A malicious job can reuse it for its own LLM requests, and MLflow does not
+  enforce a per-job request or token budget. Rotate
+  `LLM_PROXY_TOKEN` if a job is untrusted.
+- **LLM proxy transport.** Proxy-to-MLflow traffic is plain HTTP on the internal
+  Compose network. MLflow-to-provider traffic uses the upstream URL; TLS
+  verification is on unless `LLM_UPSTREAM_INSECURE_SKIP_TLS_VERIFY` is set.
 - **GUI exposure.** Caddy publishes the GUI on `0.0.0.0` by default and
   enforces HTTP basic auth. The GUI itself is only reachable on the Compose
   network. Use `GUI_BIND=127.0.0.1` for local-only access, and put TLS in front
   of Caddy if the network is untrusted.
 - **Proxy configuration.** The proxy forwards only allowlisted HTTP requests to
   one fixed upstream. A compromise of the proxy container still gives access to
-  agentgateway.
+  the MLflow AI Gateway.
 
-The `kafkallm-jobs` network is IPv6-only and `internal`, so jobs have no IPv4
-address and no default route. The allowlisting proxy is the only other container
+The `gaensestall-jobs` network is IPv6-only and `internal`, so jobs have no IPv4
+address and no default route. The LLM proxy is the only other container
 on that network. Create the network on the host with
 `./scripts/init-job-network.sh`; the worker fails closed if it is missing.
 

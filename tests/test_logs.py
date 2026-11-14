@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from kafkallm.core.models import JobLog
-from kafkallm.core.settings import Settings
-from kafkallm.kafka.logs import LogPublisher
+from gaensestall.core.models import JobLog
+from gaensestall.core.settings import Settings
+from gaensestall.kafka.logs import LogPublisher
 
 
 class FakeProducer:

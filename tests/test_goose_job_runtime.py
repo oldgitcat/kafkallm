@@ -13,36 +13,35 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from opentelemetry.sdk.trace import SpanLimits, TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
-    InMemorySpanExporter,
-)
-
-from kafkallm.core.models import AgentResult, AgentSpec, Job, SandboxSpec
-from kafkallm.core.settings import Settings
-from kafkallm.sandbox.activity import (
+from gaensestall.core.models import AgentResult, AgentSpec, Job, SandboxSpec
+from gaensestall.core.settings import Settings
+from gaensestall.sandbox.activity import (
     _DelegationTracker,
     _LogCollector,
     _SpanActivity,
 )
-from kafkallm.sandbox.activity import (
+from gaensestall.sandbox.activity import (
     stream_event_log_records as _stream_event_log_records,
 )
-from kafkallm.sandbox.output import (
+from gaensestall.sandbox.goose_output import (
     NO_OUTPUT_ERROR,
     parse_goose_output,
     parse_goose_output_file,
 )
-from kafkallm.sandbox.runtime import (
+from gaensestall.sandbox.job_runtime import (
     _REFLECT_RUN_SCRIPT,
     _VM_RUN_SCRIPT,
     GooseJobRunner,
     GooseJobRuntimeError,
     JobCancelledError,
 )
-from kafkallm.sandbox.sandboxes import SandboxStore
-from kafkallm.worker.harness import Harness
+from gaensestall.sandbox.registry import SandboxStore
+from gaensestall.worker.job_runner import Harness
+from opentelemetry.sdk.trace import SpanLimits, TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+    InMemorySpanExporter,
+)
 
 
 class FakeResponse:
@@ -84,7 +83,7 @@ class FakeNetwork:
 class FakeNetworks:
     def __init__(self) -> None:
         self.items = {
-            "kafkallm-jobs": FakeNetwork("kafkallm-jobs"),
+            "gaensestall-jobs": FakeNetwork("gaensestall-jobs"),
             "podman": FakeNetwork("podman"),
         }
 
@@ -108,8 +107,8 @@ class FakeContainer:
         self.name = name
         self.body = body or client.create_body
         self.labels = self.body.get("Labels", {})
-        self.role = self.labels.get("kafkallm.role", "main")
-        self.is_job = self.labels.get("kafkallm.vm") == "1"
+        self.role = self.labels.get("gaensestall.role", "main")
+        self.is_job = self.labels.get("gaensestall.vm") == "1"
         self.status = "created"
         self.exit_code = 0
         self.stopped = False
@@ -230,7 +229,7 @@ class FakeApi:
         container = FakeContainer(self.client, container_id, name=name, body=body)
         self.client.containers.items.append(container)
         if not name:
-            role = str((body.get("Labels") or {}).get("kafkallm.role", "main"))
+            role = str((body.get("Labels") or {}).get("gaensestall.role", "main"))
             if role == "reflect":
                 self.client.reflect_body = body
                 self.client.reflect_container = container
@@ -299,7 +298,7 @@ class FakeDockerClient:
         self.images = FakeImages(self)
         self.networks = FakeNetworks()
         self.api = FakeApi(self)
-        self.rootfs = Path(tempfile.mkdtemp(prefix="kafkallm-fake-rootfs-"))
+        self.rootfs = Path(tempfile.mkdtemp(prefix="gaensestall-fake-rootfs-"))
         self.create_body: dict[str, Any] = {}
         self.main_body: dict[str, Any] = {}
         self.job_body: dict[str, Any] = {}
@@ -340,7 +339,7 @@ class FakeDockerClient:
 
     @staticmethod
     def _result_dir(container: FakeContainer) -> Path:
-        return container.workspace / ".kafkallm"
+        return container.workspace / ".gaensestall"
 
 
 class FakeAudit:
@@ -357,12 +356,12 @@ def _settings(**overrides: Any) -> Settings:
         "goose_job_docker_host": "unix:///run/user/1000/podman/podman.sock",
         "goose_image": "goose:test",
         "goose_re_image": "rea:test",
-        "goose_job_proxy_image": "proxy:test",
+        "llm_proxy_image": "proxy:test",
         "goose_job_ram_mib": 2048,
         "goose_job_cpus": 2,
         "goose_job_use_passt": False,
-        "goose_job_workspace_root": "/home/test/.local/share/kafkallm/jobs",
-        "goose_job_skills_dir": "/home/test/.local/share/kafkallm/skills",
+        "goose_job_workspace_root": "/home/test/.local/share/gaensestall/jobs",
+        "goose_job_skills_dir": "/home/test/.local/share/gaensestall/skills",
         "goose_job_max_turns": 20,
         "goose_job_subagent_max_turns": 10,
         "goose_job_memory_limit": "4g",
@@ -371,18 +370,18 @@ def _settings(**overrides: Any) -> Settings:
         "goose_job_reflect_timeout_seconds": 60,
         "goose_model": "test-model",
         "goose_provider": "openai-compatible",
-        "llm_gateway_url": "http://gateway:8091",
-        "llm_gateway_virtual_key": "test-virtual-key",
-        "llm_gateway_ready_url": "",
-        "llm_gateway_port": 8091,
-        "goose_job_network": "kafkallm-jobs",
+        "llm_proxy_url": "http://gateway:8091",
+        "llm_proxy_token": "test-virtual-key",
+        "mlflow_ready_url": "",
+        "llm_proxy_port": 8091,
+        "goose_job_network": "gaensestall-jobs",
         "goose_job_network_subnet": "fd00:6b61:666b:616c::/64",
         "goose_job_network_interface": "",
         "goose_job_network_dir": "",
         "goose_job_network_autocreate": False,
-        "goose_job_proxy_network": "podman",
-        "goose_job_proxy_upstream_host": "host.containers.internal",
-        "goose_job_proxy_upstream_port": 8091,
+        "llm_proxy_network": "gaensestall",
+        "llm_proxy_upstream_host": "mlflow",
+        "llm_proxy_upstream_port": 5000,
     }
     values.update(overrides)
     return replace(Settings.from_env(), **values)
@@ -471,9 +470,9 @@ def test_vm_run_starts_microvm_and_collects_result(tmp_path: Path) -> None:
     assert (root / "workspace" / "inputs").is_dir()
     assert (root / "workspace" / ".claude" / "agents").is_dir()
     assert (root / "jobboot" / "run-job.sh").is_file()
-    assert (root / "opt" / "kafkallm" / "skills-persistent").is_dir()
-    assert (root / "opt" / "kafkallm" / "tools").is_dir()
-    assert (root / "opt" / "kafkallm" / "config").is_dir()
+    assert (root / "opt" / "gaensestall" / "skills-persistent").is_dir()
+    assert (root / "opt" / "gaensestall" / "tools").is_dir()
+    assert (root / "opt" / "gaensestall" / "config").is_dir()
     assert body["Image"] == "goose:test"
     assert body["HostConfig"]["Memory"] == 4 * 1024**3
     assert body["HostConfig"]["PidsLimit"] == 512
@@ -484,17 +483,21 @@ def test_vm_run_starts_microvm_and_collects_result(tmp_path: Path) -> None:
     assert "GOOSE_MAX_TURNS=20" in environment
     assert "GOOSE_SUBAGENT_MAX_TURNS=10" in environment
     assert "OPENAI_API_KEY=test-virtual-key" in environment
-    assert any(item.startswith("PATH=/opt/kafkallm/tools/bin:") for item in environment)
-    assert "KAFKALLM_TOOLS_DIR=/opt/kafkallm/tools" in environment
-    assert "KAFKALLM_CONFIG_DIR=/opt/kafkallm/config" in environment
-    assert "KAFKALLM_MULTI_AGENT=1" in environment
-    assert "KAFKALLM_AGENT_COUNT=0" in environment
-    assert body["HostConfig"]["NetworkMode"] == "kafkallm-jobs"
+    assert any(
+        item.startswith("PATH=/opt/gaensestall/tools/bin:") for item in environment
+    )
+    assert "GAENSESTALL_TOOLS_DIR=/opt/gaensestall/tools" in environment
+    assert "GAENSESTALL_CONFIG_DIR=/opt/gaensestall/config" in environment
+    assert "GAENSESTALL_MULTI_AGENT=1" in environment
+    assert "GAENSESTALL_AGENT_COUNT=0" in environment
+    assert body["HostConfig"]["NetworkMode"] == "gaensestall-jobs"
     assert body["HostConfig"]["ExtraHosts"] == [
         "host.containers.internal:fd00:6b61:666b:616c::2"
     ]
     assert "LISTEN_PORT=8091" in client.proxy_body["Env"]
-    assert "UPSTREAM_HOST=host.containers.internal" in client.proxy_body["Env"]
+    assert "UPSTREAM_HOST=mlflow" in client.proxy_body["Env"]
+    assert "UPSTREAM_PORT=5000" in client.proxy_body["Env"]
+    assert "GAENSESTALL_LLM_PROXY_TOKEN=test-virtual-key" in client.proxy_body["Env"]
     assert client.proxy_body["Image"] == "proxy:test"
     assert client.proxy_body["Entrypoint"] == ["/usr/bin/python3"]
 
@@ -628,7 +631,7 @@ def test_reverse_sandbox_uses_re_image_and_rea_environment(tmp_path: Path) -> No
     body = client.create_body
     assert body["Image"] == "rea:test"
     environment = dict(item.split("=", 1) for item in body["Env"])
-    assert environment["KAFKALLM_SANDBOX"] == "reverse"
+    assert environment["GAENSESTALL_SANDBOX"] == "reverse"
     assert environment["GHIDRA_INSTALL_DIR"] == "/opt/ghidra"
     assert environment["JAVA_HOME"] == "/opt/java/openjdk"
     assert environment["REA_MCP_INPUT_SCHEMA_PROFILE"] == "compact"
@@ -652,7 +655,7 @@ def test_default_sandbox_uses_the_goose_image(tmp_path: Path) -> None:
     body = client.create_body
     assert body["Image"] == "goose:test"
     environment = dict(item.split("=", 1) for item in body["Env"])
-    assert environment["KAFKALLM_SANDBOX"] == "default"
+    assert environment["GAENSESTALL_SANDBOX"] == "default"
     assert "GHIDRA_INSTALL_DIR" not in environment
     assert "REA_GHIDRA_STARTUP_TIMEOUT_MS" not in environment
 
@@ -671,7 +674,7 @@ def test_registered_sandbox_supplies_image_env_extensions_and_prompt(
             image="malware:test",
             instructions="Malware sandbox: use YARA before disassembly.",
             env={"YARA_RULES": "/opt/rules"},
-            extensions=["rea:/opt/kafkallm/rea-mcp"],
+            extensions=["rea:/opt/gaensestall/rea-mcp"],
         )
     )
     runner = GooseJobRunner(settings, client=client, sandboxes=sandboxes)
@@ -686,9 +689,11 @@ def test_registered_sandbox_supplies_image_env_extensions_and_prompt(
     body = client.create_body
     assert body["Image"] == "malware:test"
     environment = dict(item.split("=", 1) for item in body["Env"])
-    assert environment["KAFKALLM_SANDBOX"] == "malware"
+    assert environment["GAENSESTALL_SANDBOX"] == "malware"
     assert environment["YARA_RULES"] == "/opt/rules"
-    assert environment["KAFKALLM_SANDBOX_EXTENSIONS"] == "rea:/opt/kafkallm/rea-mcp"
+    assert (
+        environment["GAENSESTALL_SANDBOX_EXTENSIONS"] == "rea:/opt/gaensestall/rea-mcp"
+    )
     assert "Malware sandbox" in runner._build_prompt(job)
 
 
@@ -807,7 +812,7 @@ def test_job_can_disable_the_learning_pass(tmp_path: Path) -> None:
     )
 
     assert client.reflect_body == {}
-    assert "KAFKALLM_JOB_REFLECT_ENABLED" not in client.create_body["Env"]
+    assert "GAENSESTALL_JOB_REFLECT_ENABLED" not in client.create_body["Env"]
     reflect = [event for event in audit.events if event["type"] == "goose.reflect"]
     assert reflect
     assert reflect[0]["attributes"]["status"] == "skipped"
@@ -834,12 +839,12 @@ def test_job_can_enable_the_learning_pass_when_the_worker_default_is_off(
 
     # The job opted in even though the worker default is off.
     assert client.reflect_body
-    assert "KAFKALLM_JOB_REFLECT_ENABLED" not in client.create_body["Env"]
-    assert client.reflect_body["Labels"]["kafkallm.role"] == "reflect"
+    assert "GAENSESTALL_JOB_REFLECT_ENABLED" not in client.create_body["Env"]
+    assert client.reflect_body["Labels"]["gaensestall.role"] == "reflect"
     timeout = [
         item
         for item in client.reflect_body["Env"]
-        if item.startswith("KAFKALLM_JOB_REFLECT_TIMEOUT=")
+        if item.startswith("GAENSESTALL_JOB_REFLECT_TIMEOUT=")
     ]
     assert timeout
     assert int(timeout[0].split("=", 1)[1]) >= 10
@@ -856,7 +861,7 @@ def test_reverse_prompt_mentions_rea(tmp_path: Path) -> None:
 
 
 def test_run_script_enables_registered_sandbox_extensions() -> None:
-    assert "KAFKALLM_SANDBOX_EXTENSIONS" in _VM_RUN_SCRIPT
+    assert "GAENSESTALL_SANDBOX_EXTENSIONS" in _VM_RUN_SCRIPT
     assert '--with-extension "$extension"' in _VM_RUN_SCRIPT
     assert "extension_path=${extension#*:}" in _VM_RUN_SCRIPT
     assert "TMPDIR=/workspace/.scratch/tmp" in _VM_RUN_SCRIPT
@@ -866,7 +871,7 @@ def test_run_script_enables_registered_sandbox_extensions() -> None:
     assert "chmod 0777" not in _VM_RUN_SCRIPT
     assert "chmod -R a+rwX" not in _REFLECT_RUN_SCRIPT
     assert "chmod 0777" not in _REFLECT_RUN_SCRIPT
-    assert "seed_skills /opt/kafkallm/sandbox-skills" in _VM_RUN_SCRIPT
+    assert "seed_skills /opt/gaensestall/sandbox-skills" in _VM_RUN_SCRIPT
     assert "--output-format stream-json" in _VM_RUN_SCRIPT
     assert "stdbuf -oL -eL ./goose" in _VM_RUN_SCRIPT
     # Multi-agent runs need goose's summon and skills builtins.
@@ -901,9 +906,9 @@ def test_worker_removes_orphaned_job_and_reflect_directories(tmp_path: Path) -> 
     assert fresh_job.exists()
 
 
-def test_worker_recreates_a_stale_gateway_proxy(tmp_path: Path) -> None:
+def test_worker_recreates_a_stale_llm_proxy(tmp_path: Path) -> None:
     client = FakeDockerClient()
-    stale = FakeContainer(client, "stale-proxy", name="kafkallm-gateway-proxy")
+    stale = FakeContainer(client, "stale-proxy", name="gaensestall-llm-proxy")
     stale.attrs["Image"] = "old-image-id"
     stale.status = "running"
     client.containers.items.append(stale)
@@ -915,7 +920,7 @@ def test_worker_recreates_a_stale_gateway_proxy(tmp_path: Path) -> None:
     current = [
         container
         for container in client.containers.items
-        if container.name == "kafkallm-gateway-proxy" and container is not stale
+        if container.name == "gaensestall-llm-proxy" and container is not stale
     ]
     assert current
     assert current[-1].attrs["Image"] == client.image_id
@@ -944,9 +949,7 @@ def test_vm_does_not_pass_provider_credentials(
 
 def test_wait_ready_requires_gateway(tmp_path: Path) -> None:
     client = FakeDockerClient()
-    runner = GooseJobRunner(
-        _settings_for(tmp_path, llm_gateway_virtual_key=""), client=client
-    )
+    runner = GooseJobRunner(_settings_for(tmp_path, llm_proxy_token=""), client=client)
 
     with pytest.raises(GooseJobRuntimeError, match="LLM gateway"):
         runner.wait_ready()
@@ -1015,8 +1018,8 @@ def test_unlimited_environment_disables_timeout_and_turn_caps(
     )
 
     environment = dict(item.split("=", 1) for item in client.create_body["Env"])
-    assert environment["KAFKALLM_JOB_UNLIMITED"] == "1"
-    assert environment["KAFKALLM_JOB_MAIN_TIMEOUT"] == "0"
+    assert environment["GAENSESTALL_JOB_UNLIMITED"] == "1"
+    assert environment["GAENSESTALL_JOB_MAIN_TIMEOUT"] == "0"
     assert environment["GOOSE_MAX_TURNS"] == "12345"
     assert environment["GOOSE_SUBAGENT_MAX_TURNS"] == "6789"
 
@@ -1122,7 +1125,7 @@ def test_prompt_and_bundle_include_selected_agents(tmp_path: Path) -> None:
     assert "Security reviewer (reviewer)" in prompt
     assert "delegate(source:" in prompt
     assert "/jobboot/agents.json" in prompt
-    assert "KAFKALLM_MULTI_AGENT" not in prompt
+    assert "GAENSESTALL_MULTI_AGENT" not in prompt
 
     workdir = tmp_path / "vm"
     workspace = _workspace(tmp_path)
@@ -1337,7 +1340,7 @@ def test_parse_goose_output_file_reports_missing_output(tmp_path: Path) -> None:
 def test_parse_goose_output_file_rejects_oversized_lines(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("kafkallm.sandbox.output._MAX_STREAM_LINE_BYTES", 128)
+    monkeypatch.setattr("gaensestall.sandbox.goose_output._MAX_STREAM_LINE_BYTES", 128)
     path = tmp_path / "main.jsonl"
     event = {
         "type": "message",
@@ -1448,7 +1451,7 @@ def test_span_activity_records_bounded_events() -> None:
 
     events = exporter.get_finished_spans()[0].events
     assert [event.name for event in events] == ["goose.thinking", "goose.tool"]
-    assert events[0].attributes["kafkallm.text"] == "first"
+    assert events[0].attributes["gaensestall.text"] == "first"
 
 
 def test_delegation_tracker_emits_agent_events() -> None:
@@ -1565,7 +1568,7 @@ def test_delegation_tracker_handles_ad_hoc_and_other_tools() -> None:
 
 
 def test_log_collector_emits_delegation_events(tmp_path: Path) -> None:
-    result_dir = tmp_path / ".kafkallm"
+    result_dir = tmp_path / ".gaensestall"
     result_dir.mkdir(parents=True)
     call = {
         "type": "message",
@@ -1744,18 +1747,18 @@ def test_reflect_vm_uses_a_fresh_workspace_and_safe_mounts(tmp_path: Path) -> No
     assert main_removed == [True]
 
     body = client.reflect_body
-    assert body["Labels"]["kafkallm.role"] == "reflect"
+    assert body["Labels"]["gaensestall.role"] == "reflect"
     assert body["HostConfig"].get("Binds", []) == []
     assert client.reflect_container is not None
     reflect_root = client.reflect_container.rootfs
     assert (reflect_root / "jobboot" / "run-reflect.sh").is_file()
     assert (reflect_root / "workspace" / "outputs").is_dir()
     assert not (reflect_root / "workspace" / "inputs").exists()
-    assert not (reflect_root / "opt" / "kafkallm" / "skills-persistent").exists()
+    assert not (reflect_root / "opt" / "gaensestall" / "skills-persistent").exists()
 
     environment = body["Env"]
-    assert not any(item.startswith("KAFKALLM_SANDBOX=") for item in environment)
-    assert "KAFKALLM_MULTI_AGENT=1" not in environment
+    assert not any(item.startswith("GAENSESTALL_SANDBOX=") for item in environment)
+    assert "GAENSESTALL_MULTI_AGENT=1" not in environment
     assert "OPENAI_API_KEY=test-virtual-key" in environment
 
 
@@ -1870,7 +1873,7 @@ def test_control_file_reads_reject_symlinks(tmp_path: Path) -> None:
     secret.write_text("host secret", encoding="utf-8")
 
     workdir = tmp_path / "job"
-    control = workdir / ".kafkallm"
+    control = workdir / ".gaensestall"
     control.mkdir(parents=True)
     (control / "main.jsonl").symlink_to(secret)
 
@@ -1881,7 +1884,7 @@ def test_control_file_reads_reject_symlinks(tmp_path: Path) -> None:
     target = tmp_path / "target"
     target.mkdir()
     (target / "main.jsonl").write_text("not allowed", encoding="utf-8")
-    (other / ".kafkallm").symlink_to(target)
+    (other / ".gaensestall").symlink_to(target)
 
     assert runner._read_text(other, "main.jsonl") == ""
 

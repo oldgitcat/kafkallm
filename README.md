@@ -7,12 +7,12 @@ Gänsestall is a small Apache Kafka job queue where every job is executed by a
 disposable [goose](https://github.com/aaif-goose/goose) microVM running the
 [goosetown](https://github.com/aaif-goose/goosetown) multi-agent workflow.
 Kafka is the queue, the materialized state store, the scheduler, and the audit
-log. There is no PostgreSQL and no separate scheduler service.
+log. PostgreSQL backs MLflow tracking and the AI Gateway only.
 
 > [!IMPORTANT]
 > Gänsestall is a local development stack, not a hardened multi-tenant service.
-> The GUI has no authentication, the LLM gateway speaks plain HTTP, and skill
-> updates from the isolated learning pass are validated only structurally.
+> The GUI has no authentication, the internal LLM proxy path speaks plain HTTP,
+> and skill updates from the isolated learning pass are validated only structurally.
 > The GUI is reachable from the network by default (`GUI_BIND=0.0.0.0`), so run
 > the stack only on a trusted network or put an authenticated TLS proxy in
 > front of it. See the
@@ -26,7 +26,7 @@ usable, but configuration and APIs may change between minor releases.
 ## Documentation
 
 - [Setup and configuration](docs/setup.md)
-- [LLM providers and agentgateway](docs/providers.md)
+- [LLM providers and the MLflow AI Gateway](docs/providers.md)
 - [Architecture and job lifecycle](docs/architecture.md)
 - [Jobs and manual Kafka submission](docs/jobs.md)
 - [Container and process map](docs/services.md)
@@ -48,8 +48,8 @@ Browser / CLI ──→ jobs.in ──→ worker ──→ rootless Podman (krun
                                   │      └─ /workspace (copy)
                                   │            │
                                   │            ▼
-                                  │      allowlisting proxy ──→ agentgateway ──→ LLM provider
-                                  │      (agentgateway holds the real provider key)
+                                  │      LLM proxy ──→ MLflow AI Gateway ──→ LLM provider
+                                  │      (MLflow holds the encrypted provider key)
                                   │
                                   ├─→ jobs.out      (results)
                                   ├─→ jobs.state    (compacted GUI state)
@@ -80,34 +80,34 @@ GUI ──→ jobs.in, jobs.state, agents.state, sandboxes.state, agent.events
 |---|---|
 | GUI | `http://<host-ip>:8090` (Caddy basic auth) |
 | Kafka UI | <http://localhost:8080> |
-| MLflow | <http://localhost:5000> |
-| LLM gateway (OpenAI-compatible) | <http://localhost:8091/v1> |
+| MLflow UI and AI Gateway | <http://localhost:5000> |
+| OpenAI-compatible gateway | <http://localhost:5000/gateway/mlflow/v1> |
 | RustFS S3 API / console | <http://localhost:19000> / <http://localhost:19001> |
 
 | Host path | Contents |
 |---|---|
-| `~/.local/share/kafkallm/jobs` | Per-job workspaces |
-| `~/.local/share/kafkallm/skills` | Persistent goosetown skills |
-| `~/.local/share/kafkallm/agents` | Agent profiles (`*.md`) |
-| `~/.local/share/kafkallm/tools`, `config` | Sandbox tools and Goose config |
+| `~/.local/share/gaensestall/jobs` | Per-job workspaces |
+| `~/.local/share/gaensestall/skills` | Persistent goosetown skills |
+| `~/.local/share/gaensestall/agents` | Agent profiles (`*.md`) |
+| `~/.local/share/gaensestall/tools`, `config` | Sandbox tools and Goose config |
 
 Kafka is the database: `jobs.state`, `agents.state`, and `sandboxes.state` are
 compacted; the other topics expire after `KAFKA_TOPIC_RETENTION_MS`.
 
 ## Included
 
-- One-command setup and host diagnostics through `make` and `kafkallm doctor`
+- One-command setup and host diagnostics through `make` and `gaensestall doctor`
 - A disposable **goose** microVM per job with the **goosetown** orchestrator,
   worker, writer, reviewer, and local-researcher skills
 - GUI-managed goosetown agent profiles stored in compacted Kafka state, with
   “+ New agent” controls and editable display names
 - GUI-managed sandbox/environment registry stored in compacted Kafka state, so
   new images appear in the job dropdown without a code change
-- An **[agentgateway](https://agentgateway.dev/)** LLM gateway that holds the
-  provider key and accepts only a rotatable virtual key from jobs
-- An IPv6-only internal Podman network where the HTTP allowlisting proxy is the
-  only reachable peer; it accepts only the OpenAI chat-completions and model-list
-  endpoints and forwards them to agentgateway
+- The **MLflow AI Gateway** as the only LLM gateway; it stores the provider key
+  encrypted in Postgres and exposes an OpenAI-compatible endpoint
+- An IPv6-only internal Podman network where the HTTP LLM proxy is the
+  only reachable peer; it validates the rotatable proxy token, accepts only the
+  OpenAI chat-completions and model-list endpoints, and forwards them to MLflow
 - A browser GUI for submitting jobs, uploading input files or binaries,
   watching state, results, and audit events, and downloading result text and
   artifacts; the job list has a text filter and a **Clear finished** action
@@ -115,7 +115,7 @@ compacted; the other topics expire after `KAFKA_TOPIC_RETENTION_MS`.
   oversized results are preserved as downloadable S3 artifacts
 - Stop buttons for queued/running jobs, restart for finished jobs, and
   configurable parallel worker slots
-- A drop-in agent profile directory (`~/.local/share/kafkallm/agents`) next to the
+- A drop-in agent profile directory (`~/.local/share/gaensestall/agents`) next to the
   persistent skills directory
 - A live activity panel with goose thinking, tool calls, tool results, stderr,
   and token usage streamed from the microVM through Kafka
@@ -141,7 +141,7 @@ compacted; the other topics expire after `KAFKA_TOPIC_RETENTION_MS`.
 ## Quick start
 
 ```bash
-make setup       # choose provider, key/base URL, and model
+make setup       # choose base URL, key, and upstream model
 make doctor
 make up          # build/start the stack
 ```
@@ -152,8 +152,9 @@ provider examples, and the full command reference.
 ## How it works
 
 Jobs arrive on Kafka, a worker starts one disposable goose microVM per job,
-the job talks only to the allowlisting proxy and agentgateway, and results,
-state, audit events, and traces flow back through Kafka, MLflow, and RustFS.
+the job talks only to the LLM proxy and the MLflow AI Gateway, and
+results, state, audit events, and traces flow back through Kafka, MLflow, and
+RustFS.
 
 See [docs/architecture.md](docs/architecture.md) for the job lifecycle,
 [docs/agents.md](docs/agents.md) for the goosetown flock and skills, and
@@ -166,8 +167,8 @@ Read [docs/security.md](docs/security.md) before exposing it.
 
 ## Third-party components
 
-The vendored goosetown files under `gaense/` are Apache 2.0; see
-[gaense/LICENSE-goosetown](gaense/LICENSE-goosetown). REA, Ghidra, Kuna,
+The vendored goosetown files under `goose-assets/` are Apache 2.0; see
+[goose-assets/LICENSE-goosetown](goose-assets/LICENSE-goosetown). REA, Ghidra, Kuna,
 `jadx-headless-mcp`, apktool, and apksigner are installed as separate upstream
 components under their own licenses. Frida is installed as a separate
 LGPL-2.1 component.
