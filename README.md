@@ -73,6 +73,7 @@ GUI ──→ jobs.in, jobs.state, agents.state, sandboxes.state, agent.events
 | Recreate after `.env` changes | `make restart` |
 | Follow logs | `make logs` |
 | Run tests / lint | `make test` / `make lint` |
+| Full local check (lint, tests, docs) | `make check` |
 | Delete all Kafka, trace, and storage data | `make reset` |
 
 | Service | URL |

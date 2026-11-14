@@ -17,6 +17,15 @@ from urllib.parse import parse_qs, quote, urlsplit
 
 from pydantic import ValidationError
 
+from gui.agents import (
+    AgentPublisher,
+    AgentStore,
+    default_agent_ids,
+    new_agent_id,
+    sync_agents,
+    write_agent_profile,
+)
+from gui.job_store import JobStore
 from kafkallm.core.models import (
     AgentSpec,
     FileRef,
@@ -37,15 +46,6 @@ from kafkallm.sandbox.sandboxes import (
     new_sandbox_id,
     seed_default_sandboxes,
 )
-from tools.gui.agents import (
-    AgentPublisher,
-    AgentStore,
-    default_agent_ids,
-    new_agent_id,
-    sync_agents,
-    write_agent_profile,
-)
-from tools.gui.job_store import JobStore
 
 logger = logging.getLogger(__name__)
 

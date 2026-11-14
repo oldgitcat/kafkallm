@@ -1,4 +1,4 @@
-FROM docker.io/library/python:3.12-slim-bookworm@sha256:0f086103b026048cc50cb5da25ec435c023c5241a83fc44daea593377abc61c4
+FROM docker.io/library/python:3.13-slim-bookworm@sha256:f3dac913ab53b78c64f26d5518fcd7043d5a1a46522d6a493b598c3ed12f62a6
 
 LABEL org.opencontainers.image.title="Kafkallm" \
       org.opencontainers.image.description="Kafka-backed goose jobs in isolated microVMs" \
@@ -11,7 +11,6 @@ WORKDIR /app
 
 COPY pyproject.toml README.md constraints.txt ./
 COPY src ./src
-COPY tools ./tools
 COPY gaense/agents ./gaense/agents
 
 RUN pip install --no-cache-dir -c constraints.txt . \

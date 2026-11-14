@@ -9,11 +9,12 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from gui.agents import AgentStore, default_agents
+from gui.gui import JobServer, JobStore
+
 from kafkallm.core.models import FileRef, Job, JobState
 from kafkallm.core.settings import Settings
 from kafkallm.sandbox.sandboxes import SandboxStore, default_sandboxes
-from tools.gui.agents import AgentStore, default_agents
-from tools.gui.gui import JobServer, JobStore
 
 
 class FakeStorage:

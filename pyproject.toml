@@ -40,15 +40,12 @@ Issues = "https://github.com/oldgitcat/kafkallm/issues"
 kafkallm = "kafkallm.cli:main"
 
 [tool.setuptools.packages.find]
-where = ["src", "."]
-include = ["kafkallm*", "tools*"]
-
-[tool.setuptools.package-data]
-"tools.gui" = ["static/*.html", "static/*.css", "static/*.js"]
+where = ["src"]
+include = ["kafkallm*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]
+pythonpath = [".", "tools"]
 addopts = "-q"
 markers = [
     "integration: requires a running Kafka broker",

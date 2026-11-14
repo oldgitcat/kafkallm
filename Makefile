@@ -13,7 +13,7 @@ PYTEST := $(VENV)/bin/pytest
 RUFF := $(VENV)/bin/ruff
 VENV_STAMP := $(VENV)/.kafkallm-installed
 
-.PHONY: help setup gui-auth gui-auth-force gateway-config doctor bootstrap network images proxy-image app-image gui-image rea-image up down restart logs ps test lint format venv clean prune lock reset
+.PHONY: help setup gui-auth gui-auth-force gateway-config doctor bootstrap network images proxy-image app-image gui-image rea-image up down restart logs ps test lint docs-check check format venv clean prune lock reset
 
 help: ## Show this help
 	@printf "%-14s %s\n" "target" "description"
@@ -77,19 +77,24 @@ $(VENV_STAMP): pyproject.toml
 	@test -x $(VENV)/bin/python || $(PYTHON) -m venv $(VENV)
 	@$(VENV)/bin/python -m pip --version >/dev/null 2>&1 || \
 		$(VENV)/bin/python -m ensurepip --upgrade
-	$(VENV)/bin/python -m pip install -c constraints.txt -e '.[dev]'
+	$(VENV)/bin/python -m pip install -c constraints.txt -e '.[dev]' -e './tools'
 	@touch $(VENV_STAMP)
 
 test: venv ## Run the unit tests
 	$(PYTEST)
 
 lint: venv ## Check formatting and lint rules
-	$(RUFF) check src tests
-	$(RUFF) format --check src tests
+	$(RUFF) check src tests tools
+	$(RUFF) format --check src tests tools
+
+docs-check: venv ## Check Markdown links and documented repository paths
+	$(PYTEST) tests/test_docs.py
+
+check: lint test ## Run lint and the full test suite (including docs checks)
 
 format: venv ## Auto-format and fix lint findings
-	$(RUFF) check --fix src tests
-	$(RUFF) format src tests
+	$(RUFF) check --fix src tests tools
+	$(RUFF) format src tests tools
 
 reset: ## Stop the stack and delete all Kafka, trace, and storage data
 	@printf 'This deletes all jobs, agents, sandboxes, and traces. Type "reset" to continue: '; \

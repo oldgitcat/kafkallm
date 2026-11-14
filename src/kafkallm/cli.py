@@ -356,7 +356,7 @@ def main() -> None:
         elif args.command == "states":
             consume(settings, args, settings.state_topic)
         elif args.command == "gui":
-            from tools.gui.gui import run_gui
+            from gui.gui import run_gui
 
             run_gui(settings)
         elif args.command == "doctor":

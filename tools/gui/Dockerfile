@@ -10,6 +10,7 @@ COPY tools ./tools
 
 RUN python -m pip install --no-cache-dir --target /deps \
         -c constraints.txt .
+RUN python -m pip install --no-cache-dir --no-deps --target /deps ./tools
 
 FROM gcr.io/distroless/python3-debian13@sha256:973adebb0daedf75c0542081edea2d45bd60ba413a9522011b478523f76b0d80
 
